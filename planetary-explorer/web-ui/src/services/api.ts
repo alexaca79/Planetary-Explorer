@@ -143,6 +143,7 @@ class ApiService {
       this.api = axios.create({
         baseURL: API_BASE || undefined,
         timeout: 300000, // 5 minutes — extreme weather queries via chat can be slow (NetCDF sampling)
+        withCredentials: true,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -420,7 +421,14 @@ class ApiService {
     selectedModel?: string,
     partOfSplit?: boolean,
     stacMode?: 'public' | 'pro',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    streamHandlers?: {
+      onTrace?: (evt: any) => void;
+      onConfirmRequest?: (evt: any) => void;
+      onConfirmResolved?: (evt: any) => void;
+      onProgress?: (evt: any) => void;
+      onError?: (err: Error) => void;
+    },
   ): Promise<any> {
     debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, partOfSplit, stacMode, hasAbortSignal: !!signal });
 
@@ -542,6 +550,10 @@ class ApiService {
 
       debugLog('Making query request', { endpoint, requestData });
 
+      if (streamHandlers) {
+        return await this.streamQuery(requestData, streamHandlers, signal);
+      }
+
       const response = await this.api.post(endpoint, requestData, { signal });
       debugLog('Query response received', { status: response.status, dataKeys: Object.keys(response.data || {}) });
 
@@ -578,6 +590,97 @@ class ApiService {
 
       throw new Error('Failed to send message. Please try again.');
     }
+  }
+
+  private async streamQuery(
+    requestData: Record<string, any>,
+    handlers: {
+      onTrace?: (evt: any) => void;
+      onConfirmRequest?: (evt: any) => void;
+      onConfirmResolved?: (evt: any) => void;
+      onProgress?: (evt: any) => void;
+      onError?: (err: Error) => void;
+    },
+    signal?: AbortSignal,
+  ): Promise<any> {
+    const baseURL = this.api?.defaults.baseURL || '';
+    const url = `${baseURL.replace(/\/$/, '')}/api/query/stream`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = await getAuthToken().catch(() => null);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const body = JSON.stringify(requestData);
+    const send = () => fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal,
+        credentials: 'include',
+      });
+
+    let response = await send();
+    if (response.status === 401) {
+      const refreshedToken = await refreshAuthToken();
+      if (refreshedToken) {
+        headers.Authorization = `Bearer ${refreshedToken}`;
+        response = await send();
+      }
+    }
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Query stream failed: HTTP ${response.status} ${detail}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: any = null;
+    let streamError: Error | null = null;
+
+    const flushEvent = (block: string) => {
+      const lines = block.split(/\r?\n/);
+      let eventName = 'message';
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (dataLines.length === 0) return;
+      const raw = dataLines.join('\n');
+      let payload: any;
+      try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+      if (eventName === 'error') {
+        streamError = new Error(payload?.error || raw);
+        handlers.onError?.(streamError);
+        return;
+      }
+      if (payload?.type === 'tool_call' || payload?.type === 'tool_result') {
+        handlers.onTrace?.(payload);
+      } else if (payload?.type === 'confirm_request') {
+        handlers.onConfirmRequest?.(payload);
+      } else if (payload?.type === 'confirm_resolved') {
+        handlers.onConfirmResolved?.(payload);
+      } else if (payload?.type === 'query_result') {
+        finalResult = payload.payload;
+      } else {
+        handlers.onProgress?.(payload);
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      let index: number;
+      while ((index = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        if (block.trim()) flushEvent(block);
+      }
+    }
+    if (buffer.trim()) flushEvent(buffer);
+    if (streamError) throw streamError;
+    if (!finalResult) throw new Error('Query stream ended without a final result.');
+    return finalResult;
   }
 
   async sendEnhancedChatMessage(

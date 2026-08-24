@@ -28,7 +28,10 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from pipeline.contracts import SynthesizedResponse
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +187,7 @@ class AnalystAgent:
             Source,
             Visualization,
         )
-        from .session_context import AnalystSession, clear_session, get_session, set_session
+        from .session_context import AnalystSession, clear_session, set_session
 
         started = time.time()
 
@@ -197,6 +200,7 @@ class AnalystAgent:
         sess = AnalystSession(
             question=request.question,
             session_id=request.session_id,
+            authenticated_user_id=request.authenticated_user_id,
             pin=request.pin,
             pins=list(request.pins),
             bbox=request.bbox,
@@ -217,24 +221,30 @@ class AnalystAgent:
         set_session(sess)
 
         try:
-            answer, tool_calls, evidence = await self._invoke_agent_service(request)
+            answer, _tool_calls, evidence = await self._invoke_agent_service(request)
         except Exception as e:
             logger.exception("[ANALYST] run failed, returning fallback response")
             answer = self._fallback_answer(request, str(e))
-            tool_calls = []
             evidence = []
 
         # Aggregate sources from tool evidence
         sources: List[Source] = []
+        visualizations: List[Visualization] = []
         seen = set()
         for ev in evidence:
-            for src in (ev.get("payload") or {}).get("sources", []) or []:
+            payload = ev.get("payload") or {}
+            for src in payload.get("sources", []) or []:
                 key = (src.get("title"), src.get("uri"))
                 if key in seen:
                     continue
                 seen.add(key)
                 try:
                     sources.append(Source(**src))
+                except Exception:
+                    pass
+            for visualization in payload.get("visualizations", []) or []:
+                try:
+                    visualizations.append(Visualization(**visualization))
                 except Exception:
                     pass
 
@@ -277,7 +287,7 @@ class AnalystAgent:
         return SynthesizedResponse(
             answer=answer,
             sources=sources,
-            visualizations=[],  # tools currently don't emit visualizations
+            visualizations=visualizations,
             structured=structured_by_tool,
             plan=plan,
             elapsed_ms=elapsed_ms,

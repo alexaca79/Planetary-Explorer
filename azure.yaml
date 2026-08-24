@@ -30,6 +30,13 @@ infra:
   path: planetary-explorer/infra
   module: main
 
+workflows:
+  up:
+    steps:
+      - azd: provision
+      - azd: deploy web
+      - azd: deploy api
+
 services:
   web:
     project: ./planetary-explorer/web-ui
@@ -40,3 +47,19 @@ services:
     project: ./planetary-explorer/container-app
     host: containerapp
     language: python
+
+  geofm:
+    project: ./planetary-explorer/geofm-sidecar
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
+
+  geofm-worker:
+    project: ./planetary-explorer/geofm-sidecar
+    host: containerapp
+    docker:
+      path: ./Dockerfile.worker
+      context: .
+      remoteBuild: true

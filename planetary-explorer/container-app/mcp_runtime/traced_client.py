@@ -50,9 +50,14 @@ class PermissionTier(str, Enum):
 # Static tier map keyed off tool-name regex. Patterns are intentionally
 # conservative — anything not matched falls through to READ.
 _TIER_PATTERNS: tuple[tuple[re.Pattern[str], PermissionTier], ...] = (
+    (re.compile(r"^geofm_cancel_"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^delete_|_delete$"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^bulk_ingest_|^batch_ingest_"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^replace_"), PermissionTier.DESTRUCTIVE),
+    (
+        re.compile(r"^geofm_(?:compare|embed|classify|segment|find_similar)"),
+        PermissionTier.WRITE,
+    ),
     (re.compile(r"^create_|^configure_|^ingest_"), PermissionTier.WRITE),
 )
 
@@ -187,6 +192,27 @@ class TracedMcpClient:
         return cls(
             server_id="mpc_public",
             underlying=PublicStacAdapter(),
+            turn_id=turn_id,
+            confirm=confirm,
+        )
+
+    @classmethod
+    def from_geofm(
+        cls,
+        *,
+        turn_id: str | None = None,
+        confirm: _ConfirmHook = _broker_confirm,
+    ) -> "TracedMcpClient | None":
+        """Return a traced GeoFM client when the service is enabled."""
+        try:
+            from connectors.geofm import get_client, is_enabled
+        except Exception:  # noqa: BLE001
+            return None
+        if not is_enabled():
+            return None
+        return cls(
+            server_id="geofm",
+            underlying=get_client(),
             turn_id=turn_id,
             confirm=confirm,
         )

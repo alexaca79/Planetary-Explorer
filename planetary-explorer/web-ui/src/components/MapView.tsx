@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Dataset, API_BASE_URL } from '../services/api';
 import { authenticatedFetch } from '../services/authHelper';
+import { getGeoFmMapFeatures } from '../utils/geofmOverlay';
 // TileUrlGenerator removed - using backend-only tile URL generation (MPC best practice)
 import { getCollectionVisualization, getCollectionConfig } from '../config/collectionConfig';
 import { getCollectionConfig as getRenderingConfig } from '../utils/renderingConfig';
@@ -177,6 +178,12 @@ const MapView: React.FC<MapViewProps> = ({
   
   // Resilience module: facility markers (region-scoped, no pin needed)
   const resilienceMarkersRef = useRef<any[]>([]);
+  const geofmOverlayRef = useRef<{
+    signature: string;
+    map: any;
+    provider: 'azure' | 'leaflet';
+    remove: () => void;
+  } | null>(null);
 
   // Mobility two-pin A->B state
   const [mobilityPinA, setMobilityPinA] = useState<{ lat: number; lng: number; marker: any } | null>(null);
@@ -1538,6 +1545,89 @@ const MapView: React.FC<MapViewProps> = ({
       console.error('Error parsing satellite data:', error);
     }
   }, [lastChatResponse, map]);
+
+  // GeoFM status responses can contain vectors without new satellite data.
+  // Render that existing top-level map_data contract independently so polling
+  // a completed PlanAura run updates the map without retriggering STAC layers.
+  useEffect(() => {
+    const features = getGeoFmMapFeatures(lastChatResponse);
+    if (features === null || !map || !mapLoaded) {
+      return;
+    }
+    if (features.length === 0) {
+      geofmOverlayRef.current?.remove();
+      geofmOverlayRef.current = null;
+      return;
+    }
+
+    const signature = JSON.stringify(features);
+    if (
+      geofmOverlayRef.current?.signature === signature
+      && geofmOverlayRef.current.map === map
+      && geofmOverlayRef.current.provider === mapProvider
+    ) {
+      return;
+    }
+    geofmOverlayRef.current?.remove();
+    geofmOverlayRef.current = null;
+
+    if (mapProvider === 'azure' && window.atlas) {
+      const dataSource = new window.atlas.source.DataSource(`geofm-change-${Date.now()}`);
+      map.sources.add(dataSource);
+      dataSource.add(features);
+
+      const polygonLayer = new window.atlas.layer.PolygonLayer(
+        dataSource,
+        `geofm-polygons-${Date.now()}`,
+        {
+          fillColor: '#ef4444',
+          fillOpacity: 0.34,
+        }
+      );
+      const lineLayer = new window.atlas.layer.LineLayer(
+        dataSource,
+        `geofm-outlines-${Date.now()}`,
+        {
+          strokeColor: '#7f1d1d',
+          strokeWidth: 2,
+        }
+      );
+      map.layers.add([polygonLayer, lineLayer]);
+      geofmOverlayRef.current = {
+        signature,
+        map,
+        provider: 'azure',
+        remove: () => {
+          try { map.layers.remove(polygonLayer); } catch (_) { /* already removed */ }
+          try { map.layers.remove(lineLayer); } catch (_) { /* already removed */ }
+          try { map.sources.remove(dataSource); } catch (_) { /* already removed */ }
+        },
+      };
+      return;
+    }
+
+    if (mapProvider === 'leaflet' && window.L) {
+      const layer = window.L.geoJSON(
+        { type: 'FeatureCollection', features },
+        {
+          style: {
+            color: '#7f1d1d',
+            weight: 2,
+            fillColor: '#ef4444',
+            fillOpacity: 0.34,
+          },
+        }
+      ).addTo(map);
+      geofmOverlayRef.current = {
+        signature,
+        map,
+        provider: 'leaflet',
+        remove: () => {
+          try { layer.remove(); } catch (_) { /* already removed */ }
+        },
+      };
+    }
+  }, [lastChatResponse, map, mapLoaded, mapProvider]);
 
   // Add map update function for bounding box
   // minZoom parameter enforces a minimum zoom level (e.g., 10 for MODIS 1km data)

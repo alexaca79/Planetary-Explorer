@@ -63,6 +63,9 @@ class AnalysisRequest(BaseModel):
 
     question: str
     session_id: str
+    # Opaque owner derived by the authenticated API boundary. Never accept
+    # this value directly from an untrusted client field.
+    authenticated_user_id: Optional[str] = None
 
     # Spatial context
     bbox: Optional[Tuple[float, float, float, float]] = None  # WGS84 minx,miny,maxx,maxy

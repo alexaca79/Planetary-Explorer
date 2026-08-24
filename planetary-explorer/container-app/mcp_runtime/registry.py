@@ -63,6 +63,23 @@ class McpRegistry:
                     api_key_env="MPC_MCP_API_KEY",
                 )
             )
+        geofm_url = (os.getenv("GEOFM_MCP_URL") or "").strip()
+        geofm_enabled = (os.getenv("GEOFM_ENABLED") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if geofm_url and geofm_enabled:
+            servers.append(
+                McpServerSpec(
+                    server_id="geofm",
+                    display_name="Geospatial Foundation Models",
+                    url=geofm_url,
+                    enabled=True,
+                    api_key_env="GEOFM_MCP_API_KEY",
+                )
+            )
         logger.info(
             "mcp registry discovered %d server(s): %s",
             len(servers),

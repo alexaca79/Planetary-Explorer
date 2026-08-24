@@ -369,7 +369,6 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
         reason: str,
     ) -> Dict[str, Any]:
         loc = decision.location or "the requested area"
-        sq = decision.stac_query or request.question
         return {
             "pipeline_v2": True,
             "action": "LOAD",
@@ -481,8 +480,23 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
         _tools_used = (
             [s.analyzer for s in plan.steps] if plan else []
         )
-        _data_source = (
+        _catalog_source = (
             "MPC Pro" if getattr(request, "stac_mode", "public") == "pro" else "Public PC"
+        )
+        _data_source = (
+            f"PlanAura + {_catalog_source}"
+            if any("geofm" in tool for tool in _tools_used)
+            else _catalog_source
+        )
+        _visualizations = [v.model_dump() for v in response.visualizations]
+        _map_data = next(
+            (
+                visualization.get("spec", {}).get("data")
+                for visualization in _visualizations
+                if visualization.get("kind") == "vector_layer"
+                and isinstance(visualization.get("spec", {}).get("data"), dict)
+            ),
+            None,
         )
         return {
             "pipeline_v2": True,
@@ -491,7 +505,8 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
             "plan": plan.model_dump() if plan else None,
             "answer": response.answer,
             "sources": [s.model_dump() for s in response.sources],
-            "visualizations": [v.model_dump() for v in response.visualizations],
+            "visualizations": _visualizations,
+            "map_data": _map_data,
             "structured": {
                 **response.structured,
                 "layer2_engine": "analyst_agent",

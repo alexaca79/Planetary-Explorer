@@ -26,17 +26,16 @@ Report: pytest tests/test_get_started_queries.py --tb=line -q
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 # Make sure the new package and pipeline are importable.
 from agents.analyst_agent import AnalystAgent, get_analyst_agent  # noqa: F401
 from agents.analyst_agent.tools import create_analyst_functions
-from pipeline.contracts import AnalysisRequest, SynthesizedResponse, AnalysisPlan, AnalysisStep
+from pipeline.contracts import AnalysisPlan, AnalysisRequest, SynthesizedResponse
 
 
 # ---------------------------------------------------------------------------
@@ -497,11 +496,12 @@ def _make_fake_invoke(expected_tools: List[str]):
 
 
 def test_tool_catalog_has_all_required_tools():
-    """REQ-ARCH-1 locks an 11-tool catalog. Verify every name is present
+    """REQ-ARCH-1 locks the tool catalog. Verify every name is present
     and callable."""
     functions = create_analyst_functions()
     names = {f.__name__ for f in functions}
     expected = {
+        "search_graphrag",
         "general_earth_qa",
         "describe_map_screenshot",
         "sample_raster_value",
@@ -511,6 +511,10 @@ def test_tool_catalog_has_all_required_tools():
         "get_extreme_weather_projection",
         "compute_netcdf_trend",
         "compare_temporal",
+        "list_geofm_models",
+        "compare_with_geofm",
+        "get_geofm_run",
+        "cancel_geofm_run",
         "ask_user_to_clarify",
     }
     missing = expected - names
@@ -667,7 +671,6 @@ async def test_analyze_agent_surfaces_clarify_correctly():
 def test_print_coverage_matrix(capsys):
     """Not really a test — emits a markdown-friendly coverage table
     that's nice to read in the pytest output."""
-    rows = []
     by_module: Dict[int, List[Dict[str, Any]]] = {}
     for case in ALL_QUERIES:
         by_module.setdefault(case["module"], []).append(case)

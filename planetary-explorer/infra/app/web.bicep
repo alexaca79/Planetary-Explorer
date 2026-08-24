@@ -55,6 +55,16 @@ param mpcMcpUrl string = ''
 @allowed(['true', 'false'])
 param useMpcMcp string = 'false'
 
+@description('Internal URL of the GeoFM MCP control plane. Empty disables GeoFM calls.')
+param geoFmMcpUrl string = ''
+
+@description('Enable GeoFM tools in the AnalystAgent when the internal endpoint is deployed.')
+param enableGeoFm bool = false
+
+@secure()
+@description('Shared API key for backend-to-GeoFM MCP calls. Empty disables key authentication.')
+param geoFmMcpApiKey string = ''
+
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
 // the deploy* flags on the infra side — e.g. an operator can deploy the
@@ -128,6 +138,9 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
         external: true
         targetPort: 8080
         allowInsecure: false
+        stickySessions: {
+          affinity: 'sticky'
+        }
         traffic: [
           {
             latestRevision: true
@@ -165,6 +178,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
         {
           name: 'microsoft-client-secret'
           value: microsoftEntraClientSecret
+        }
+      ] : [], !empty(geoFmMcpApiKey) ? [
+        {
+          name: 'geofm-mcp-api-key'
+          value: geoFmMcpApiKey
         }
       ] : [],
       // Forecast Agent provider URLs sourced from Key Vault via system MI.
@@ -224,7 +242,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'CORS_ORIGINS'
-              value: '*'  // Allow all origins - can be restricted to specific domains in production
+              value: !empty(frontendUrl) ? frontendUrl : '*'
             }
             {
               // MPC Pro MCP sidecar URL (internal Container Apps FQDN). Empty
@@ -236,6 +254,14 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'USE_MPC_MCP'
               value: useMpcMcp
+            }
+            {
+              name: 'GEOFM_ENABLED'
+              value: enableGeoFm ? 'true' : 'false'
+            }
+            {
+              name: 'GEOFM_MCP_URL'
+              value: geoFmMcpUrl
             }
             {
               // UI feature flags. Read by the backend's /api/config
@@ -327,6 +353,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'OPENAI_API_KEY'
               secretRef: 'openai-api-key'
+            }
+          ] : [], !empty(geoFmMcpApiKey) ? [
+            {
+              name: 'GEOFM_MCP_API_KEY'
+              secretRef: 'geofm-mcp-api-key'
             }
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the

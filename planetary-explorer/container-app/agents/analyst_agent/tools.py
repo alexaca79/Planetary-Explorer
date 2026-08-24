@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 from .session_context import get_session
@@ -474,6 +475,266 @@ async def compare_temporal(
 
 
 # ---------------------------------------------------------------------------
+# GEOSPATIAL FOUNDATION MODEL TOOLS
+# ---------------------------------------------------------------------------
+
+
+def _parse_stac_datetime(item: Dict[str, Any]) -> datetime:
+    properties = item.get("properties") or {}
+    raw = properties.get("datetime") or properties.get("start_datetime") or ""
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def _select_geofm_pair(
+    before_item_id: Optional[str],
+    after_item_id: Optional[str],
+) -> tuple[str, str]:
+    session = get_session()
+    supported = {"hls2-s30", "hls2-l30"}
+    candidates = [
+        item
+        for item in session.stac_items
+        if isinstance(item, dict)
+        and item.get("id")
+        and (item.get("collection") or item.get("collection_id")) in supported
+    ]
+    by_id = {str(item["id"]): item for item in candidates}
+    if before_item_id or after_item_id:
+        if not before_item_id or not after_item_id:
+            raise ValueError("Provide both before_item_id and after_item_id, or neither.")
+        if before_item_id not in by_id or after_item_id not in by_id:
+            raise ValueError("Both GeoFM source items must be loaded HLS items in this map session.")
+        first = by_id[before_item_id]
+        second = by_id[after_item_id]
+        if (first.get("collection") or first.get("collection_id")) != (
+            second.get("collection") or second.get("collection_id")
+        ):
+            raise ValueError("GeoFM source items must come from the same HLS collection.")
+        return before_item_id, after_item_id
+
+    collection_order = [
+        collection
+        for collection in session.loaded_collections
+        if collection in supported
+    ] + sorted(supported)
+    for collection in dict.fromkeys(collection_order):
+        same_collection = [
+            item
+            for item in candidates
+            if (item.get("collection") or item.get("collection_id")) == collection
+        ]
+        if len(same_collection) < 2:
+            continue
+        ordered = sorted(same_collection, key=_parse_stac_datetime)
+        return str(ordered[0]["id"]), str(ordered[-1]["id"])
+    raise ValueError("Load at least two HLS scenes from the same collection before using GeoFM.")
+
+
+def _geofm_aoi() -> Dict[str, Any]:
+    from pyproj import Geod
+
+    session = get_session()
+    geod = Geod(ellps="WGS84")
+    if session.bbox:
+        west, south, east, north = session.bbox
+        if west >= east or south >= north:
+            raise ValueError("The current map bounds do not form a valid GeoFM AOI.")
+        center_lon = (west + east) / 2
+        center_lat = (south + north) / 2
+        width_m = abs(geod.inv(west, center_lat, east, center_lat)[2])
+        height_m = abs(geod.inv(center_lon, south, center_lon, north)[2])
+        if width_m > 15_360 or height_m > 15_360:
+            raise ValueError(
+                "Zoom the map to an area no larger than 15.36 km by 15.36 km for PlanAura."
+            )
+    elif session.pin:
+        latitude, longitude = session.pin
+        west = geod.fwd(longitude, latitude, 270, 1000)[0]
+        east = geod.fwd(longitude, latitude, 90, 1000)[0]
+        south = geod.fwd(longitude, latitude, 180, 1000)[1]
+        north = geod.fwd(longitude, latitude, 0, 1000)[1]
+    else:
+        raise ValueError("GeoFM comparison needs current map bounds or a dropped pin.")
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [west, south],
+                [east, south],
+                [east, north],
+                [west, north],
+                [west, south],
+            ]
+        ],
+    }
+
+
+def _geofm_result(result: Any) -> Dict[str, Any]:
+    envelope = result if isinstance(result, dict) else {"summary": str(result)}
+    structured = envelope.get("payload") or {}
+    references = envelope.get("evidence") or []
+    sources = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            continue
+        reference_kind = reference.get("kind")
+        source_kind = "dataset" if reference_kind == "stac_item" else (
+            "raster" if reference_kind == "artefact" else "api"
+        )
+        sources.append(
+            {
+                "title": str(reference.get("identifier") or "GeoFM evidence"),
+                "uri": reference.get("uri"),
+                "kind": source_kind,
+            }
+        )
+    status = structured.get("status")
+    out: Dict[str, Any] = {
+        "success": status != "failed",
+        "answer": envelope.get("summary") or "GeoFM request completed.",
+        "structured": structured,
+        "sources": sources,
+        "warnings": envelope.get("warnings") or [],
+        "error": structured.get("error"),
+    }
+    features = structured.get("features")
+    if status == "complete" and isinstance(features, list) and features:
+        out["visualizations"] = [
+            {
+                "kind": "vector_layer",
+                "title": "PlanAura contextual change",
+                "spec": {
+                    "data": {"type": "FeatureCollection", "features": features},
+                    "metric": "cosine_distance",
+                    "threshold": (structured.get("statistics") or {}).get("threshold"),
+                },
+            }
+        ]
+    return out
+
+
+async def list_geofm_models() -> Dict[str, Any]:
+    """List GeoFM profiles with exact revisions and deployment gates."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        out = _geofm_result(await client.call("geofm_list_models", {}))
+    except Exception as error:
+        logger.exception("list_geofm_models failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("list_geofm_models", out)
+    return out
+
+
+async def compare_with_geofm(
+    before_item_id: Optional[str] = None,
+    after_item_id: Optional[str] = None,
+    threshold: float = 0.35,
+    max_features: int = 10,
+) -> Dict[str, Any]:
+    """Submit a durable PlanAura comparison for two loaded HLS scenes.
+
+    Leave both item ids empty to use the earliest and latest loaded scenes
+    from one HLS collection. The operation requires user approval because it
+    starts billed GPU work.
+    """
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    session = get_session()
+    client = TracedMcpClient.from_geofm(turn_id=session.session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
+        request = {
+            "geometry": _geofm_aoi(),
+            "item_id_epoch_a": epoch_a,
+            "item_id_epoch_b": epoch_b,
+            "profile": "planaura_hls",
+            "correlation_id": session.session_id,
+            "requested_by": session.authenticated_user_id or f"session:{session.session_id}",
+            "threshold": threshold,
+            "max_features": max_features,
+        }
+        out = _geofm_result(
+            await client.call("geofm_compare_epochs", {"request": request})
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM submission was not approved."}
+    except Exception as error:
+        logger.exception("compare_with_geofm failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("compare_with_geofm", out)
+    return out
+
+
+async def get_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Poll a durable GeoFM run and return validated results when complete."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        out = _geofm_result(
+            await client.call(
+                "geofm_get_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": get_session().authenticated_user_id
+                    or f"session:{get_session().session_id}",
+                },
+            )
+        )
+    except Exception as error:
+        logger.exception("get_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("get_geofm_run", out)
+    return out
+
+
+async def cancel_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Cancel a queued or running GeoFM operation after user approval."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        out = _geofm_result(
+            await client.call(
+                "geofm_cancel_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": get_session().authenticated_user_id
+                    or f"session:{get_session().session_id}",
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM cancellation was not approved."}
+    except Exception as error:
+        logger.exception("cancel_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("cancel_geofm_run", out)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CLARIFICATION TOOL (REQ-CLARIFY-2)
 # ---------------------------------------------------------------------------
 
@@ -524,5 +785,9 @@ def create_analyst_functions():
         get_extreme_weather_projection,
         compute_netcdf_trend,
         compare_temporal,
+        list_geofm_models,
+        compare_with_geofm,
+        get_geofm_run,
+        cancel_geofm_run,
         ask_user_to_clarify,
     }

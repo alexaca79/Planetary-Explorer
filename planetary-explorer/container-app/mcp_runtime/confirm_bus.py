@@ -97,6 +97,18 @@ async def request_confirmation(
     wait_timeout = timeout if timeout is not None else DEFAULT_CONFIRM_TIMEOUT_SECONDS
     try:
         await asyncio.wait_for(pending.event.wait(), timeout=wait_timeout)
+    except asyncio.CancelledError:
+        async with _lock:
+            _pending.pop(trace_id, None)
+        await emit_trace(
+            {
+                "type": "confirm_resolved",
+                "trace_id": trace_id,
+                "approved": False,
+                "reason": "request_cancelled",
+            }
+        )
+        raise
     except asyncio.TimeoutError:
         async with _lock:
             _pending.pop(trace_id, None)

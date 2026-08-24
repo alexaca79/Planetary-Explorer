@@ -7,6 +7,13 @@ metadata:
 infra:
   provider: bicep
 
+workflows:
+  up:
+    steps:
+      - azd: provision
+      - azd: deploy web
+      - azd: deploy api
+
 services:
   web:
     project: ./web-ui
@@ -17,3 +24,19 @@ services:
     project: ./container-app
     host: containerapp
     language: python
+
+  geofm:
+    project: ./geofm-sidecar
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
+
+  geofm-worker:
+    project: ./geofm-sidecar
+    host: containerapp
+    docker:
+      path: ./Dockerfile.worker
+      context: .
+      remoteBuild: true

@@ -22,6 +22,7 @@ class AnalystSession:
 
     question: str = ""
     session_id: str = "default"
+    authenticated_user_id: Optional[str] = None
     pin: Optional[Tuple[float, float]] = None
     pins: List[Tuple[float, float]] = field(default_factory=list)
     bbox: Optional[Tuple[float, float, float, float]] = None

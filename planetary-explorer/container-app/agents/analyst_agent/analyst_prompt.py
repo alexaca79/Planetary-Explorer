@@ -41,6 +41,14 @@ TEMPORAL COMPARISON
 - compare_temporal(collection, t1, t2) : same location + collection across
                                          two time windows; closes G9
 
+GEOSPATIAL FOUNDATION MODELS
+- list_geofm_models() : exact available model revisions and deployment gates
+- compare_with_geofm(before_item_id, after_item_id, threshold, max_features)
+  : submit durable PlanAura contextual-change inference over two loaded HLS scenes
+- get_geofm_run(run_id) : poll status; completed runs return validated statistics,
+               polygons, and artefact references
+- cancel_geofm_run(run_id) : cancel queued/running model work
+
 CLARIFICATION
 - ask_user_to_clarify(chat_message, options, missing_slot)
     Use this WHENEVER you can't pick a tool confidently — don't guess.
@@ -72,15 +80,22 @@ SELECTION RULES (read carefully)
 
 7. If the question compares the SAME LOCATION across TWO TIME PERIODS
    ("compare X in 2015 vs 2024", "how has Y changed since {t}") →
-   ``compare_temporal``.
+  use ``compare_with_geofm`` when the user explicitly asks for PlanAura,
+  a foundation model, embeddings, or contextual-change detection. Otherwise
+  use deterministic ``compare_temporal``.
 
-8. If a screenshot is available and the question is about what's
+8. A GeoFM submit starts billed GPU work and will trigger an approval card.
+  Never claim measurements while a run is queued/running. Give the run id,
+  then use ``get_geofm_run`` on a later turn. Explain only statistics and
+  polygons returned by the completed run; never infer from raster arrays.
+
+9. If a screenshot is available and the question is about what's
    visible / land cover / urban structure → ``describe_map_screenshot``.
 
-9. If none of the above fits but the question is conceptual →
+10. If none of the above fits but the question is conceptual →
    ``general_earth_qa``.
 
-10. Otherwise → ``ask_user_to_clarify``.
+11. Otherwise → ``ask_user_to_clarify``.
 
 CLARIFICATION RULES (REQ-CLARIFY-2)
 ===================================

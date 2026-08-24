@@ -4387,6 +4387,23 @@ async def unified_query_processor(request: Request):
         # Support both 'query' and 'user_query' keys (frontend uses 'user_query')
         natural_query = req_body.get('query') or req_body.get('user_query') or 'No query provided'
         session_id = req_body.get('session_id') or req_body.get('conversation_id')
+        authenticated_user = getattr(request.state, "user", {}) or {}
+        authenticated_subject = (
+            authenticated_user.get("oid")
+            or authenticated_user.get("sub")
+            or authenticated_user.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
+        )
+        authenticated_tenant = authenticated_user.get("tid")
+        if authenticated_subject:
+            req_body["_authenticated_user_id"] = (
+                f"{authenticated_tenant}:{authenticated_subject}"
+                if authenticated_tenant
+                else str(authenticated_subject)
+            )
+        else:
+            # Auth can be disabled for local development. Keep those runs
+            # session-scoped without trusting a caller-provided owner field.
+            req_body["_authenticated_user_id"] = f"session:{session_id or 'anonymous'}"
         pin = req_body.get('pin') or req_body.get('vision_pin')  # Pin {lat, lng} (web-ui sends 'vision_pin')
         selected_model = req_body.get('model', 'gpt-5')  # Model selection from frontend, default to gpt-5
 
@@ -4762,6 +4779,7 @@ async def unified_query_processor(request: Request):
                 "response": v2_result.get("answer", ""),
                 "sources": v2_result.get("sources", []),
                 "visualizations": v2_result.get("visualizations", []),
+                "map_data": v2_result.get("map_data"),
                 "structured": v2_result.get("structured", {}),
                 "pipeline": "v2",
                 "action": v2_result.get("action"),
@@ -7687,6 +7705,45 @@ async def unified_query_processor(request: Request):
         logger.error(f"[FAIL] Unified query processor error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@app.post("/api/query/stream")
+async def unified_query_processor_stream(request: Request):
+    """Stream a standard query together with MCP trace and approval events.
+
+    The terminal ``query_result`` payload is byte-for-byte equivalent to the
+    buffered ``/api/query`` response body. This wrapper exists so normal
+    AnalystAgent turns can surface WRITE/DESTRUCTIVE confirmation cards.
+    """
+    from fastapi.responses import StreamingResponse
+    from _framework import merge_with_trace
+
+    async def _source():
+        result = await unified_query_processor(request)
+        if isinstance(result, JSONResponse):
+            payload = json.loads(result.body.decode("utf-8"))
+        elif isinstance(result, dict):
+            payload = result
+        else:
+            body = getattr(result, "body", b"")
+            payload = json.loads(body.decode("utf-8")) if body else {"response": str(result)}
+        yield {"type": "query_result", "payload": payload}
+
+    async def _sse():
+        try:
+            async for event in merge_with_trace(_source()):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[QUERY.stream] failed")
+            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 @app.post("/api/stac-search")
 async def stac_search(request: Request):

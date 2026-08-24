@@ -1,0 +1,190 @@
+"""PlanAura model adapter isolated from the MCP control process."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+
+import numpy as np
+
+from .policy import PLAN_AURA_HLS, ModelDescriptor
+
+
+class ModelRuntimeError(RuntimeError):
+    """Raised when pinned model execution cannot remain reproducible."""
+
+
+def verify_checkpoint(
+    path: Path,
+    expected_sha256: str,
+    expected_size_bytes: int | None = None,
+) -> None:
+    """Fail before model construction when checkpoint bytes differ from policy."""
+    if not path.is_file():
+        raise ModelRuntimeError(f"Checkpoint '{path}' does not exist.")
+    if expected_size_bytes is not None and path.stat().st_size != expected_size_bytes:
+        raise ModelRuntimeError(
+            f"Checkpoint size mismatch: expected {expected_size_bytes}, "
+            f"received {path.stat().st_size}."
+        )
+    with path.open("rb") as stream:
+        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+    if actual.casefold() != expected_sha256.casefold():
+        raise ModelRuntimeError(
+            f"Checkpoint hash mismatch: expected {expected_sha256}, received {actual}."
+        )
+
+
+def build_planaura_config(descriptor: ModelDescriptor, checkpoint_path: Path) -> dict:
+    """Build the exact upstream configuration for two-epoch HLS inference."""
+    return {
+        "num_frames": 2,
+        "change_map": {"return": True},
+        "feature_maps": {"return": False},
+        "model_params": {
+            "load_params": {
+                "source": "local",
+                "checkpoint_path": str(checkpoint_path),
+                "repo_id": descriptor.model_id,
+                "model_name": descriptor.checkpoint_filename,
+            },
+            "keep_pos_embedding": True,
+            "restore_weights_only": True,
+            "backbone": "planaura_reconstruction",
+            "bands": ["B02", "B03", "B04", "B8A", "B11", "B12"],
+            "img_size": descriptor.tile_size_pixels,
+            "depth": 12,
+            "decoder_depth": 8,
+            "patch_size": 16,
+            "patch_stride": descriptor.patch_stride_pixels,
+            "embed_attention": True,
+            "embed_dim": 768,
+            "decoder_embed_dim": 512,
+            "num_heads": 12,
+            "decoder_num_heads": 16,
+            "mask_ratio": 0.75,
+            "tubelet_size": 1,
+            "no_data": descriptor.source_no_data_value,
+            "no_data_float": descriptor.model_no_data_value,
+            "data_mean": list(descriptor.normalization_mean),
+            "data_std": list(descriptor.normalization_std),
+        },
+    }
+
+
+def normalize_epochs(raw_values: np.ndarray, descriptor: ModelDescriptor) -> np.ndarray:
+    """Normalize a ``B,C,T,H,W`` source tensor using PlanAura training stats."""
+    expected_shape = (
+        1,
+        len(descriptor.normalization_mean),
+        2,
+        descriptor.tile_size_pixels,
+        descriptor.tile_size_pixels,
+    )
+    if raw_values.shape != expected_shape:
+        raise ModelRuntimeError(
+            f"PlanAura input shape must be {expected_shape}, received {raw_values.shape}."
+        )
+    values = raw_values.astype(np.float32, copy=True)
+    means = np.asarray(descriptor.normalization_mean, dtype=np.float32).reshape(
+        1, -1, 1, 1, 1
+    )
+    deviations = np.asarray(descriptor.normalization_std, dtype=np.float32).reshape(
+        1, -1, 1, 1, 1
+    )
+    invalid = ~np.isfinite(values) | (values == descriptor.source_no_data_value)
+    values = (values - means) / deviations
+    values[invalid] = descriptor.model_no_data_value
+    return values
+
+
+def similarity_to_distance(similarity: np.ndarray) -> np.ndarray:
+    """Convert PlanAura cosine similarity to bounded change distance."""
+    result = np.full(similarity.shape, np.nan, dtype=np.float32)
+    valid = np.isfinite(similarity) & (similarity != -100.0)
+    result[valid] = np.clip(1.0 - similarity[valid], 0.0, 2.0)
+    return result
+
+
+class PlanAuraAdapter:
+    """Lazy GPU adapter around the pinned upstream PlanAura implementation."""
+
+    def __init__(self, descriptor: ModelDescriptor = PLAN_AURA_HLS) -> None:
+        self._descriptor = descriptor
+        self._model = None
+
+    def infer(self, normalized_values: np.ndarray) -> np.ndarray:
+        """Return a full-resolution cosine-distance map for two HLS epochs."""
+        model = self._get_model()
+        try:
+            import torch
+            import torch.nn.functional as functional
+        except ImportError as exc:
+            raise ModelRuntimeError("The PlanAura worker requires PyTorch.") from exc
+        if not torch.cuda.is_available():
+            raise ModelRuntimeError("PlanAura inference requires an available CUDA GPU.")
+
+        tensor = torch.from_numpy(normalized_values).to(device="cuda", dtype=torch.float32)
+        use_autocast = os.getenv("GEOFM_AUTOCAST_FLOAT16", "true").casefold() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        with torch.inference_mode(), torch.cuda.amp.autocast(enabled=use_autocast):
+            _, (similarity, _), _ = model(tensor)
+            similarity = similarity.float()
+            valid = similarity != -100.0
+            numerator = functional.interpolate(
+                torch.where(valid, similarity, torch.zeros_like(similarity))[:, None],
+                size=(self._descriptor.tile_size_pixels, self._descriptor.tile_size_pixels),
+                mode="bilinear",
+                align_corners=False,
+            )
+            denominator = functional.interpolate(
+                valid.float()[:, None],
+                size=(self._descriptor.tile_size_pixels, self._descriptor.tile_size_pixels),
+                mode="bilinear",
+                align_corners=False,
+            )
+            upsampled = torch.where(
+                denominator > 0.9,
+                numerator / denominator.clamp_min(1e-6),
+                torch.full_like(numerator, -100.0),
+            )[0, 0]
+        return similarity_to_distance(upsampled.detach().cpu().numpy())
+
+    def _get_model(self):
+        if self._model is not None:
+            return self._model
+        try:
+            import torch
+            from huggingface_hub import hf_hub_download
+            from planaura.networks.network_generator import resume_pretrained_network
+        except ImportError as exc:
+            raise ModelRuntimeError(
+                "The GPU image must contain the pinned PlanAura runtime and PyTorch stack."
+            ) from exc
+        if not torch.cuda.is_available():
+            raise ModelRuntimeError("PlanAura inference requires an available CUDA GPU.")
+
+        configured_path = (os.getenv("GEOFM_CHECKPOINT_PATH") or "").strip()
+        checkpoint = Path(configured_path) if configured_path else Path(
+            hf_hub_download(
+                repo_id=self._descriptor.model_id,
+                filename=self._descriptor.checkpoint_filename,
+                revision=self._descriptor.model_revision,
+            )
+        )
+        verify_checkpoint(
+            checkpoint,
+            self._descriptor.checkpoint_sha256,
+            self._descriptor.checkpoint_size_bytes,
+        )
+        config = build_planaura_config(self._descriptor, checkpoint)
+        model, _, _, _, _ = resume_pretrained_network(config=config)
+        model = model.to("cuda").eval()
+        model.prepare_to_infer()
+        self._model = model
+        return model

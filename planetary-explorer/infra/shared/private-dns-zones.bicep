@@ -14,6 +14,7 @@ var dnsZones = cloudEnvironment == 'Government' ? {
   keyVault: 'privatelink.vaultcore.usgovcloudapi.net'
   storageBlob: 'privatelink.blob.core.usgovcloudapi.net'
   storageFile: 'privatelink.file.core.usgovcloudapi.net'
+  storageQueue: 'privatelink.queue.core.usgovcloudapi.net'
   cognitiveServices: 'privatelink.cognitiveservices.azure.us'
   openai: 'privatelink.openai.azure.us'
   search: 'privatelink.search.windows.us'
@@ -27,6 +28,8 @@ var dnsZones = cloudEnvironment == 'Government' ? {
   storageBlob: 'privatelink.blob.core.windows.net'
   #disable-next-line no-hardcoded-env-urls // Private DNS zone names must be exact strings
   storageFile: 'privatelink.file.core.windows.net'
+  #disable-next-line no-hardcoded-env-urls // Private DNS zone names must be exact strings
+  storageQueue: 'privatelink.queue.core.windows.net'
   cognitiveServices: 'privatelink.cognitiveservices.azure.com'
   openai: 'privatelink.openai.azure.com'
   search: 'privatelink.search.windows.net'
@@ -77,6 +80,22 @@ resource dnsZoneStorageFile 'Microsoft.Network/privateDnsZones@2024-06-01' = {
 resource dnsZoneStorageFileLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
   parent: dnsZoneStorageFile
   name: 'link-storage-file'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnetId }
+    registrationEnabled: false
+  }
+}
+
+// ── Storage (Queue) ──
+resource dnsZoneStorageQueue 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: dnsZones.storageQueue
+  location: 'global'
+  tags: tags
+}
+resource dnsZoneStorageQueueLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: dnsZoneStorageQueue
+  name: 'link-storage-queue'
   location: 'global'
   properties: {
     virtualNetwork: { id: vnetId }
@@ -204,6 +223,7 @@ resource dnsZoneServicesAiLink 'Microsoft.Network/privateDnsZones/virtualNetwork
 output keyVaultDnsZoneId string = dnsZoneKeyVault.id
 output storageBlobDnsZoneId string = dnsZoneStorageBlob.id
 output storageFileDnsZoneId string = dnsZoneStorageFile.id
+output storageQueueDnsZoneId string = dnsZoneStorageQueue.id
 output cognitiveServicesDnsZoneId string = dnsZoneCognitiveServices.id
 output openaiDnsZoneId string = dnsZoneOpenAI.id
 output searchDnsZoneId string = dnsZoneSearch.id

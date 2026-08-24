@@ -12,6 +12,9 @@ param location string
 @description('Container image name')
 param containerImage string = ''
 
+@description('Frontend origin allowed to make credentialed API requests, for example https://app.example.com')
+param frontendUrl string = ''
+
 @description('Azure OpenAI API Key')
 @secure()
 param azureOpenAiApiKey string = ''
@@ -147,6 +150,26 @@ param mpcDefaultGeoCatalogUri string = ''
 @allowed(['true', 'false'])
 param useMpcMcp string = 'false'
 
+// GeoFM capability (internal MCP control plane + queue-scaled GPU worker).
+@description('Deploy the Planetary Explorer GeoFM capability. Requires a region that supports the selected serverless GPU profile and available GPU quota.')
+param deployGeoFm bool = false
+
+@description('Create the GeoFM MCP and worker apps. Set false for infrastructure-first GPU quota validation.')
+param deployGeoFmServices bool = true
+
+@description('Region-supported serverless GPU workload profile type. Validate with az containerapp env workload-profile list-supported before deployment.')
+param geoFmGpuProfileType string = 'Consumption-GPU-NC8as-T4'
+
+@description('Allow jobs to use the conditional PlanAura profile after the exact worker image passes GPU validation.')
+param geoFmAllowConditional bool = false
+
+@description('Expose the API-key-protected GeoFM MCP endpoint for clients in another Container Apps environment.')
+param geoFmMcpExternalIngress bool = false
+
+@secure()
+@description('Shared API key for backend-to-GeoFM MCP calls. Required with at least 32 characters when deployGeoFm=true.')
+param geoFmMcpApiKey string = ''
+
 @description('Dynamic collection selector mode. off | shadow | v2. When v2, the natural-language -> STAC collection id mapping uses the live CollectionIndex + constrained-LLM pick pipeline (collection_selector.py) instead of the legacy LoadAgent prompt catalog. Passed to web.bicep as COLLECTION_SELECTOR.')
 @allowed([ 'off', 'shadow', 'v2' ])
 param collectionSelectorMode string = 'v2'
@@ -264,11 +287,14 @@ module appsEnv './shared/apps-env.bicep' = {
     // internal = false so the Container App has a public FQDN for the React SPA.
     infrastructureSubnetId: enablePrivateEndpoints ? (networking.?outputs.?containerAppsSubnetId ?? '') : ''
     internal: false
+    enableGeoFmGpu: deployGeoFm
+    geoFmGpuProfileName: 'geofm-gpu'
+    geoFmGpuProfileType: geoFmGpuProfileType
   }
 }
 
 // Storage Account (required for AI Foundry Hub)
-module storage './shared/storage.bicep' = if (deployAIFoundry) {
+module storage './shared/storage.bicep' = if (deployAIFoundry || deployGeoFm) {
   name: 'storage'
   scope: rg
   params: {
@@ -276,6 +302,7 @@ module storage './shared/storage.bicep' = if (deployAIFoundry) {
     location: location
     tags: tags
     enablePrivateEndpoints: enablePrivateEndpoints
+    deployGeoFmResources: deployGeoFm
   }
 }
 
@@ -358,7 +385,7 @@ module peKeyVault './shared/private-endpoint.bicep' = if (enablePrivateEndpoints
   }
 }
 
-module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployAIFoundry) {
+module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && (deployAIFoundry || deployGeoFm)) {
   name: 'pe-storage-blob'
   scope: rg
   params: {
@@ -369,6 +396,20 @@ module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoi
     groupId: 'blob'
     subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
     privateDnsZoneId: privateDnsZones.?outputs.?storageBlobDnsZoneId ?? ''
+  }
+}
+
+module peStorageQueue './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployGeoFm) {
+  name: 'pe-storage-queue'
+  scope: rg
+  params: {
+    name: 'pe-st-queue-${resourceToken}'
+    location: location
+    tags: tags
+    serviceResourceId: storage.?outputs.?id ?? ''
+    groupId: 'queue'
+    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
+    privateDnsZoneId: privateDnsZones.?outputs.?storageQueueDnsZoneId ?? ''
   }
 }
 
@@ -431,6 +472,26 @@ resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing
   scope: rg
 }
 
+module geoFm './app/geofm.bicep' = if (deployGeoFm && deployGeoFmServices) {
+  name: 'geofm'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}geofm-${resourceToken}'
+    workerName: '${abbrs.appContainerApps}geofm-worker-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerRegistryName: registry.outputs.name
+    storageAccountName: storage.?outputs.?name ?? ''
+    storageBlobEndpoint: storage.?outputs.?blobEndpoint ?? ''
+    storageQueueEndpoint: storage.?outputs.?queueEndpoint ?? ''
+    gpuWorkloadProfileName: 'geofm-gpu'
+    isConditionalModelAllowed: geoFmAllowConditional
+    mcpExternalIngress: geoFmMcpExternalIngress
+    mcpApiKey: geoFmMcpApiKey
+  }
+}
+
 
 // Only deploy web container app if containerImage is provided
 // The backend job in CI/CD handles container deployment separately
@@ -444,6 +505,7 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     containerAppsEnvironmentName: appsEnv.outputs.name
     containerRegistryName: registry.outputs.name
     imageName: '${registry.outputs.loginServer}/${containerImage}'
+    frontendUrl: frontendUrl
     // AI Foundry / Azure OpenAI: prefer managed-identity (DefaultAzureCredential
     // in the container falls through to MI when AZURE_OPENAI_API_KEY is empty).
     // We do NOT call listKeys() on the Foundry account because many managed
@@ -470,6 +532,9 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     // been applied.
     mpcMcpUrl: deployMpcMcp ? (mpcMcp.?outputs.?uri ?? '') : ''
     useMpcMcp: useMpcMcp
+    geoFmMcpUrl: (deployGeoFm && deployGeoFmServices) ? (geoFm.?outputs.?mcpUri ?? '') : ''
+    enableGeoFm: deployGeoFm && deployGeoFmServices
+    geoFmMcpApiKey: geoFmMcpApiKey
     // Feature flags surfaced to the UI via /api/config. These are
     // independent of the deploy* flags so an operator can disable a
     // feature's UI without tearing down its infrastructure.
@@ -636,6 +701,13 @@ output AZURE_MPC_MCP_CONTAINER_APP_NAME string = mpcMcp.?outputs.?name ?? ''
 output AZURE_MPC_MCP_CONTAINER_APP_URL string = mpcMcp.?outputs.?uri ?? ''
 output AZURE_MPC_MCP_CONTAINER_APP_FQDN string = mpcMcp.?outputs.?fqdn ?? ''
 output AZURE_MPC_MCP_PRINCIPAL_ID string = mpcMcp.?outputs.?principalId ?? ''
+
+// GeoFM outputs (empty when deployGeoFm = false).
+output AZURE_GEOFM_MCP_CONTAINER_APP_NAME string = geoFm.?outputs.?mcpName ?? ''
+output AZURE_GEOFM_MCP_URL string = geoFm.?outputs.?mcpUri ?? ''
+output AZURE_GEOFM_WORKER_CONTAINER_APP_NAME string = geoFm.?outputs.?workerName ?? ''
+output AZURE_GEOFM_CONTROL_IDENTITY_CLIENT_ID string = geoFm.?outputs.?controlIdentityClientId ?? ''
+output AZURE_GEOFM_WORKER_IDENTITY_CLIENT_ID string = geoFm.?outputs.?workerIdentityClientId ?? ''
 
 // Fabric capacity outputs.
 // AZURE_FABRIC_CAPACITY_ID is the freshly provisioned capacity (empty when

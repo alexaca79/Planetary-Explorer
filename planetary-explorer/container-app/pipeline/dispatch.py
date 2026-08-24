@@ -96,9 +96,19 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
     if not pins_list and pin_tuple:
         pins_list = [pin_tuple]
 
-    bbox = body.get("bbox")
+    bbox = body.get("bbox") or body.get("map_bounds")
     bbox_tuple = None
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+    if isinstance(bbox, dict):
+        try:
+            bbox_tuple = (
+                float(bbox["west"]),
+                float(bbox["south"]),
+                float(bbox["east"]),
+                float(bbox["north"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            bbox_tuple = None
+    elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         try:
             bbox_tuple = (
                 float(bbox[0]),
@@ -168,6 +178,7 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         session_id=str(
             body.get("session_id") or body.get("conversation_id") or "anon"
         ),
+        authenticated_user_id=body.get("_authenticated_user_id"),
         bbox=bbox_tuple,
         location_name=body.get("location_name"),
         pin=pin_tuple,

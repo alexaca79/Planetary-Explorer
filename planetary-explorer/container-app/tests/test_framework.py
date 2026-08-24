@@ -6,7 +6,6 @@ fakes for the MCP underlying client and a stub LLM. Hermetic.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 
@@ -37,6 +36,10 @@ from mcp_runtime.trace_bus import emit as emit_trace
         ("create_personal_stac_collection", PermissionTier.WRITE),
         ("configure_collection_mosaic_definitions", PermissionTier.WRITE),
         ("ingest_stac_item", PermissionTier.WRITE),
+        ("geofm_compare_epochs", PermissionTier.WRITE),
+        ("geofm_embed_aoi", PermissionTier.WRITE),
+        ("geofm_cancel_run", PermissionTier.DESTRUCTIVE),
+        ("geofm_get_run", PermissionTier.READ),
         ("list_mpc_stac_collections", PermissionTier.READ),
         ("get_personal_collection_details", PermissionTier.READ),
         ("search_stac_items", PermissionTier.READ),
@@ -131,6 +134,40 @@ async def test_traced_client_records_error_and_propagates():
     entry = client.buffer[0]
     assert entry.ok is False
     assert "kaboom" in (entry.error or "")
+
+
+def test_traced_client_builds_geofm_client_when_enabled(monkeypatch):
+    # Arrange
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
+    from connectors.geofm import get_client
+
+    get_client.cache_clear()
+
+    # Act
+    client = TracedMcpClient.from_geofm(turn_id="turn-1")
+
+    # Assert
+    assert client is not None
+    assert client.server_id == "geofm"
+
+
+def test_registry_discovers_geofm_only_when_enabled(monkeypatch):
+    # Arrange
+    from mcp_runtime.registry import McpRegistry
+
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
+    monkeypatch.setenv("GEOFM_ENABLED", "false")
+
+    # Act
+    disabled = McpRegistry.discover()
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    enabled = McpRegistry.discover()
+
+    # Assert
+    assert disabled.get("geofm") is None
+    assert enabled.get("geofm") is not None
+    assert enabled.get("geofm").api_key_env == "GEOFM_MCP_API_KEY"
 
 
 # ---------------------------------------------------------------------------

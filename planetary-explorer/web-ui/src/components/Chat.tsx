@@ -253,6 +253,61 @@ const Chat: React.FC<ChatProps> = ({
     },
     [],
   );
+  const createQueryStreamContext = () => {
+    const rows: any[] = [];
+    return {
+      rows,
+      handlers: {
+        onTrace: (event: any) => {
+          activeTrace.ingest(event);
+          if (event?.type === 'tool_call') {
+            rows.push({
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+              status: 'pending',
+            });
+          } else if (event?.type === 'tool_result') {
+            const index = rows.findIndex((row) => row.traceId === event.trace_id);
+            const merged = {
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+              status: event.error === 'denied_by_user' ? 'denied' : event.ok ? 'ok' : 'error',
+              latencyMs: event.latency_ms,
+              responseSummary: event.response_summary,
+              error: event.error,
+            };
+            if (index >= 0) rows[index] = merged;
+            else rows.push(merged);
+          }
+        },
+        onConfirmRequest: (event: any) => {
+          setPendingConfirms((previous) => previous.some(
+            (pending) => pending.traceId === event.trace_id
+          ) ? previous : [
+            ...previous,
+            {
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+            },
+          ]);
+        },
+        onConfirmResolved: (event: any) => {
+          setPendingConfirms((previous) => previous.filter(
+            (pending) => pending.traceId !== event.trace_id
+          ));
+        },
+      },
+    };
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Tracks whether the user clicked Stop on the current in-flight chat turn.
   // We can't cancel the in-flight HTTP request through TanStack mutations
@@ -1785,10 +1840,25 @@ const Chat: React.FC<ChatProps> = ({
           vision_pin: freshMapContext?.vision_pin,
           bounds: freshMapContext?.bounds
         });
-        const result = await apiService.sendChatMessage(message, selectedDataset?.id, conversationId, messages, currentPin || undefined, geointMode, freshMapContext, selectedModel, false, stacMode, controller.signal);
+        activeTrace.clear();
+        const stream = createQueryStreamContext();
+        const result = await apiService.sendChatMessage(
+          message,
+          selectedDataset?.id,
+          conversationId,
+          messages,
+          currentPin || undefined,
+          geointMode,
+          freshMapContext,
+          selectedModel,
+          false,
+          stacMode,
+          controller.signal,
+          stream.handlers,
+        );
 
         // Return the complete response object for map integration
-        return result;
+        return { ...result, toolTrace: stream.rows };
       } catch (error) {
         const err = error as any;
         if (err?.message?.includes('Failed to fetch') || err?.code === 'ECONNREFUSED') {
@@ -1969,6 +2039,7 @@ const Chat: React.FC<ChatProps> = ({
             ]));
 
             try {
+              const partStream = createQueryStreamContext();
               const partResult = await apiService.sendChatMessage(
                 queryText,
                 selectedDataset?.id,
@@ -1981,6 +2052,7 @@ const Chat: React.FC<ChatProps> = ({
                 true, // partOfSplit — prevents recursive splitting
                 stacMode,
                 controller.signal,
+                partStream.handlers,
               );
 
               const partText =
@@ -1999,6 +2071,7 @@ const Chat: React.FC<ChatProps> = ({
                     role: 'assistant',
                     content: answers[part.id],
                     timestamp: new Date(),
+                    toolTrace: partStream.rows,
                   },
                 ];
               });
@@ -2370,6 +2443,7 @@ const Chat: React.FC<ChatProps> = ({
       console.warn(' Chat: abort() threw (non-fatal):', e);
     }
     chatAbortRef.current = null;
+    setPendingConfirms([]);
     // Drop any pending "Thinking..." bubbles so the chat returns to a
     // clean state. Same filter used by mobility/geoint cancel paths.
     setMessages(prev => prev.filter(msg => !msg.isThinking));
