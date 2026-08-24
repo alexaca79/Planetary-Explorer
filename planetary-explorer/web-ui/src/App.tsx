@@ -148,6 +148,8 @@ function App() {
         {!appState.entered ? (
           <LandingPage
             onEnter={handleEnterApp}
+            onModelChange={handleModelChange}
+            selectedModel={selectedModel}
             stacMode={stacMode}
             onStacModeChange={handleStacModeChange}
             proEnabled={features.mpcPro}

@@ -13,6 +13,8 @@ import { API_BASE_URL } from '../config/api';
 
 interface LandingPageProps {
   onEnter: (target: string, query?: string) => void;
+  onModelChange?: (modelId: string) => void;
+  selectedModel?: string;
   // Optional so existing call sites that don't care about STAC routing
   // (e.g. tests, storybook) still compile; App.tsx always passes these.
   stacMode?: StacMode;
@@ -22,7 +24,14 @@ interface LandingPageProps {
   proEnabled?: boolean;
 }
 
-const LandingPage: React.FC<LandingPageProps> = ({ onEnter, stacMode, onStacModeChange, proEnabled }) => {
+const LandingPage: React.FC<LandingPageProps> = ({
+  onEnter,
+  onModelChange,
+  selectedModel,
+  stacMode,
+  onStacModeChange,
+  proEnabled,
+}) => {
   const [query, setQuery] = useState('');
   const [showWelcomePopup, setShowWelcomePopup] = useState(true);
   const [isPopupVisible, setIsPopupVisible] = useState(false);
@@ -116,7 +125,11 @@ const LandingPage: React.FC<LandingPageProps> = ({ onEnter, stacMode, onStacMode
         </div>
         <div className="landing-top-right">
           <GetStartedButton onQuerySelect={(query) => onEnter('all', query)} />
-          <ModelSelector apiBaseUrl={API_BASE_URL} />
+          <ModelSelector
+            apiBaseUrl={API_BASE_URL}
+            onModelChange={onModelChange}
+            selectedModel={selectedModel}
+          />
           <FoundationModelsInfo apiBaseUrl={API_BASE_URL} />
           {stacMode && onStacModeChange && (
             <StacModeToggle mode={stacMode} onChange={onStacModeChange} proEnabled={proEnabled} />
