@@ -21,6 +21,7 @@ COPY src ./src
 RUN python -m pip install --no-cache-dir \
         torch==1.12.0+cu116 torchvision==0.13.0+cu116 \
     && python -m pip install --no-cache-dir ".[worker]" \
+    && python -c "import geofm_service.worker" \
     && git clone --filter=blob:none https://github.com/NRCan/planaura.git /opt/planaura \
     && git -C /opt/planaura checkout "${PLANAURA_RUNTIME_REVISION}" \
     && test "$(git -C /opt/planaura rev-parse HEAD)" = "${PLANAURA_RUNTIME_REVISION}" \

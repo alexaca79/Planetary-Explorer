@@ -10,7 +10,7 @@ import re
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from uuid import UUID
@@ -32,6 +32,7 @@ from .stac import StacItemSummary, get_catalog
 
 logger = logging.getLogger(__name__)
 GEOD = Geod(ellps="WGS84")
+UTC = timezone.utc
 ALLOWED_ASSET_HOST_SUFFIXES = (".blob.core.windows.net",)
 
 
@@ -596,8 +597,11 @@ def _upload_artifact(container, run_id: UUID, path: Path, kind: str) -> RunArtif
 
 
 def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 TERMINAL_STATUSES = {RunStatus.COMPLETE, RunStatus.FAILED, RunStatus.CANCELLED}

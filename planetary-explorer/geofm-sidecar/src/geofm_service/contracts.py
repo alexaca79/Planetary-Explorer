@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from enum import IntEnum, StrEnum
+from datetime import datetime, timezone
+from enum import Enum, IntEnum
 from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 GeoJson = dict[str, JsonValue]
+UTC = timezone.utc
 
 
 class EvidenceRung(IntEnum):
@@ -77,7 +78,7 @@ class EvidenceEnvelope(BaseModel):
         return self
 
 
-class RunStatus(StrEnum):
+class RunStatus(str, Enum):
     """Persisted lifecycle states for GeoFM work."""
 
     QUEUED = "queued"

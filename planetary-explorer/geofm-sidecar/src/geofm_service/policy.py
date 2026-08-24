@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class GeoFmProfile(StrEnum):
+class GeoFmProfile(str, Enum):
     """User-facing GeoFM profiles."""
 
     PLANAURA_HLS = "planaura_hls"
 
 
-class ApprovalState(StrEnum):
+class ApprovalState(str, Enum):
     """Deployment validation state for an exact model revision."""
 
     APPROVED = "approved"

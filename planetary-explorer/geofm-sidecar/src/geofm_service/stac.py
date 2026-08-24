@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import planetary_computer
@@ -14,6 +14,7 @@ from pystac_client import Client
 from .jobs import ImageryObservation, RunError
 
 DEFAULT_STAC_API = "https://planetarycomputer.microsoft.com/api/stac/v1"
+UTC = timezone.utc
 SUPPORTED_COLLECTIONS = ("hls2-s30", "hls2-l30")
 
 

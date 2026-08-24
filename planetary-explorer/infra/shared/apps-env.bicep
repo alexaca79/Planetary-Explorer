@@ -52,8 +52,6 @@ resource appsEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' = {
       {
         name: geoFmGpuProfileName
         workloadProfileType: geoFmGpuProfileType
-        minimumCount: 0
-        maximumCount: 1
       }
     ] : [])
   }

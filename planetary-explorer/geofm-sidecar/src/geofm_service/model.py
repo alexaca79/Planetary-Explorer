@@ -28,8 +28,11 @@ def verify_checkpoint(
             f"Checkpoint size mismatch: expected {expected_size_bytes}, "
             f"received {path.stat().st_size}."
         )
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
     if actual.casefold() != expected_sha256.casefold():
         raise ModelRuntimeError(
             f"Checkpoint hash mismatch: expected {expected_sha256}, received {actual}."

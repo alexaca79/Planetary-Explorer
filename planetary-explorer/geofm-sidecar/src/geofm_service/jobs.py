@@ -9,7 +9,7 @@ import math
 import sqlite3
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -26,6 +26,7 @@ from .contracts import CompareEpochsRequest, RunArtifact, RunRecord, RunStatus
 from .policy import ApprovalState, ModelDescriptor, get_model
 
 GEOD = Geod(ellps="WGS84")
+UTC = timezone.utc
 CANADA_ENVELOPE = box(-141.1, 41.6, -52.5, 83.2)
 TERMINAL_STATUSES = {RunStatus.COMPLETE, RunStatus.FAILED, RunStatus.CANCELLED}
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
