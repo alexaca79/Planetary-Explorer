@@ -44,6 +44,7 @@ from quickstart_cache import (
     get_quickstart_stats
 )  # [LAUNCH] Pre-computed cache for demo queries
 from cloud_config import cloud_cfg  # [CLOUD] Cloud environment configuration (Commercial/Government)
+from connectors.geofm import get_health_snapshot
 
 # Microsoft Teams Bot integration (optional — requires botbuilder-core)
 try:
@@ -2507,8 +2508,21 @@ async def health_check():
             checks["azure_maps"] = {"status": "misconfigured"}
             all_healthy = False
 
+        # 4. Geospatial foundation models — live MCP discovery, fail-soft when disabled.
+        geofm_health = await get_health_snapshot()
+        checks["geospatial_foundation_models"] = geofm_health
+        if geofm_health["enabled"] and not geofm_health["connected"]:
+            all_healthy = False
+
         overall = "healthy" if all_healthy else "degraded"
-        logger.info(f"[BLDG] Health: {overall} | openai={checks['azure_openai']['status']} stac={checks['stac_api']['status']} maps={checks['azure_maps']['status']}")
+        logger.info(
+            "[BLDG] Health: %s | openai=%s stac=%s maps=%s geofm=%s",
+            overall,
+            checks["azure_openai"]["status"],
+            checks["stac_api"]["status"],
+            checks["azure_maps"]["status"],
+            geofm_health["status"],
+        )
 
         return JSONResponse(
             content={

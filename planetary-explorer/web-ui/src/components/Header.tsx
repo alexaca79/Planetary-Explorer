@@ -9,6 +9,7 @@ import GetStartedButton from './GetStartedButton';
 import ModelSelector from './ModelSelector';
 import UserAccountMenu from './UserAccountMenu';
 import StacModeToggle, { StacMode } from './StacModeToggle';
+import FoundationModelsInfo from './FoundationModelsInfo';
 import { API_BASE_URL } from '../config/api';
 
 interface HeaderProps {
@@ -53,19 +54,10 @@ const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, on
           <div className="brand-name">Planetary Explorer</div>
         </div>
       </div>
-      <div style={{ 
-        padding: '0', 
-        display: 'flex', 
-        justifyContent: 'flex-end', 
-        alignItems: 'center', 
-        gap: '12px',
-        position: 'absolute',
-        top: '16px',
-        right: '24px',
-        zIndex: 1100
-      }}>
+      <div className="header-controls">
         <GetStartedButton />
         <ModelSelector onModelChange={onModelChange} selectedModel={selectedModel} apiBaseUrl={API_BASE_URL} />
+        <FoundationModelsInfo apiBaseUrl={API_BASE_URL} />
         {stacMode && onStacModeChange && (
           <StacModeToggle mode={stacMode} onChange={onStacModeChange} proEnabled={proEnabled} />
         )}

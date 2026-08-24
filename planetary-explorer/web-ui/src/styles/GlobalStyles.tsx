@@ -59,6 +59,18 @@ export const GlobalStyles = () => (
       z-index: 10;
     }
 
+    .header-controls {
+      position: absolute;
+      top: 16px;
+      right: 24px;
+      z-index: 1100;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      padding: 0;
+    }
+
     .app {
       display: grid;
       grid-template-columns: var(--side-left) 1fr var(--chat-panel-width);
@@ -173,12 +185,34 @@ export const GlobalStyles = () => (
         gap: 6px;
       }
 
+      .top-header {
+        height: 176px;
+      }
+
+      .header-controls {
+        top: 60px;
+        left: 8px;
+        right: 8px;
+        display: grid;
+        grid-template-columns: repeat(3, max-content);
+        justify-content: center;
+        gap: 6px;
+      }
+
+      .app {
+        height: calc(100vh - 176px);
+      }
+
+      .center {
+        min-height: calc(100vh - 176px);
+      }
+
       .landing-top-right .get-started-button span {
         display: inline;
       }
 
       .welcome-popup-container {
-        top: 132px !important;
+        top: 176px !important;
         left: 16px;
         right: 16px !important;
         align-items: center !important;
@@ -191,6 +225,29 @@ export const GlobalStyles = () => (
       .welcome-tooltip-arrow {
         left: 60px !important;
         right: auto !important;
+      }
+    }
+
+    @media (max-width: 380px) {
+      .landing-top-right,
+      .header-controls {
+        grid-template-columns: repeat(2, max-content);
+      }
+
+      .top-header {
+        height: 216px;
+      }
+
+      .app {
+        height: calc(100vh - 216px);
+      }
+
+      .center {
+        min-height: calc(100vh - 216px);
+      }
+
+      .welcome-popup-container {
+        top: 220px !important;
       }
     }
 

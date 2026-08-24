@@ -42,6 +42,11 @@ class RemoteMcpClient:
         """Return whether a non-empty remote URL was supplied."""
         return bool(self._url)
 
+    @property
+    def available_tools(self) -> tuple[str, ...]:
+        """Return the tool names advertised by the active MCP session."""
+        return tuple(sorted(self._available_tools))
+
     async def call_raw(self, tool: str, arguments: dict[str, Any]) -> Any:
         """Invoke one advertised tool and unwrap its structured response."""
         try:

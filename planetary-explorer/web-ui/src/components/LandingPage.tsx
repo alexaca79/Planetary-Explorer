@@ -8,6 +8,7 @@ import GetStartedButton from './GetStartedButton';
 import ModelSelector from './ModelSelector';
 import UserAccountMenu from './UserAccountMenu';
 import StacModeToggle, { StacMode } from './StacModeToggle';
+import FoundationModelsInfo from './FoundationModelsInfo';
 import { API_BASE_URL } from '../config/api';
 
 interface LandingPageProps {
@@ -59,8 +60,12 @@ const LandingPage: React.FC<LandingPageProps> = ({ onEnter, stacMode, onStacMode
   useEffect(() => {
     const handleGlobalClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      // If user clicked the Get Started button or the modal opened, hide the tooltip
-      if (target.closest('.get-started-button') || document.querySelector('.get-started-modal-overlay')) {
+      // If the user opens a top-level panel, hide the onboarding tooltip.
+      if (
+        target.closest('.get-started-button')
+        || target.closest('.foundation-models-tab')
+        || document.querySelector('.get-started-modal-overlay')
+      ) {
         setIsPopupVisible(false);
         setShowWelcomePopup(false);
       }
@@ -112,6 +117,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onEnter, stacMode, onStacMode
         <div className="landing-top-right">
           <GetStartedButton onQuerySelect={(query) => onEnter('all', query)} />
           <ModelSelector apiBaseUrl={API_BASE_URL} />
+          <FoundationModelsInfo apiBaseUrl={API_BASE_URL} />
           {stacMode && onStacModeChange && (
             <StacModeToggle mode={stacMode} onChange={onStacModeChange} proEnabled={proEnabled} />
           )}
