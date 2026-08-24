@@ -444,7 +444,7 @@ class ApiService {
       // Use the QueryRequest format for /query endpoint
       const requestData: any = {
         query: message,
-        model: selectedModel || 'gpt-5',  // Default to GPT-5
+        ...(selectedModel && { model: selectedModel }),
         preferences: {
           interface_type: 'planetary_explorer',
           data_source: 'planetary_computer',

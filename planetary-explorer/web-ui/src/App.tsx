@@ -49,8 +49,7 @@ function App() {
 
   const [geointMode, setGeointMode] = useState<boolean>(false);
   const [selectedModel, setSelectedModel] = useState<string>(() => {
-    // Load from localStorage, default to gpt-5
-    return localStorage.getItem('planetaryexplorer-model') || 'gpt-5';
+    return localStorage.getItem('planetaryexplorer-model') || '';
   });
   const [stacMode, setStacMode] = useState<'public' | 'pro'>('public');
   // Note: stacMode intentionally does NOT read from localStorage. Product

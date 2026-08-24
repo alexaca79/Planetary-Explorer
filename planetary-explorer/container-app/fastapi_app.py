@@ -2482,9 +2482,15 @@ async def health_check():
 
         # 1. Azure OpenAI — config check only (no billable test call)
         endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        deployment = _resolve_chat_deployment(None)
         has_auth = bool(os.getenv("AZURE_OPENAI_API_KEY")) or os.getenv("USE_MANAGED_IDENTITY", "").lower() == "true"
         if endpoint and has_auth:
-            checks["azure_openai"] = {"status": "configured", "endpoint": endpoint}
+            checks["azure_openai"] = {
+                "status": "configured",
+                "endpoint": endpoint,
+                "model": deployment,
+                "available_models": [deployment],
+            }
         else:
             checks["azure_openai"] = {"status": "misconfigured"}
             all_healthy = False
@@ -2549,6 +2555,20 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in _TRUE_VALUES
+
+
+def _resolve_chat_deployment(requested_model: Optional[str]) -> str:
+    """Use the deployment configured for this API revision."""
+    configured_model = (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5").strip() or "gpt-5"
+    )
+    if requested_model and requested_model.strip() != configured_model:
+        logger.warning(
+            "[BOT] Ignoring unavailable requested model '%s'; using '%s'",
+            requested_model,
+            configured_model,
+        )
+    return configured_model
 
 
 @app.get("/api/config")
@@ -4417,7 +4437,7 @@ async def unified_query_processor(request: Request):
             # session-scoped without trusting a caller-provided owner field.
             req_body["_authenticated_user_id"] = f"session:{session_id or 'anonymous'}"
         pin = req_body.get('pin') or req_body.get('vision_pin')  # Pin {lat, lng} (web-ui sends 'vision_pin')
-        selected_model = req_body.get('model', 'gpt-5')  # Model selection from frontend, default to gpt-5
+        selected_model = _resolve_chat_deployment(req_body.get('model'))
 
         # ================================================================
         # TOP-LEVEL GREETING / IDENTITY SHORT-CIRCUIT
