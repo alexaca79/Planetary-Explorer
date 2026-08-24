@@ -36,7 +36,9 @@ is exactly one source of truth per action.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -562,6 +564,10 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         self.id = id
         self._load = load_agent
         self._analyze = analyze_agent
+        self._analysis_timeout_seconds = max(
+            1.0,
+            float(os.getenv("LOAD_AND_ANALYZE_TIMEOUT_SECONDS", "45")),
+        )
 
     async def run(
         self,
@@ -592,7 +598,33 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
                 update={"hint": f"load_agent_stac_query:{load_stac_query}"}
             )
 
-        analyze_result = await self._analyze.run(decision, enriched_request, body)
+        try:
+            async with asyncio.timeout(self._analysis_timeout_seconds):
+                analyze_result = await self._analyze.run(
+                    decision,
+                    enriched_request,
+                    body,
+                )
+        except TimeoutError:
+            analysis_status = {
+                "status": "timeout",
+                "timeout_seconds": self._analysis_timeout_seconds,
+            }
+            return self._preserve_load_result(
+                load_result,
+                started,
+                analysis_status,
+            )
+
+        analyst_status = (
+            (analyze_result.get("structured") or {}).get("analyst_status") or {}
+        )
+        if analyst_status.get("status") in {"timeout", "error"}:
+            return self._preserve_load_result(
+                load_result,
+                started,
+                analyst_status,
+            )
 
         # ------------------------------------------------------------------
         # G4-FOLLOWUP: LOAD succeeded but ANALYZE wants to clarify.
@@ -663,6 +695,35 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         analyze_result["structured"] = merged_structured
         analyze_result["elapsed_ms"] = int((time.time() - started) * 1000)
         return analyze_result
+
+    @staticmethod
+    def _preserve_load_result(
+        load_result: Dict[str, Any],
+        started: float,
+        analysis_status: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        status = analysis_status.get("status", "error")
+        logger.warning(
+            "[LOAD_AND_ANALYZE] analysis ended with status=%s; "
+            "continuing with deterministic LOAD",
+            status,
+        )
+        load_summary = (load_result.get("answer") or "").strip()
+        note = (
+            "The deeper severity analysis took too long, but the requested "
+            "imagery is still being loaded."
+            if status == "timeout"
+            else "The deeper severity analysis was unavailable, but the "
+            "requested imagery is still being loaded."
+        )
+        load_result["answer"] = (
+            f"{load_summary}\n\n{note}" if load_summary else note
+        )
+        structured = dict(load_result.get("structured") or {})
+        structured["analysis_status"] = dict(analysis_status)
+        load_result["structured"] = structured
+        load_result["elapsed_ms"] = int((time.time() - started) * 1000)
+        return load_result
 
     if _AGENT_FRAMEWORK_AVAILABLE:
         @handler  # type: ignore

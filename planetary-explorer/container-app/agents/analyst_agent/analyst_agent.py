@@ -79,6 +79,10 @@ class AnalystAgent:
         self._init_lock = asyncio.Lock()
         self._threads: Dict[str, AnalystThread] = {}
         self._max_init_retries = 2
+        self._run_timeout_seconds = max(
+            1.0,
+            float(os.getenv("ANALYST_AGENT_TIMEOUT_SECONDS", "60")),
+        )
         logger.info("AnalystAgent created (lazy init on first use)")
 
     # ------------------------------------------------------------------
@@ -220,12 +224,37 @@ class AnalystAgent:
         )
         set_session(sess)
 
+        analyst_status: Optional[Dict[str, Any]] = None
         try:
-            answer, _tool_calls, evidence = await self._invoke_agent_service(request)
+            async with asyncio.timeout(self._run_timeout_seconds):
+                answer, _tool_calls, evidence = await self._invoke_agent_service(request)
+        except TimeoutError:
+            logger.warning(
+                "[ANALYST] run timed out after %.1fs, returning fallback response",
+                self._run_timeout_seconds,
+            )
+            await self._cancel_active_runs(request.session_id)
+            answer = self._fallback_answer(
+                request,
+                f"timed out after {self._run_timeout_seconds:.1f}s",
+            )
+            evidence = []
+            analyst_status = {
+                "status": "timeout",
+                "timeout_seconds": self._run_timeout_seconds,
+            }
+        except asyncio.CancelledError:
+            await self._cancel_active_runs(request.session_id)
+            clear_session()
+            raise
         except Exception as e:
             logger.exception("[ANALYST] run failed, returning fallback response")
             answer = self._fallback_answer(request, str(e))
             evidence = []
+            analyst_status = {
+                "status": "error",
+                "error_type": type(e).__name__,
+            }
 
         # Aggregate sources from tool evidence
         sources: List[Source] = []
@@ -261,6 +290,8 @@ class AnalystAgent:
 
         if clarify_payload:
             structured_by_tool["clarify"] = clarify_payload
+        if analyst_status:
+            structured_by_tool["analyst_status"] = analyst_status
 
         # Build a degenerate plan record for back-compat with callers that
         # still serialize ``plan``. The plan is just the sequence of tools
@@ -292,6 +323,45 @@ class AnalystAgent:
             plan=plan,
             elapsed_ms=elapsed_ms,
         )
+
+    async def _cancel_active_runs(self, session_id: str) -> None:
+        """Cancel active remote runs and abandon the affected local thread."""
+        thread = self._threads.pop(session_id, None)
+        if not thread or not thread.thread_id or self._agents_client is None:
+            return
+
+        active_statuses = {"queued", "in_progress", "requires_action"}
+
+        async def cancel_runs() -> None:
+            runs = self._agents_client.runs.list(
+                thread_id=thread.thread_id,
+                limit=10,
+                order="desc",
+            )
+            async for run in runs:
+                raw_status = getattr(run, "status", "")
+                status = str(getattr(raw_status, "value", raw_status)).lower()
+                if status not in active_statuses:
+                    continue
+                await self._agents_client.runs.cancel(
+                    thread_id=thread.thread_id,
+                    run_id=run.id,
+                )
+                logger.info(
+                    "[ANALYST] cancelled timed-out remote run %s on thread %s",
+                    run.id,
+                    thread.thread_id,
+                )
+
+        try:
+            async with asyncio.timeout(5.0):
+                await asyncio.shield(cancel_runs())
+        except Exception as exc:
+            logger.warning(
+                "[ANALYST] remote run cleanup failed for thread %s: %s",
+                thread.thread_id,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Agent Service invocation
