@@ -162,6 +162,38 @@ export const GlobalStyles = () => (
       font-family: "Segoe UI", "Segoe UI Variable Text", -apple-system, BlinkMacSystemFont, system-ui, Roboto, Inter, "Helvetica Neue", Arial, "Noto Sans";
     }
 
+    @media (max-width: 640px) {
+      .landing-top-right {
+        top: 60px;
+        left: 8px;
+        right: 8px;
+        display: grid;
+        grid-template-columns: repeat(3, max-content);
+        justify-content: center;
+        gap: 6px;
+      }
+
+      .landing-top-right .get-started-button span {
+        display: inline;
+      }
+
+      .welcome-popup-container {
+        top: 132px !important;
+        left: 16px;
+        right: 16px !important;
+        align-items: center !important;
+      }
+
+      .welcome-tooltip {
+        max-width: 300px !important;
+      }
+
+      .welcome-tooltip-arrow {
+        left: 60px !important;
+        right: auto !important;
+      }
+    }
+
     .landing-top {
       margin-bottom: 60px;
     }

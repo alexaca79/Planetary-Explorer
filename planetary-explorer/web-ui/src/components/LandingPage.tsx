@@ -317,6 +317,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onEnter, stacMode, onStacMode
             </div>
             {/* Arrow pointing up toward Get Started button */}
             <div 
+              className="welcome-tooltip-arrow"
               style={{
                 position: 'absolute',
                 top: '-8px',

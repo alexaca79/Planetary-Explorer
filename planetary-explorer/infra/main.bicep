@@ -113,7 +113,7 @@ param restoreSoftDeletedAccount bool = false
 @description('Name of the ACR agent pool for VNet-integrated builds. Override to use an existing pool.')
 param acrAgentPoolName string = 'buildpool'
 
-@description('Number of always-on ACR agent pool VMs (1 = ready for builds, 0 = slower cold start)')
+@description('Number of always-on ACR agent pool VMs. Set 0 to omit the optional pool.')
 param acrAgentPoolCount int = 1
 
 // MCP Server (in-repo Planetary Explorer MCP server, exposes /api/query as MCP tools)
