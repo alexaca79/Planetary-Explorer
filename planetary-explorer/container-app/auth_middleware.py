@@ -3,13 +3,11 @@
 # =============================================================================
 # Two paths, both verify the user is signed into the Entra tenant:
 #
-#   (A) PRIMARY — `X-MS-CLIENT-PRINCIPAL` header (production, post-proxy)
+#   (A) OPTIONAL — `X-MS-CLIENT-PRINCIPAL` header (trusted proxy only)
 #       Set by App Service / Container Apps EasyAuth when the request flows
-#       through an auth-gated origin. Base64-encoded JSON with claims that
-#       EasyAuth has *already validated*. The backend trusts the header
-#       because the network topology guarantees it can only have been
-#       injected by EasyAuth (the container is reachable only via the
-#       EasyAuth-fronted origin).
+#       through an auth-gated origin. This path is disabled unless
+#       TRUST_EASYAUTH_HEADER=true because the public Container App ingress
+#       otherwise lets clients forge the header.
 #
 #   (B) FALLBACK — `Authorization: Bearer <jwt>` (transitional)
 #       The current topology has the browser calling the backend container
@@ -86,8 +84,8 @@ VALID_AUDIENCES: List[str] = [
     FABRIC_API_CLIENT_ID,
     f"api://{FABRIC_API_CLIENT_ID}",
     GRAPH_APP_ID,
-    f"https://graph.microsoft.com",
-    f"https://graph.microsoft.com/",
+    "https://graph.microsoft.com",
+    "https://graph.microsoft.com/",
 ]
 
 # M365 declarative agent surface — separate app registration so its lifecycle
@@ -146,15 +144,26 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         # Up to four JWKS clients — one per AAD endpoint variant. Lazy-init.
         self._jwks_clients: dict[str, PyJWKClient] = {}
-        self._enabled = os.environ.get("DISABLE_AUTH", "").lower() not in (
+        self._trust_easyauth_header = os.environ.get(
+            "TRUST_EASYAUTH_HEADER", "false"
+        ).lower() in ("true", "1", "yes")
+        explicitly_disabled = os.environ.get("DISABLE_AUTH", "").lower() in (
             "true",
             "1",
             "yes",
         )
-        if self._enabled:
+        entra_configured = bool(TENANT_ID.strip() and CLIENT_ID.strip())
+        self._enabled = not explicitly_disabled
+        if self._enabled and entra_configured:
             logger.info(
                 "[AUTH] Entra ID auth middleware ENABLED  "
                 f"(tenant={TENANT_ID}, client={CLIENT_ID})"
+            )
+        elif self._enabled:
+            logger.error(
+                "[AUTH] Entra ID auth middleware ENABLED but "
+                "AZURE_AD_TENANT_ID or AZURE_AD_CLIENT_ID is missing; "
+                "protected routes will fail closed"
             )
         else:
             logger.info("[AUTH] Entra ID auth middleware DISABLED (DISABLE_AUTH=true)")
@@ -201,10 +210,9 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
     # -----------------------------------------------------------------------
     # Path A: EasyAuth-injected X-MS-CLIENT-PRINCIPAL header
     # -----------------------------------------------------------------------
-    # EasyAuth has *already* validated the user before injecting this header.
-    # The container trusts the header because the EasyAuth-fronted ingress is
-    # the only network path that can set it. Tenant id is still verified so
-    # we don't accept a header forged with a foreign tenant's principal.
+    # EasyAuth has already validated the user before injecting this header.
+    # Callers may use this path only when TRUST_EASYAUTH_HEADER=true and the
+    # network topology prevents direct clients from reaching this ingress.
     @staticmethod
     def _principal_from_easyauth_header(header_b64: str) -> Optional[dict]:
         try:
@@ -220,7 +228,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             claims.get("http://schemas.microsoft.com/identity/claims/tenantid")
             or claims.get("tid")
         )
-        if tid and tid != TENANT_ID:
+        if not TENANT_ID or not tid or tid != TENANT_ID:
             logger.warning("[AUTH] X-MS-CLIENT-PRINCIPAL wrong tenant: %s", tid)
             return None
         return {
@@ -277,7 +285,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         easyauth_header = request.headers.get("X-MS-CLIENT-PRINCIPAL") or request.headers.get(
             "x-ms-client-principal"
         )
-        if easyauth_header:
+        if self._trust_easyauth_header and easyauth_header:
             principal = self._principal_from_easyauth_header(easyauth_header)
             if principal is not None:
                 request.state.user = principal

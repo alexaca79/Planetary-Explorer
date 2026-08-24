@@ -366,12 +366,10 @@ app.add_middleware(
 # Add Entra ID JWT auth middleware (validates Bearer tokens on protected routes)
 # Registered AFTER CORSMiddleware so CORS headers are always added, even on 401.
 # Open paths (/api/health, /docs, etc.) are excluded from auth.
-try:
-    from auth_middleware import EntraAuthMiddleware
-    app.add_middleware(EntraAuthMiddleware)
-    logger.info("[AUTH] Entra ID auth middleware registered")
-except ImportError as e:
-    logger.warning(f"[AUTH] Auth middleware not available — all routes are open: {e}")
+from auth_middleware import EntraAuthMiddleware
+
+app.add_middleware(EntraAuthMiddleware)
+logger.info("[AUTH] Entra ID auth middleware registered")
 
 # Mount static files for React frontend (if static directory exists)
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -7731,6 +7729,11 @@ async def unified_query_processor_stream(request: Request):
     """
     from fastapi.responses import StreamingResponse
     from _framework import merge_with_trace
+
+    # StreamingResponse runs its iterator after the endpoint returns. Cache the
+    # request body now, while the ASGI receive channel is still available, so
+    # unified_query_processor can safely call request.json() inside the stream.
+    await request.body()
 
     async def _source():
         result = await unified_query_processor(request)

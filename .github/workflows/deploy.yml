@@ -682,6 +682,7 @@ jobs:
     outputs:
       web_app_name: ${{ steps.discover.outputs.web_app_name }}
       web_app_url: ${{ steps.deploy.outputs.web_app_url }}
+      container_app_name: ${{ steps.discover.outputs.container_app_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -1137,13 +1138,16 @@ jobs:
   #   4. Copy the Application (client) ID
   #   5. Save: gh secret set AUTH_CLIENT_ID --env dev --body "<CLIENT_ID>"
   #
-  # If AUTH_CLIENT_ID is not set, auth is skipped and the app is publicly accessible.
+  # If AUTH_CLIENT_ID is not set, deployment fails unless disable_auth=true
+  # explicitly selects public demo mode.
   # See QUICK_DEPLOY.md for setup instructions.
   # -----------------------------------------------------------------------------
   configure-auth:
     name: Configure Entra ID Auth (Frontend + Backend)
-    needs: [deploy-frontend]
-    if: needs.deploy-frontend.result == 'success'
+    needs: [deploy-backend, deploy-frontend]
+    if: |
+      always() &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-frontend.result == 'success')
     runs-on: ubuntu-latest
     environment: dev
     outputs:
@@ -1160,33 +1164,108 @@ jobs:
 
           if [ "$DISABLE_AUTH" == "true" ]; then
             echo "mode=skip" >> $GITHUB_OUTPUT
-            echo "Auth explicitly disabled â€” app will be publicly accessible"
+            echo "Auth explicitly disabled - app will be publicly accessible"
           elif [ "$HAS_CLIENT_ID" == "true" ]; then
             echo "mode=existing" >> $GITHUB_OUTPUT
             echo "Using existing app registration from AUTH_CLIENT_ID secret"
           else
-            echo "mode=skip" >> $GITHUB_OUTPUT
-            echo ""
-            echo "================================================================="
-            echo "AUTH_CLIENT_ID secret is not set â€” skipping authentication setup."
-            echo "The app will be publicly accessible without login."
-            echo ""
-            echo "To enable Entra ID auth (one-time setup):"
-            echo "  1. Create an app registration in Azure Portal"
-            echo "     -> https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
-            echo "  2. Save the Client ID as a GitHub secret:"
-            echo "     -> gh secret set AUTH_CLIENT_ID --env dev --body \"<CLIENT_ID>\""
-            echo "  3. Re-run this pipeline"
-            echo "================================================================="
+            echo "mode=missing" >> $GITHUB_OUTPUT
+            echo "AUTH_CLIENT_ID is missing; the API will be closed before this job fails."
           fi
 
       - name: Azure Login
-        if: steps.check.outputs.mode != 'skip'
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure Public Authentication Mode
+        if: steps.check.outputs.mode == 'skip'
+        run: |
+          set -euo pipefail
+
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name }}"
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
+
+          if [ -z "$WA_NAME" ]; then
+            mapfile -t WA_MATCHES < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'app-${{ env.PROJECT_NAME }}-')].name" -o tsv)
+            if [ "${#WA_MATCHES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one frontend Web App, found ${#WA_MATCHES[@]}" >&2
+              exit 1
+            fi
+            WA_NAME="${WA_MATCHES[0]}"
+          fi
+
+          if [ -z "$CA_NAME" ]; then
+            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
+            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one API Container App, found ${#CA_MATCHES[@]}" >&2
+              exit 1
+            fi
+            CA_NAME="${CA_MATCHES[0]}"
+          fi
+
+          if [ -z "$WA_NAME" ] || [ -z "$CA_NAME" ]; then
+            echo "ERROR: Expected frontend and API resources were not found in ${{ env.RESOURCE_GROUP }}" >&2
+            exit 1
+          fi
+
+          az webapp auth update \
+            --name "$WA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --enabled false \
+            --output none
+
+          az containerapp auth update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --enabled false \
+            --output none
+
+          az containerapp update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --set-env-vars \
+              "DISABLE_AUTH=true" \
+              "TRUST_EASYAUTH_HEADER=false" \
+            --output none
+
+          WEB_AUTH_ENABLED=$(az webapp auth show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query enabled -o tsv)
+          API_DISABLE_AUTH=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='DISABLE_AUTH'].value | [0]" -o tsv)
+          API_TRUST_HEADER=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='TRUST_EASYAUTH_HEADER'].value | [0]" -o tsv)
+          API_PLATFORM_AUTH=$(az containerapp auth show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.platform.enabled" -o tsv)
+          if [ "$WEB_AUTH_ENABLED" != "false" ] || [ "$API_DISABLE_AUTH" != "true" ] || [ "$API_TRUST_HEADER" != "false" ] || [ "$API_PLATFORM_AUTH" == "true" ]; then
+            echo "ERROR: Public authentication mode verification failed" >&2
+            exit 1
+          fi
+
+          echo "Frontend and backend configured for public access"
+
+      - name: Fail Closed When Authentication Is Missing
+        if: steps.check.outputs.mode == 'missing'
+        run: |
+          set -euo pipefail
+
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
+          if [ -z "$CA_NAME" ]; then
+            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
+            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
+              echo "ERROR: AUTH_CLIENT_ID is missing and the API resource could not be resolved uniquely." >&2
+              exit 1
+            fi
+            CA_NAME="${CA_MATCHES[0]}"
+          fi
+
+          az containerapp ingress update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --type internal \
+            --output none
+
+          echo "ERROR: AUTH_CLIENT_ID is missing. API ingress was set to internal." >&2
+          echo "Set the dev environment secret or rerun with disable_auth=true for an explicit public deployment." >&2
+          exit 1
 
       - name: Configure Entra ID Authentication
         id: auth
@@ -1198,7 +1277,18 @@ jobs:
           set -euo pipefail
 
           # -- Discover Web App --
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name }}"
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
+
+          if [ -z "$WA_NAME" ]; then
+            mapfile -t WA_MATCHES < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'app-${{ env.PROJECT_NAME }}-')].name" -o tsv)
+            if [ "${#WA_MATCHES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one frontend Web App, found ${#WA_MATCHES[@]}" >&2
+              exit 1
+            fi
+            WA_NAME="${WA_MATCHES[0]}"
+          fi
+
           if [ -z "$WA_NAME" ]; then
             echo "ERROR: No Web App found in ${{ env.RESOURCE_GROUP }}"
             exit 1
@@ -1214,10 +1304,94 @@ jobs:
           echo "Tenant: $TENANT_ID"
           echo "Using app registration: $CLIENT_ID"
 
-          # -- Update redirect URI on the app registration --
+          # -- Backend API Auth (handled by FastAPI middleware, not EasyAuth) --
+          # Container Apps EasyAuth excludedPaths is unreliable, so auth validation
+          # is done at the application level in auth_middleware.py (EntraAuthMiddleware).
+          # The middleware validates Bearer tokens from the frontend on protected routes,
+          # while allowing /api/health, /docs, etc. through without auth.
+          # We only need to:
+          #   1. Ensure Container App EasyAuth is DISABLED (avoid double-auth)
+          #   2. Configure CORS at the ingress level for cross-origin requests
+          #   3. Pass tenant/client IDs as env vars for the FastAPI middleware
+          echo ""
+          echo "=== Configuring Backend Container App ==="
+          if [ -z "$CA_NAME" ]; then
+            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
+            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one API Container App, found ${#CA_MATCHES[@]}" >&2
+              exit 1
+            fi
+            CA_NAME="${CA_MATCHES[0]}"
+          fi
+
+          if [ -z "$CA_NAME" ]; then
+            echo "ERROR: No API Container App found in ${{ env.RESOURCE_GROUP }}" >&2
+            exit 1
+          fi
+          echo "Container App: $CA_NAME"
+
+          # Remove public ingress before changing either authentication layer.
+          # Any later failure leaves the API unreachable rather than exposed.
+          az containerapp ingress update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --type internal \
+            --output none
+
+          # Update the Entra app only after the API is no longer publicly
+          # reachable. A Graph failure therefore leaves the data plane closed.
           az ad app update --id "$CLIENT_ID" \
-            --web-redirect-uris "$REDIRECT_URI" 2>/dev/null || \
-            echo "WARNING: Could not update redirect URI (SP may lack Graph permission â€” update manually in Entra portal)"
+            --web-redirect-uris "$REDIRECT_URI"
+
+          # Disable Container Apps EasyAuth (auth is handled by FastAPI middleware)
+          az containerapp auth update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --enabled false \
+            --output none
+          echo "Container App EasyAuth disabled (auth handled by FastAPI middleware)"
+
+          # --------------------------------------------------------------
+          # Feature flag: dynamic collection selector (MCPProobjective.md).
+          # --------------------------------------------------------------
+          SELECTOR_MODE="${{ vars.COLLECTION_SELECTOR_MODE || 'off' }}"
+
+          # Secure the API before enabling frontend login so partial failures
+          # leave the deployment closed rather than exposing the data plane.
+          echo "Setting auth + COLLECTION_SELECTOR=$SELECTOR_MODE on $CA_NAME"
+          az containerapp update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --set-env-vars \
+              "AZURE_AD_TENANT_ID=$TENANT_ID" \
+              "AZURE_AD_CLIENT_ID=$CLIENT_ID" \
+              "DISABLE_AUTH=false" \
+              "TRUST_EASYAUTH_HEADER=false" \
+              "COLLECTION_SELECTOR=$SELECTOR_MODE" \
+            --output none
+          echo "Env vars set (AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, COLLECTION_SELECTOR)"
+
+          BACKEND_URL="https://$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query 'properties.configuration.ingress.fqdn' -o tsv)"
+          echo "Backend URL: $BACKEND_URL"
+
+          # Configure CORS at the ingress level for cross-origin requests from the frontend
+          az containerapp ingress cors update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --allowed-origins "$WEB_URL" "https://localhost:5173" \
+            --allowed-methods "GET" "POST" "PUT" "DELETE" "OPTIONS" "PATCH" \
+            --allowed-headers "*" \
+            --allow-credentials true \
+            --expose-headers "*" \
+            --output none
+          echo "Ingress CORS configured for frontend: $WEB_URL"
+
+          API_DISABLE_AUTH=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='DISABLE_AUTH'].value | [0]" -o tsv)
+          API_TRUST_HEADER=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='TRUST_EASYAUTH_HEADER'].value | [0]" -o tsv)
+          if [ "$API_DISABLE_AUTH" != "false" ] || [ "$API_TRUST_HEADER" != "false" ]; then
+            echo "ERROR: API secure authentication state verification failed" >&2
+            exit 1
+          fi
 
           # -- Configure EasyAuth on the Web App --
           # --token-store true is REQUIRED so that /.auth/me returns the id_token,
@@ -1231,114 +1405,36 @@ jobs:
             --aad-client-id "$CLIENT_ID" \
             --aad-token-issuer-url "https://sts.windows.net/$TENANT_ID/" \
             --token-store true \
-            --output none 2>/dev/null || {
-            echo "WARNING: Could not configure EasyAuth on Web App"
-            echo "You may need to configure authentication manually in the Azure Portal."
-            echo "Deployment succeeded â€” app is accessible at: $WEB_URL"
-            exit 0
-          }
+            --output none
           echo "Frontend EasyAuth configured (redirect to login, token store enabled)"
 
-          # -- Backend API Auth (handled by FastAPI middleware, not EasyAuth) --
-          # Container Apps EasyAuth excludedPaths is unreliable, so auth validation
-          # is done at the application level in auth_middleware.py (EntraAuthMiddleware).
-          # The middleware validates Bearer tokens from the frontend on protected routes,
-          # while allowing /api/health, /docs, etc. through without auth.
-          # We only need to:
-          #   1. Ensure Container App EasyAuth is DISABLED (avoid double-auth)
-          #   2. Configure CORS at the ingress level for cross-origin requests
-          #   3. Pass tenant/client IDs as env vars for the FastAPI middleware
-          echo ""
-          echo "=== Configuring Backend Container App ==="
-          CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          if [ -z "$CA_NAME" ]; then
-            echo "WARNING: No Container App found â€” skipping backend config"
-          else
-            echo "Container App: $CA_NAME"
-
-            # Disable Container Apps EasyAuth (auth is handled by FastAPI middleware)
-            az containerapp auth update \
-              --name "$CA_NAME" \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --enabled false \
-              --output none 2>/dev/null || {
-              echo "WARNING: Could not disable EasyAuth â€” may already be disabled"
-            }
-            echo "Container App EasyAuth disabled (auth handled by FastAPI middleware)"
-
-            # --------------------------------------------------------------
-            # Feature flag: dynamic collection selector (MCPProobjective.md).
-            # On dev we run in shadow mode -- the new CollectionIndex-based
-            # selector executes alongside the legacy SK pipeline, both picks
-            # are logged via log_pipeline_step("COLLECTION_SELECTOR","SHADOW"),
-            # and v1 stays authoritative. Production stays "off" until shadow
-            # logs are reviewed and the flag is manually flipped to "v2".
-            # --------------------------------------------------------------
-            # Single-env deploy: dynamic collection selector defaults to "off".
-            # Set repo var COLLECTION_SELECTOR_MODE=shadow to A/B-test alongside v1.
-            SELECTOR_MODE="${{ vars.COLLECTION_SELECTOR_MODE || 'off' }}"
-
-            # Set Entra ID + COLLECTION_SELECTOR env vars in ONE update call.
-            # Back-to-back `az containerapp update` calls race against the
-            # still-Provisioning revision from the prior call -- the second
-            # one fails with 409 Conflict, which `2>/dev/null` swallows.
-            # Merging them avoids the race AND avoids creating two revisions.
-            echo "Setting auth + COLLECTION_SELECTOR=$SELECTOR_MODE on $CA_NAME"
-            az containerapp update \
-              --name "$CA_NAME" \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --set-env-vars \
-                "AZURE_AD_TENANT_ID=$TENANT_ID" \
-                "AZURE_AD_CLIENT_ID=$CLIENT_ID" \
-                "COLLECTION_SELECTOR=$SELECTOR_MODE" \
-              --output none 2>/dev/null || {
-              echo "WARNING: Could not set auth + selector env vars on Container App"
-            }
-            echo "Env vars set (AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, COLLECTION_SELECTOR)"
-
-            BACKEND_URL="https://$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query 'properties.configuration.ingress.fqdn' -o tsv)"
-            echo "Backend URL: $BACKEND_URL"
-
-            # Configure CORS at the ingress level for cross-origin requests from the frontend
-            az containerapp ingress cors update \
-              --name "$CA_NAME" \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --allowed-origins "$WEB_URL" "https://localhost:5173" \
-              --allowed-methods "GET" "POST" "PUT" "DELETE" "OPTIONS" "PATCH" \
-              --allowed-headers "*" \
-              --allow-credentials true \
-              --expose-headers "*" \
-              --output none 2>/dev/null || {
-              echo "WARNING: Could not configure CORS on Container App ingress"
-            }
-            echo "Ingress CORS configured for frontend: $WEB_URL"
-          fi
-
-          # -- Ensure service principal exists (needed only for user-level restrictions) --
-          SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || true)
-          if [ -z "$SP_ID" ]; then
-            SP_ID=$(az ad sp create --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || true)
-            if [ -z "$SP_ID" ]; then
-              echo "WARNING: Could not find or create service principal for $CLIENT_ID"
-              echo "EasyAuth is enabled but user-level restrictions require manual SP setup."
-            fi
-            [ -n "$SP_ID" ] && echo "Created service principal: $SP_ID"
-          else
-            echo "Service principal exists: $SP_ID"
+          WEB_AUTH_ENABLED=$(az webapp auth show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query enabled -o tsv)
+          if [ "$WEB_AUTH_ENABLED" != "true" ]; then
+            echo "ERROR: Frontend Entra authentication verification failed" >&2
+            exit 1
           fi
 
           # -- Restrict access to assigned users only (only when AUTH_AUTHORIZED_USERS is set) --
-          if [ -z "$AUTH_AUTHORIZED_USERS" ] || [ -z "$SP_ID" ]; then
-            if [ -z "$AUTH_AUTHORIZED_USERS" ]; then
-              echo "No AUTH_AUTHORIZED_USERS configured â€” all tenant users can access the app"
-            fi
-            # Don't set appRoleAssignmentRequired=true when no users are listed or no SP,
-            # otherwise everyone gets blocked (AADSTS50105).
+          if [ -z "$AUTH_AUTHORIZED_USERS" ]; then
+            echo "No AUTH_AUTHORIZED_USERS configured - all tenant users can access the app"
           else
-            az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=true 2>/dev/null || \
-              echo "WARNING: Could not set appRoleAssignmentRequired (SP may lack permission)"
+            SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv)
+            if [ -z "$SP_ID" ]; then
+              SP_ID=$(az ad sp create --id "$CLIENT_ID" --query id -o tsv)
+            fi
+            if [ -z "$SP_ID" ]; then
+              echo "ERROR: Could not resolve a service principal for $CLIENT_ID" >&2
+              exit 1
+            fi
 
-          # -- Assign authorized users --
+            az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=true
+            ASSIGNMENT_REQUIRED=$(az ad sp show --id "$SP_ID" --query appRoleAssignmentRequired -o tsv)
+            if [ "$ASSIGNMENT_REQUIRED" != "true" ]; then
+              echo "ERROR: Service principal assignment enforcement was not enabled" >&2
+              exit 1
+            fi
+
+            # -- Assign authorized users --
             ASSIGNED=0
             SKIPPED=0
             DEFAULT_ROLE_ID="00000000-0000-0000-0000-000000000000"
@@ -1348,33 +1444,47 @@ jobs:
               EMAIL=$(echo "$EMAIL" | xargs)  # trim whitespace
               [ -z "$EMAIL" ] && continue
 
-              USER_ID=$(az ad user show --id "$EMAIL" --query id -o tsv 2>/dev/null || true)
+              USER_ID=$(az ad user show --id "$EMAIL" --query id -o tsv)
               if [ -z "$USER_ID" ]; then
-                echo "WARNING: User not found: $EMAIL (not in tenant â€” invite as B2B guest first)"
-                continue
+                echo "ERROR: Authorized user not found: $EMAIL" >&2
+                exit 1
               fi
 
               # Check if already assigned
               EXISTING=$(az rest --method GET \
                 --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
-                --query "value[?principalId=='$USER_ID'] | length(@)" -o tsv 2>/dev/null || echo "0")
+                --query "value[?principalId=='$USER_ID'] | length(@)" -o tsv)
 
               if [ "$EXISTING" != "0" ]; then
                 echo "Already assigned: $EMAIL"
                 SKIPPED=$((SKIPPED + 1))
-                continue
+              else
+                az rest --method POST \
+                  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
+                  --headers "Content-Type=application/json" \
+                  --body "{\"principalId\": \"$USER_ID\", \"resourceId\": \"$SP_ID\", \"appRoleId\": \"$DEFAULT_ROLE_ID\"}" \
+                  --output none
+                echo "Assigned: $EMAIL"
+                ASSIGNED=$((ASSIGNED + 1))
               fi
 
-              az rest --method POST \
+              VERIFIED=$(az rest --method GET \
                 --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
-                --headers "Content-Type=application/json" \
-                --body "{\"principalId\": \"$USER_ID\", \"resourceId\": \"$SP_ID\", \"appRoleId\": \"$DEFAULT_ROLE_ID\"}" \
-                --output none 2>/dev/null || { echo "WARNING: Could not assign $EMAIL"; continue; }
-              echo "Assigned: $EMAIL"
-              ASSIGNED=$((ASSIGNED + 1))
+                --query "value[?principalId=='$USER_ID'] | length(@)" -o tsv)
+              if [ "$VERIFIED" == "0" ]; then
+                echo "ERROR: Assignment verification failed for $EMAIL" >&2
+                exit 1
+              fi
             done
             echo "User assignment complete: $ASSIGNED new, $SKIPPED already assigned"
           fi
+
+          az containerapp ingress update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --type external \
+            --output none
+          echo "Container App external ingress restored after secure-mode verification"
 
           echo ""
           echo "Authentication configured successfully"

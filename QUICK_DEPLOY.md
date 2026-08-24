@@ -362,7 +362,9 @@ gh secret set AUTH_CLIENT_ID --env dev
 
 > **Why manual?** Creating app registrations requires Microsoft Graph API permissions (`Application.ReadWrite.All`) — these are directory-level permissions separate from Azure RBAC. A standard deployment service principal (Contributor + User Access Administrator) doesn't have them. 
 
-> **Skip this step** if you want to deploy without authentication first and add it later.
+> **Public demo mode:** To deploy without authentication, run the workflow with
+> `disable_auth=true`. Without that explicit flag, a missing `AUTH_CLIENT_ID`
+> stops deployment instead of silently exposing the app.
 
 > **AADSTS50011 after deploy?** If sign-in fails with *"The redirect URI ... does not match"*, the workflow tried to patch your app registration but the deployment SP lacked `Application.ReadWrite.OwnedBy`. Fix manually with:
 > ```powershell
@@ -374,12 +376,12 @@ gh secret set AUTH_CLIENT_ID --env dev
 
 ## Step 9: Deploy via GitHub Actions
 
-**Now the automated part begins!** The default deployment is **public** with Entra ID authentication (if `AUTH_CLIENT_ID` is set in Step 8.3).
+**Now the automated part begins!** The default deployment requires Entra ID authentication. Use `disable_auth=true` only for an intentional public demo.
 
 ### Option A: GitHub CLI (Recommended)
 
 ```powershell
-# Trigger deployment — public by default; auth enabled if AUTH_CLIENT_ID is set (Step 8.3).
+# Trigger deployment. AUTH_CLIENT_ID is required unless disable_auth=true is explicit.
 # deploy_gpt5=false uses GPT-4o instead (available in every AOAI region, no special quota).
 gh workflow run deploy.yml -f force_all=true -f deploy_gpt5=false
 
@@ -495,7 +497,7 @@ The workflow runs these jobs:
 3. **Deploy Backend** — Container App with FastAPI + the full agent surface: Clarifier (L1+L2), Action Router, Query Splitter, Load Agent, Raster Sampling, Contextual, Vision, Terrain, Mobility, Comparison, Building Damage, Extreme Weather, **Site Intel** (MAF), **Resilience** (MAF), **Forecast** (MAF; Aurora + Earth-2 FCN + MAI Weather). Credentials wired via managed identity.
 4. **Deploy Frontend** — App Service with React UI (Public/Pro STAC toggle, GEOINT module selectors, Site Intel + Resilience + Forecast panels)
 5. **Enable Agent Service** — Enables Agent Service capability hosts on AI Foundry so GEOINT agents can use multi-turn tool orchestration (fallback: `scripts\enable-agent-service.ps1`)
-6. **Configure Auth** — Configures Entra ID EasyAuth on both frontend (login redirect) and backend Container App (Return401) using the app registration from Step 8.3 (skipped if `AUTH_CLIENT_ID` secret is not set or `disable_auth=true`)
+6. **Configure Auth** — Configures Entra ID EasyAuth on the frontend and in-process token validation on the backend. A missing `AUTH_CLIENT_ID` fails deployment unless `disable_auth=true` explicitly selects public mode.
 7. **Summary** — Prints deployment status, endpoints, auth configuration, and Agent Service status
 
 ![GitHub Actions Auto Deploy](documentation/images/auto_deploy_github_actions.png)
