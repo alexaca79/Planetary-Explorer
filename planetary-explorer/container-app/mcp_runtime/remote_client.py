@@ -45,10 +45,8 @@ class RemoteMcpClient:
     async def call_raw(self, tool: str, arguments: dict[str, Any]) -> Any:
         """Invoke one advertised tool and unwrap its structured response."""
         try:
-            session = await asyncio.wait_for(
-                self._ensure_session(),
-                timeout=self._request_timeout,
-            )
+            async with asyncio.timeout(self._request_timeout):
+                session = await self._ensure_session()
         except TimeoutError as exc:
             raise RemoteMcpUnavailable("Remote MCP session initialization timed out.") from exc
 
@@ -57,10 +55,8 @@ class RemoteMcpClient:
                 f"Remote MCP tool '{tool}' is not advertised by the configured service."
             )
         try:
-            result = await asyncio.wait_for(
-                session.call_tool(tool, arguments),
-                timeout=self._request_timeout,
-            )
+            async with asyncio.timeout(self._request_timeout):
+                result = await session.call_tool(tool, arguments)
         except TimeoutError as exc:
             raise RemoteMcpUnavailable(f"Remote MCP tool '{tool}' timed out.") from exc
         except Exception as exc:
