@@ -62,6 +62,15 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$EnableFabric,
 
+    [Parameter(Mandatory=$false)]
+    [bool]$DeployGpt5 = $true,
+
+    [Parameter(Mandatory=$false)]
+    [bool]$DeployGpt56 = $true,
+
+    [Parameter(Mandatory=$false)]
+    [bool]$DeployEmbeddingModel = $true,
+
     # Forecast Agent weather models. When on, provisions the CPU-only weather
     # stub Container App and points AURORA_ENDPOINT_URL / EARTH2_FCN_ENDPOINT_URL
     # at it so the Forecast Agent works end-to-end without GPU quota. MAI
@@ -79,10 +88,21 @@ function Resolve-Flag([bool]$switchValue, [string]$envName) {
     return $false
 }
 
+function Resolve-Bool([bool]$parameterValue, [string]$envName) {
+    $value = [Environment]::GetEnvironmentVariable($envName)
+    if (-not $value) { return $parameterValue }
+    if ($value.ToLower() -in @('1','true','yes','on')) { return $true }
+    if ($value.ToLower() -in @('0','false','no','off')) { return $false }
+    throw "$envName must be true or false, got '$value'."
+}
+
 $mpcPro  = Resolve-Flag $EnableMpcPro.IsPresent           'MPC_PRO'
 $private = Resolve-Flag $EnablePrivateEndpoints.IsPresent 'PRIVATE'
 $fabric  = Resolve-Flag $EnableFabric.IsPresent           'FABRIC'
 $weather = Resolve-Flag $EnableWeatherModels.IsPresent    'WEATHER_MODELS'
+$deployGpt5Resolved = Resolve-Bool $DeployGpt5 'DEPLOY_GPT5'
+$deployGpt56Resolved = Resolve-Bool $DeployGpt56 'DEPLOY_GPT56'
+$deployEmbeddingResolved = Resolve-Bool $DeployEmbeddingModel 'DEPLOY_EMBEDDING_MODEL'
 
 if (-not $Location -and $env:LOCATION) { $Location = $env:LOCATION }
 
@@ -91,12 +111,13 @@ Write-Host "============================================" -ForegroundColor Green
 Write-Host "Environment   : $EnvironmentName"            -ForegroundColor Cyan
 Write-Host "Resource Group: rg-$EnvironmentName"          -ForegroundColor Cyan
 Write-Host "Flags         : MpcPro=$mpcPro  Private=$private  Fabric=$fabric  WeatherModels=$weather" -ForegroundColor Cyan
+Write-Host "Models        : GPT5=$deployGpt5Resolved  GPT56=$deployGpt56Resolved  Embeddings=$deployEmbeddingResolved" -ForegroundColor Cyan
 
 $deploymentName = "planetary-explorer-$EnvironmentName-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
 # Check if already signed in to Azure
 Write-Host "`nChecking Azure authentication..." -ForegroundColor Cyan
-$currentAccount = az account show 2>$null
+az account show 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Please sign in to Azure..." -ForegroundColor Yellow
     az login | Out-Null
@@ -114,10 +135,14 @@ if (-not $Location) {
     Write-Host "`nNo -Location supplied. Running region preflight..." -ForegroundColor Cyan
     $selectScript = Join-Path $PSScriptRoot 'planetary-explorer/scripts/select-region.ps1'
     if (-not (Test-Path $selectScript)) {
-        Write-Host "Preflight script not found at $selectScript - falling back to eastus2" -ForegroundColor Yellow
-        $Location = 'eastus2'
+        Write-Host "Preflight script not found at $selectScript. Aborting." -ForegroundColor Red
+        exit 1
     } else {
-        $preflightArgs = @()
+        $preflightArgs = @(
+            ('-DeployGpt5:${0}' -f $deployGpt5Resolved.ToString().ToLower()),
+            ('-DeployGpt56:${0}' -f $deployGpt56Resolved.ToString().ToLower()),
+            ('-DeployEmbeddingModel:${0}' -f $deployEmbeddingResolved.ToString().ToLower())
+        )
         if ($mpcPro)  { $preflightArgs += '-EnableMpcPro' }
         if ($private) { $preflightArgs += '-EnablePrivateEndpoints' }
         if ($fabric)  { $preflightArgs += '-EnableFabric' }
@@ -130,8 +155,8 @@ if (-not $Location) {
             if (-not $Location) { throw "preflight returned empty region" }
             Write-Host "Auto-selected region: $Location" -ForegroundColor Green
         } catch {
-            Write-Host "Region preflight failed: $($_.Exception.Message). Falling back to eastus2." -ForegroundColor Yellow
-            $Location = 'eastus2'
+            Write-Host "Region preflight failed: $($_.Exception.Message). Aborting." -ForegroundColor Red
+            exit 1
         }
     }
 } else {
@@ -163,6 +188,9 @@ $inlineParams += "enableMpcPro=$($mpcPro.ToString().ToLower())"
 $inlineParams += "enablePrivateEndpoints=$($private.ToString().ToLower())"
 $inlineParams += "enableFabric=$($fabric.ToString().ToLower())"
 $inlineParams += "deployWeatherStub=$($weather.ToString().ToLower())"
+$inlineParams += "deployGpt5=$($deployGpt5Resolved.ToString().ToLower())"
+$inlineParams += "deployGpt56=$($deployGpt56Resolved.ToString().ToLower())"
+$inlineParams += "deployEmbeddingModel=$($deployEmbeddingResolved.ToString().ToLower())"
 
 # Validate before deploying - surfaces region/SKU/quota issues without partial provisioning.
 Write-Host "`nValidating template..." -ForegroundColor Cyan

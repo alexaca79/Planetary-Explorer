@@ -4759,6 +4759,21 @@ const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
+    if (module === 'foundation_change') {
+      console.log('MapView: Foundation Change module selected - chat-driven flow');
+      setPinMode(false);
+      setVisionMode(false);
+      if (onModuleSelected) onModuleSelected(module);
+      if (onGeointAnalysis) {
+        onGeointAnalysis({
+          type: 'module_selected',
+          message: '**Foundation Change selected.** Load two HLS epochs, then ask what changed. The GeoFM registry is checked on every turn; PlanAura GPU work still requires approval.'
+        });
+      }
+      setShowModulesMenu(false);
+      return;
+    }
+
     // Handle comparison module - pin-first workflow like other GEOINT modules
     if (module === 'comparison') {
       console.log('MapView: Comparison module selected - enabling pin mode for location selection');
@@ -6234,6 +6249,36 @@ const MapView: React.FC<MapViewProps> = ({
 
                 {/* Site Audit Module */}
                 <div
+                  onClick={() => handleModuleSelect('foundation_change')}
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    border: selectedModule === 'foundation_change' ? '2px solid #0f766e' : '1px solid rgba(0, 0, 0, 0.1)',
+                    background: selectedModule === 'foundation_change' ? 'rgba(15, 118, 110, 0.1)' : 'white',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedModule !== 'foundation_change') {
+                      e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedModule !== 'foundation_change') {
+                      e.currentTarget.style.background = 'white';
+                    }
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f2937', marginBottom: '4px' }}>
+                    Foundation Change
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                    PlanAura contextual change over two loaded HLS epochs
+                  </div>
+                </div>
+
+                {/* Site Audit Module */}
+                <div
                   onClick={() => handleModuleSelect('site_audit')}
                   style={{
                     padding: '12px',
@@ -6432,6 +6477,7 @@ const MapView: React.FC<MapViewProps> = ({
                      selectedModule === 'forecast' ? 'Forecast' :
                      selectedModule === 'site_audit' ? 'Site Intel' :
                      selectedModule === 'resilience' ? 'Resilience' :
+                     selectedModule === 'foundation_change' ? 'Foundation Change' :
                      selectedModule} selected
                 </div>
               )}

@@ -17,6 +17,15 @@
     "deployAIFoundry": {
       "value": true
     },
+    "deployGpt5": {
+      "value": true
+    },
+    "deployGpt56": {
+      "value": true
+    },
+    "deployEmbeddingModel": {
+      "value": true
+    },
     "deployBotService": {
       "value": false
     },

@@ -2,9 +2,11 @@
 
 import pytest
 
+from agents.analyst_agent.analyst_agent import AnalystAgent
 from agents.analyst_agent.session_context import AnalystSession, clear_session, set_session
 from agents.analyst_agent.tools import compare_with_geofm, get_geofm_run
 from mcp_runtime.traced_client import TracedMcpClient
+from pipeline.contracts import AnalysisRequest
 
 
 class FakeGeoFmClient:
@@ -118,3 +120,43 @@ async def test_given_completed_run_when_polling_then_vector_visualization_is_ret
     assert visualization["kind"] == "vector_layer"
     assert visualization["spec"]["data"]["features"] == [feature]
     assert fake.calls[0][1]["requested_by"] == "tenant:user-1"
+
+
+@pytest.mark.asyncio
+async def test_given_foundation_change_module_when_analyzing_then_registry_is_always_pinged(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.analyst_agent.tools as analyst_tools
+
+    agent = AnalystAgent()
+    calls = 0
+    captured_request = None
+
+    async def fake_list_geofm_models():
+        nonlocal calls
+        calls += 1
+        return {"success": True, "models": [{"id": "planaura_hls"}]}
+
+    async def fake_invoke(request, _invocation):
+        nonlocal captured_request
+        captured_request = request
+        return "Foundation analysis ready.", [], []
+
+    monkeypatch.setattr(analyst_tools, "list_geofm_models", fake_list_geofm_models)
+    monkeypatch.setattr(agent, "_invoke_agent_service", fake_invoke)
+    request = AnalysisRequest(
+        question="Find contextual change in the loaded scenes",
+        session_id="foundation-change-test",
+        geoint_module="foundation_change",
+    )
+
+    # Act
+    await agent.run(request)
+
+    # Assert
+    assert calls == 1
+    assert captured_request.geofm_context == {
+        "success": True,
+        "models": [{"id": "planaura_hls"}],
+    }

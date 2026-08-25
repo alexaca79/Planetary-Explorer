@@ -1,11 +1,14 @@
-# Planetary Explorer Infrastructure Deployment
+---
+title: Planetary Explorer Infrastructure Deployment
+description: Azure infrastructure deployment reference for Planetary Explorer
+---
 
 This directory contains Bicep templates for deploying the complete Planetary Explorer infrastructure to Azure.
 
 ## 🏗️ What Gets Deployed
 
 ### Core Services
-- **Azure AI Foundry** - GPT-4o and GPT-5 models for AI queries
+- **Azure AI Foundry** - GPT-4o, GPT-5, and GPT-5.6 Sol, Terra, and Luna models for AI queries
 - **Azure Maps** - Geocoding and location services
 - **Azure Container Registry** - Docker image storage
 - **ACR Agent Pool** (`buildpool`) - VNet-integrated build agents for private image builds (when private endpoints enabled)
@@ -106,7 +109,8 @@ Edit `main.parameters.json` or pass as command-line arguments:
 | `environmentName` | Name prefix for all resources | `planetaryexplorer` |
 | `location` | Azure region | `eastus` |
 | `deployAISearch` | Include Azure AI Search | `false` |
-| `deployModels` | Deploy GPT-4o/GPT-5 models | `true` |
+| `deployGpt5` | Deploy the GPT-5 model | `true` |
+| `deployGpt56` | Deploy GPT-5.6 Sol, Terra, and Luna models | `true` |
 | `enableAuthentication` | Enable Entra ID auth | `false` |
 
 ### Resource Naming

@@ -15,6 +15,8 @@ interface LandingPageProps {
   onEnter: (target: string, query?: string) => void;
   onModelChange?: (modelId: string) => void;
   selectedModel?: string;
+  onReasoningEffortChange?: (effort: string) => void;
+  selectedReasoningEffort?: string;
   // Optional so existing call sites that don't care about STAC routing
   // (e.g. tests, storybook) still compile; App.tsx always passes these.
   stacMode?: StacMode;
@@ -28,6 +30,8 @@ const LandingPage: React.FC<LandingPageProps> = ({
   onEnter,
   onModelChange,
   selectedModel,
+  onReasoningEffortChange,
+  selectedReasoningEffort,
   stacMode,
   onStacModeChange,
   proEnabled,
@@ -129,6 +133,8 @@ const LandingPage: React.FC<LandingPageProps> = ({
             apiBaseUrl={API_BASE_URL}
             onModelChange={onModelChange}
             selectedModel={selectedModel}
+            onReasoningEffortChange={onReasoningEffortChange}
+            selectedReasoningEffort={selectedReasoningEffort}
           />
           <FoundationModelsInfo apiBaseUrl={API_BASE_URL} />
           {stacMode && onStacModeChange && (

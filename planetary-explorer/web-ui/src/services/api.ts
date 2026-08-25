@@ -419,6 +419,8 @@ class ApiService {
     geointMode?: boolean,
     mapContext?: MapContext,
     selectedModel?: string,
+    reasoningEffort?: string,
+    geointModule?: string,
     partOfSplit?: boolean,
     stacMode?: 'public' | 'pro',
     signal?: AbortSignal,
@@ -430,7 +432,7 @@ class ApiService {
       onError?: (err: Error) => void;
     },
   ): Promise<any> {
-    debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, partOfSplit, stacMode, hasAbortSignal: !!signal });
+    debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, reasoningEffort, geointModule, partOfSplit, stacMode, hasAbortSignal: !!signal });
 
     if (!this.api) {
       console.error('API instance is not initialized');
@@ -445,6 +447,8 @@ class ApiService {
       const requestData: any = {
         query: message,
         ...(selectedModel && { model: selectedModel }),
+        ...(reasoningEffort && { reasoning_effort: reasoningEffort }),
+        ...(geointModule && { geoint_module: geointModule }),
         preferences: {
           interface_type: 'planetary_explorer',
           data_source: 'planetary_computer',

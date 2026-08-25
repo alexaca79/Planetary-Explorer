@@ -100,6 +100,62 @@ async def test_given_slow_analyst_when_timeout_expires_then_fallback_is_returned
 
 
 @pytest.mark.asyncio
+async def test_given_slow_gpt_56_responses_when_timeout_expires_then_fallback_is_returned(
+    monkeypatch,
+) -> None:
+    # Arrange
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.01
+
+    async def never_finishes(_request, _invocation):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(agent, "_invoke_responses_api", never_finishes)
+    request = _request().model_copy(
+        update={"model": "gpt-5.6-terra", "reasoning_effort": "high"}
+    )
+
+    # Act
+    result = await asyncio.wait_for(agent.run(request), timeout=0.1)
+
+    # Assert
+    assert result.structured["analyst_status"] == {
+        "status": "timeout",
+        "timeout_seconds": 0.01,
+    }
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_slow_geofm_preflight_when_timeout_expires_then_fallback_is_returned(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.analyst_agent.tools as analyst_tools
+
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.01
+
+    async def never_finishes():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(analyst_tools, "list_geofm_models", never_finishes)
+    request = _request().model_copy(
+        update={"geoint_module": "foundation_change"}
+    )
+
+    # Act
+    result = await asyncio.wait_for(agent.run(request), timeout=0.1)
+
+    # Assert
+    assert result.structured["analyst_status"] == {
+        "status": "timeout",
+        "timeout_seconds": 0.01,
+    }
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
 async def test_given_outer_cancellation_when_remote_run_is_active_then_run_is_cancelled(
     monkeypatch,
 ) -> None:

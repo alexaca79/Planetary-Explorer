@@ -51,6 +51,12 @@ param deployAIFoundry bool = true
 @description('Deploy GPT-5 model (requires GlobalStandard quota — set false if unavailable)')
 param deployGpt5 bool = true
 
+@description('Deploy GPT-5.6 Sol, Terra, and Luna models (requires GlobalStandard quota — set false if unavailable)')
+param deployGpt56 bool = true
+
+@description('Deploy the text embedding model used by search and retrieval workloads')
+param deployEmbeddingModel bool = true
+
 // Microsoft Fabric integration (opt-in, three-way toggle)
 //
 //   enableFabric           Master switch. When false, the UI hides Fabric-
@@ -210,6 +216,20 @@ var tags = {
   'azd-env-name': environmentName
   'azd-app-name': 'planetary-explorer'
 }
+var managedChatModels = concat(
+  [
+    'gpt-4o'
+    'gpt-4o-mini'
+  ],
+  deployGpt5 ? ['gpt-5'] : [],
+  deployGpt56 ? [
+    'gpt-5.6-sol'
+    'gpt-5.6-terra'
+    'gpt-5.6-luna'
+  ] : []
+)
+var deployedChatModels = deployAIFoundry ? managedChatModels : ['gpt-4o']
+var primaryChatModel = deployAIFoundry && deployGpt5 ? 'gpt-5' : 'gpt-4o'
 
 // Auto-generate a stable, recoverable Postgres admin password if the caller
 // didn't supply one. Format: <16-char hash><uppercase><digit><symbol>.
@@ -328,6 +348,8 @@ module aiFoundry './shared/ai-foundry.bicep' = if (deployAIFoundry) {
     tags: tags
     deployModels: true
     deployGpt5: deployGpt5
+    deployGpt56: deployGpt56
+    deployEmbeddingModel: deployEmbeddingModel
     deployAgentService: true
     hubName: '${abbrs.machineLearningServicesWorkspaces}hub-${resourceToken}'
     projectName: '${abbrs.machineLearningServicesWorkspaces}project-${resourceToken}'
@@ -513,6 +535,9 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     // disableLocalAuth=true and listKeys() fails with BadRequest.
     azureOpenAiApiKey: azureOpenAiApiKey
     azureOpenAiEndpoint: deployAIFoundry ? (aiFoundry.?outputs.?endpoint ?? '') : azureOpenAiEndpoint
+    azureOpenAiDeploymentName: primaryChatModel
+    azureOpenAiFastDeployment: 'gpt-4o-mini'
+    azureOpenAiAvailableModels: join(deployedChatModels, ',')
     openAiApiKey: openAiApiKey
     // Azure Maps subscription key for geocoding
     azureMapsSubscriptionKey: maps.outputs.primaryKey

@@ -51,6 +51,9 @@ function App() {
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     return localStorage.getItem('planetaryexplorer-model') || '';
   });
+  const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
+    return localStorage.getItem('planetaryexplorer-reasoning-effort') || 'none';
+  });
   const [stacMode, setStacMode] = useState<'public' | 'pro'>('public');
   // Note: stacMode intentionally does NOT read from localStorage. Product
   // requirement is that every fresh app open defaults to MPC Public; the
@@ -93,6 +96,11 @@ function App() {
     console.log(' App: Model changed to:', modelId);
     setSelectedModel(modelId);
     localStorage.setItem('planetaryexplorer-model', modelId);
+  };
+
+  const handleReasoningEffortChange = (effort: string) => {
+    setReasoningEffort(effort);
+    localStorage.setItem('planetaryexplorer-reasoning-effort', effort);
   };
 
   const handleStacModeChange = (next: 'public' | 'pro') => {
@@ -150,6 +158,8 @@ function App() {
             onEnter={handleEnterApp}
             onModelChange={handleModelChange}
             selectedModel={selectedModel}
+            onReasoningEffortChange={handleReasoningEffortChange}
+            selectedReasoningEffort={reasoningEffort}
             stacMode={stacMode}
             onStacModeChange={handleStacModeChange}
             proEnabled={features.mpcPro}
@@ -161,6 +171,8 @@ function App() {
               onRestartSession={handleRestartSession}
               onModelChange={handleModelChange}
               selectedModel={selectedModel}
+              onReasoningEffortChange={handleReasoningEffortChange}
+              selectedReasoningEffort={reasoningEffort}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
               proEnabled={features.mpcPro}
@@ -173,6 +185,7 @@ function App() {
               geointMode={geointMode}
               onGeointToggle={setGeointMode}
               selectedModel={selectedModel}
+              reasoningEffort={reasoningEffort}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
             />

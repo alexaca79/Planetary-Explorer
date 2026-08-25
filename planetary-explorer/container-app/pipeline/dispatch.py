@@ -173,6 +173,13 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
     if _stac_mode not in ("public", "pro"):
         _stac_mode = "public"
 
+    geoint_module_raw = body.get("geoint_module")
+    geoint_module = (
+        geoint_module_raw.strip()
+        if isinstance(geoint_module_raw, str) and geoint_module_raw.strip()
+        else None
+    )
+
     return AnalysisRequest(
         question=(body.get("query") or body.get("user_query") or "").strip(),
         session_id=str(
@@ -192,6 +199,10 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         history=list(history) if isinstance(history, list) else [],
         stac_items=list(stac_items),
         tile_urls=list(tile_urls),
+        hint="foundation_change" if geoint_module == "foundation_change" else None,
+        geoint_module=geoint_module,
+        model=body.get("model"),
+        reasoning_effort=str(body.get("reasoning_effort") or "none"),
         stac_mode=_stac_mode,
     )
 
@@ -310,7 +321,18 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
                 _q[:60],
             )
     decision: ActionDecision
-    if clarifier_route in _route_to_action:
+    if request.geoint_module == "foundation_change":
+        decision = ActionDecision(
+            action="ANALYZE",
+            analysis_question=request.question,
+            reasoning="foundation_change_module",
+            confidence=1.0,
+        )
+        logger.info(
+            "[PIPELINE-V2] foundation_change module -> ANALYZE "
+            "(skipped clarifier route and ActionRouter)"
+        )
+    elif clarifier_route in _route_to_action:
         decision = ActionDecision(
             action=_route_to_action[clarifier_route],  # type: ignore[arg-type]
             location=body.get("location_name"),

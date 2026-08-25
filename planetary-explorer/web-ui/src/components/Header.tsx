@@ -17,6 +17,8 @@ interface HeaderProps {
   onRestartSession?: () => void;
   onModelChange?: (modelId: string) => void;
   selectedModel?: string;
+  onReasoningEffortChange?: (effort: string) => void;
+  selectedReasoningEffort?: string;
   stacMode?: StacMode;
   onStacModeChange?: (next: StacMode) => void;
   /** Surfaced from /api/config.features.mpcPro. When false the toggle renders
@@ -43,7 +45,7 @@ const GlobeLogo: React.FC = () => (
   </span>
 );
 
-const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, onModelChange, selectedModel, stacMode, onStacModeChange, proEnabled }) => {
+const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, onModelChange, selectedModel, onReasoningEffortChange, selectedReasoningEffort, stacMode, onStacModeChange, proEnabled }) => {
   return (
     <div className="top-header">
       <div style={{ padding: '0' }}>
@@ -56,7 +58,13 @@ const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, on
       </div>
       <div className="header-controls">
         <GetStartedButton />
-        <ModelSelector onModelChange={onModelChange} selectedModel={selectedModel} apiBaseUrl={API_BASE_URL} />
+        <ModelSelector
+          onModelChange={onModelChange}
+          selectedModel={selectedModel}
+          onReasoningEffortChange={onReasoningEffortChange}
+          selectedReasoningEffort={selectedReasoningEffort}
+          apiBaseUrl={API_BASE_URL}
+        />
         <FoundationModelsInfo apiBaseUrl={API_BASE_URL} />
         {stacMode && onStacModeChange && (
           <StacModeToggle mode={stacMode} onChange={onStacModeChange} proEnabled={proEnabled} />

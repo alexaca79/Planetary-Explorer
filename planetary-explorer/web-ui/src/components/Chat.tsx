@@ -210,6 +210,7 @@ interface ChatProps {
   onClearVisionSession?: () => void; // Callback to clear vision session
   onComparisonResult?: (result: any) => void; // Callback for comparison analysis results (before/after data)
   selectedModel?: string; // Selected AI model (gpt-5)
+  reasoningEffort?: string; // Selected GPT-5.6 reasoning effort
   stacMode?: 'public' | 'pro'; // Public MPC vs MPC Pro (private GeoCatalog) for STAC routing
 }
 
@@ -235,6 +236,7 @@ const Chat: React.FC<ChatProps> = ({
   onClearVisionSession,
   onComparisonResult,
   selectedModel,
+  reasoningEffort,
   stacMode,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -319,6 +321,7 @@ const Chat: React.FC<ChatProps> = ({
   // AND calls abort() so the HTTP request is genuinely terminated end-to-end
   // (axios honors the signal and the backend connection drops).
   const chatAbortRef = useRef<AbortController | null>(null);
+  const [partsPending, setPartsPending] = useState(false);
   const [hasProcessedInitialQuery, setHasProcessedInitialQuery] = useState(false);
   const initialQueryRef = useRef(false);
   const [lastResponse, setLastResponse] = useState<string>('');
@@ -469,7 +472,8 @@ const Chat: React.FC<ChatProps> = ({
           const validationErrors: string[] = [];
 
           if (requiresStacData) {
-            const hasStacData = (currentMapContext?.tile_urls?.length > 0) || (currentMapContext?.stac_items?.length > 0);
+            const hasStacData = (currentMapContext?.tile_urls?.length ?? 0) > 0
+              || (currentMapContext?.stac_items?.length ?? 0) > 0;
             if (!hasStacData) {
               validationErrors.push('**No satellite data loaded.** Please run a STAC Search query (Step 1) first to load tiles on the map.');
             }
@@ -1851,6 +1855,8 @@ const Chat: React.FC<ChatProps> = ({
           geointMode,
           freshMapContext,
           selectedModel,
+          reasoningEffort,
+          selectedModule,
           false,
           stacMode,
           controller.signal,
@@ -2010,89 +2016,104 @@ const Chat: React.FC<ChatProps> = ({
         const partsList: Array<{ id: number; query: string; depends_on: number[] }> =
           responseData.parts;
         const freshMapCtxForParts = mapContextRef.current;
+        const partsController = new AbortController();
+        chatAbortRef.current = partsController;
+        setPartsPending(true);
 
         (async () => {
           const answers: Record<number, string> = {};
-          for (const part of partsList) {
-            // For dependent parts, prepend a compact context block so the
-            // backend agent has the prior answer available without needing
-            // a fresh tool call.
-            let queryText = part.query;
-            if (part.depends_on && part.depends_on.length > 0) {
-              const ctxLines = part.depends_on
-                .map((d) => answers[d] ? `Part ${d} answer:\n${answers[d]}` : '')
-                .filter(Boolean);
-              if (ctxLines.length > 0) {
-                queryText = `[Context from earlier parts]\n${ctxLines.join('\n\n')}\n\n[Now answer]\n${part.query}`;
+          try {
+            for (const part of partsList) {
+              if (partsController.signal.aborted) break;
+
+              // For dependent parts, prepend a compact context block so the
+              // backend agent has the prior answer available without needing
+              // a fresh tool call.
+              let queryText = part.query;
+              if (part.depends_on && part.depends_on.length > 0) {
+                const ctxLines = part.depends_on
+                  .map((d) => answers[d] ? `Part ${d} answer:\n${answers[d]}` : '')
+                  .filter(Boolean);
+                if (ctxLines.length > 0) {
+                  queryText = `[Context from earlier parts]\n${ctxLines.join('\n\n')}\n\n[Now answer]\n${part.query}`;
+                }
+              }
+
+              // Show a "Working on part N of M…" thinking bubble.
+              setMessages(prev => ([
+                ...prev,
+                {
+                  role: 'assistant',
+                  content: `Working on part ${part.id} of ${partsList.length}…`,
+                  timestamp: new Date(),
+                  isThinking: true,
+                },
+              ]));
+
+              try {
+                const partStream = createQueryStreamContext();
+                const partResult = await apiService.sendChatMessage(
+                  queryText,
+                  selectedDataset?.id,
+                  sharedSessionId,
+                  messages,
+                  currentPin || undefined,
+                  geointMode,
+                  freshMapCtxForParts,
+                  selectedModel,
+                  reasoningEffort,
+                  selectedModule,
+                  true, // partOfSplit — prevents recursive splitting
+                  stacMode,
+                  partsController.signal,
+                  partStream.handlers,
+                );
+
+                const partText =
+                  partResult?.response ||
+                  partResult?.user_response ||
+                  partResult?.message ||
+                  'No response received for this part.';
+                answers[part.id] = typeof partText === 'string' ? partText : String(partText);
+
+                // Replace the trailing thinking bubble with the actual answer.
+                setMessages(prev => {
+                  const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
+                  return [
+                    ...filtered,
+                    {
+                      role: 'assistant',
+                      content: answers[part.id],
+                      timestamp: new Date(),
+                      toolTrace: partStream.rows,
+                    },
+                  ];
+                });
+
+                if (onResponseReceived) {
+                  onResponseReceived(partResult);
+                }
+              } catch (err: any) {
+                if (partsController.signal.aborted) break;
+                console.error(' Chat: Sequential part failed:', err);
+                setMessages(prev => {
+                  const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
+                  return [
+                    ...filtered,
+                    {
+                      role: 'assistant',
+                      content: `Part ${part.id} failed: ${err?.message || 'unknown error'}. Continuing with remaining parts.`,
+                      timestamp: new Date(),
+                    },
+                  ];
+                });
               }
             }
-
-            // Show a "Working on part N of M…" thinking bubble.
-            setMessages(prev => ([
-              ...prev,
-              {
-                role: 'assistant',
-                content: `Working on part ${part.id} of ${partsList.length}…`,
-                timestamp: new Date(),
-                isThinking: true,
-              },
-            ]));
-
-            try {
-              const partStream = createQueryStreamContext();
-              const partResult = await apiService.sendChatMessage(
-                queryText,
-                selectedDataset?.id,
-                sharedSessionId,
-                messages,
-                currentPin || undefined,
-                geointMode,
-                freshMapCtxForParts,
-                selectedModel,
-                true, // partOfSplit — prevents recursive splitting
-                stacMode,
-                controller.signal,
-                partStream.handlers,
-              );
-
-              const partText =
-                partResult?.response ||
-                partResult?.user_response ||
-                partResult?.message ||
-                'No response received for this part.';
-              answers[part.id] = typeof partText === 'string' ? partText : String(partText);
-
-              // Replace the trailing thinking bubble with the actual answer.
-              setMessages(prev => {
-                const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
-                return [
-                  ...filtered,
-                  {
-                    role: 'assistant',
-                    content: answers[part.id],
-                    timestamp: new Date(),
-                    toolTrace: partStream.rows,
-                  },
-                ];
-              });
-
-              if (onResponseReceived) {
-                onResponseReceived(partResult);
-              }
-            } catch (err: any) {
-              console.error(' Chat: Sequential part failed:', err);
-              setMessages(prev => {
-                const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
-                return [
-                  ...filtered,
-                  {
-                    role: 'assistant',
-                    content: `Part ${part.id} failed: ${err?.message || 'unknown error'}. Continuing with remaining parts.`,
-                    timestamp: new Date(),
-                  },
-                ];
-              });
-            }
+          } finally {
+            setPartsPending(false);
+            if (chatAbortRef.current === partsController) chatAbortRef.current = null;
+            cancelledRef.current = false;
+            setMessages(prev => prev.filter(msg => !msg.isThinking));
           }
         })();
 
@@ -2443,6 +2464,7 @@ const Chat: React.FC<ChatProps> = ({
       console.warn(' Chat: abort() threw (non-fatal):', e);
     }
     chatAbortRef.current = null;
+    setPartsPending(false);
     setPendingConfirms([]);
     // Drop any pending "Thinking..." bubbles so the chat returns to a
     // clean state. Same filter used by mobility/geoint cancel paths.
@@ -2637,7 +2659,7 @@ const Chat: React.FC<ChatProps> = ({
             </div>
           ))}
 
-          {chatMutation.isPending && (
+          {(chatMutation.isPending || partsPending) && (
             <div className="row assistant">
               <div>
                 <div className="msg">
@@ -2673,9 +2695,9 @@ const Chat: React.FC<ChatProps> = ({
                   ? `Ask about ${selectedDataset.title}...`
                   : "Ask about Earth data..."
               }
-              disabled={chatMutation.isPending}
+              disabled={chatMutation.isPending || partsPending}
             />
-            {chatMutation.isPending ? (
+            {(chatMutation.isPending || partsPending) ? (
               <button
                 className="btn send"
                 onClick={handleStopMessage}

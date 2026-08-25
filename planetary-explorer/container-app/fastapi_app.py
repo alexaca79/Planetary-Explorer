@@ -2483,13 +2483,18 @@ async def health_check():
         # 1. Azure OpenAI — config check only (no billable test call)
         endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
         deployment = _resolve_chat_deployment(None)
+        available_models = _configured_chat_deployments()
         has_auth = bool(os.getenv("AZURE_OPENAI_API_KEY")) or os.getenv("USE_MANAGED_IDENTITY", "").lower() == "true"
         if endpoint and has_auth:
             checks["azure_openai"] = {
                 "status": "configured",
                 "endpoint": endpoint,
                 "model": deployment,
-                "available_models": [deployment],
+                "available_models": available_models,
+                "model_capabilities": {
+                    model: _reasoning_capability(model)
+                    for model in available_models
+                },
             }
         else:
             checks["azure_openai"] = {"status": "misconfigured"}
@@ -2541,6 +2546,7 @@ async def health_check():
         return JSONResponse(content={"status": "unhealthy", "error": str(e)}, status_code=500)
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_GPT_56_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -2557,18 +2563,79 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in _TRUE_VALUES
 
 
-def _resolve_chat_deployment(requested_model: Optional[str]) -> str:
-    """Use the deployment configured for this API revision."""
-    configured_model = (
+def _configured_chat_deployments() -> List[str]:
+    """Return configured chat deployments in stable preference order."""
+    primary = (
         os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5").strip() or "gpt-5"
     )
-    if requested_model and requested_model.strip() != configured_model:
-        logger.warning(
-            "[BOT] Ignoring unavailable requested model '%s'; using '%s'",
-            requested_model,
-            configured_model,
+    raw = os.getenv("AZURE_OPENAI_AVAILABLE_MODELS", "").strip()
+    configured: List[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw) if raw.startswith("[") else raw.split(",")
+        except json.JSONDecodeError:
+            parsed = raw.split(",")
+        if isinstance(parsed, list):
+            configured = [str(model).strip() for model in parsed if str(model).strip()]
+
+    excluded_kinds = ("embedding", "dall-e", "image", "sora", "tts", "whisper")
+    chat_models = [
+        model
+        for model in configured
+        if not any(kind in model.casefold() for kind in excluded_kinds)
+    ]
+    return list(dict.fromkeys([primary, *chat_models]))
+
+
+def _resolve_chat_deployment(requested_model: Optional[str]) -> str:
+    """Resolve a requested model against configured chat deployments."""
+    configured_models = _configured_chat_deployments()
+    if not requested_model or not requested_model.strip():
+        return configured_models[0]
+
+    requested = requested_model.strip()
+    if requested not in configured_models:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model deployment '{requested}' is unavailable. "
+                f"Available deployments: {', '.join(configured_models)}"
+            ),
         )
-    return configured_model
+    return requested
+
+
+def _reasoning_capability(model: str) -> Dict[str, Any]:
+    """Describe the reasoning controls supported by one deployment."""
+    if model.casefold().startswith("gpt-5.6"):
+        return {
+            "reasoning_efforts": list(_GPT_56_REASONING_EFFORTS),
+            "default_reasoning_effort": "medium",
+        }
+    return {
+        "reasoning_efforts": ["none"],
+        "default_reasoning_effort": "none",
+    }
+
+
+def _resolve_reasoning_effort(model: str, requested_effort: Optional[str]) -> str:
+    """Validate and default the reasoning effort for a selected model."""
+    capability = _reasoning_capability(model)
+    effort = (
+        requested_effort.strip().casefold()
+        if isinstance(requested_effort, str) and requested_effort.strip()
+        else capability["default_reasoning_effort"]
+    )
+    if effort not in capability["reasoning_efforts"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Reasoning effort '{effort}' is unsupported for '{model}'. "
+                "Supported values: "
+                f"{', '.join(capability['reasoning_efforts'])}"
+            ),
+        )
+    return effort
 
 
 @app.get("/api/config")
@@ -4438,6 +4505,15 @@ async def unified_query_processor(request: Request):
             req_body["_authenticated_user_id"] = f"session:{session_id or 'anonymous'}"
         pin = req_body.get('pin') or req_body.get('vision_pin')  # Pin {lat, lng} (web-ui sends 'vision_pin')
         selected_model = _resolve_chat_deployment(req_body.get('model'))
+        selected_reasoning_effort = _resolve_reasoning_effort(
+            selected_model,
+            req_body.get('reasoning_effort'),
+        )
+        req_body['model'] = selected_model
+        req_body['reasoning_effort'] = selected_reasoning_effort
+        is_foundation_change_turn = (
+            req_body.get('geoint_module') == 'foundation_change'
+        )
 
         # ================================================================
         # TOP-LEVEL GREETING / IDENTITY SHORT-CIRCUIT
@@ -4493,7 +4569,11 @@ async def unified_query_processor(request: Request):
             # should run the normal pipeline.
             _has_pin_top = bool(pin)
             _has_shot_top = bool(req_body.get("imagery_base64"))
-            if (_is_greet_top or _is_thanks_top or _is_identity_top) and not (_has_pin_top or _has_shot_top):
+            if (
+                not is_foundation_change_turn
+                and (_is_greet_top or _is_thanks_top or _is_identity_top)
+                and not (_has_pin_top or _has_shot_top)
+            ):
                 logger.info(
                     f"[GREETING] Top-level short-circuit: '{natural_query}' "
                     f"-> LLM ClarifierAgent reply"
@@ -4560,10 +4640,7 @@ async def unified_query_processor(request: Request):
         
         logger.info(f"[BOT] Selected Model: {selected_model}")
         
-        # Set the active model on the semantic translator before processing
-        if semantic_translator:
-            semantic_translator.set_model(selected_model)
-        else:
+        if not semantic_translator:
             logger.warning("[WARN] semantic_translator is None - AI functionality disabled")
         
         # [MICRO] Generate unique pipeline session ID for tracing
@@ -4608,7 +4685,11 @@ async def unified_query_processor(request: Request):
         try:
             _splitter_enabled = os.getenv("ENABLE_SEQUENTIAL_PARTS", "false").lower() == "true"
             _is_sub_part = bool(req_body.get("part_of_split"))
-            if _splitter_enabled and not _is_sub_part:
+            if (
+                _splitter_enabled
+                and not _is_sub_part
+                and not is_foundation_change_turn
+            ):
                 from agents.query_splitter import get_query_splitter
                 _split = await get_query_splitter().split(natural_query)
                 if _split.is_multi_part and len(_split.parts) >= 2:
@@ -4689,7 +4770,9 @@ async def unified_query_processor(request: Request):
             req_body.get("stac_mode") or os.getenv("DEFAULT_STAC_MODE") or "public"
         ).lower()
         _is_quickstart_turn = (
-            _qs_pipeline_mode != "pro" and is_quickstart_query(natural_query)
+            not is_foundation_change_turn
+            and _qs_pipeline_mode != "pro"
+            and is_quickstart_query(natural_query)
         )
         if _is_quickstart_turn:
             logger.info(

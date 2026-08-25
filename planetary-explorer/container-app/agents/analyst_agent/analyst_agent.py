@@ -24,6 +24,7 @@ Architecture
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -404,9 +405,17 @@ class AnalystAgent:
         async with lock:
             if invocation.stop_requested:
                 raise asyncio.CancelledError
-            provider_task = asyncio.create_task(
-                self._invoke_agent_service(request, invocation)
-            )
+            if request.geoint_module == "foundation_change":
+                provider_task = asyncio.create_task(
+                    self._invoke_with_preflight(request, invocation)
+                )
+            else:
+                provider = (
+                    self._invoke_responses_api
+                    if str(request.model or "").casefold().startswith("gpt-5.6")
+                    else self._invoke_agent_service
+                )
+                provider_task = asyncio.create_task(provider(request, invocation))
             invocation.provider_task = provider_task
             stop_task = asyncio.create_task(
                 invocation.stop_event.wait(),
@@ -430,6 +439,27 @@ class AnalystAgent:
                 self._track_background_task(stop_task, "stop waiter")
                 if invocation.stop_requested:
                     self._abandon_invocation_threads(invocation)
+
+    async def _invoke_with_preflight(self, request, invocation: AnalystInvocation):
+        """Run mandatory module preflight and the selected model provider."""
+        if request.geoint_module == "foundation_change":
+            from .tools import list_geofm_models
+
+            geofm_context = await list_geofm_models()
+            request = request.model_copy(
+                update={
+                    "geofm_context": geofm_context,
+                    "hint": "foundation_change",
+                }
+            )
+        if invocation.stop_requested:
+            raise asyncio.CancelledError
+        provider = (
+            self._invoke_responses_api
+            if str(request.model or "").casefold().startswith("gpt-5.6")
+            else self._invoke_agent_service
+        )
+        return await provider(request, invocation)
 
     def _schedule_invocation_cleanup(
         self,
@@ -539,6 +569,124 @@ class AnalystAgent:
     # Agent Service invocation
     # ------------------------------------------------------------------
 
+    async def _create_responses_client(self):
+        """Create an Azure OpenAI Responses client and optional credential."""
+        from openai import AsyncOpenAI
+
+        endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
+        if not endpoint:
+            raise ValueError("AZURE_OPENAI_ENDPOINT must be set for GPT-5.6")
+        api_key = (os.getenv("AZURE_OPENAI_API_KEY") or "").strip()
+        if api_key:
+            return AsyncOpenAI(
+                api_key=api_key,
+                base_url=f"{endpoint}/openai/v1/",
+            ), None
+
+        credential = DefaultAzureCredential()
+        token = await credential.get_token(
+            "https://cognitiveservices.azure.com/.default"
+        )
+        return AsyncOpenAI(
+            api_key=token.token,
+            base_url=f"{endpoint}/openai/v1/",
+        ), credential
+
+    async def _invoke_responses_api(
+        self,
+        request,
+        invocation: AnalystInvocation,
+    ):
+        """Run GPT-5.6 with tools and the requested reasoning effort."""
+        from azure.ai.agents.models import AsyncFunctionTool  # type: ignore
+
+        from .analyst_prompt import ANALYST_AGENT_INSTRUCTIONS
+        from .session_context import get_session
+        from .tools import create_analyst_functions
+
+        if invocation.stop_requested:
+            raise asyncio.CancelledError
+
+        functions = create_analyst_functions()
+        functions_by_name = {function.__name__: function for function in functions}
+        function_tool = AsyncFunctionTool(functions)
+        response_tools = []
+        for definition in function_tool.definitions:
+            function_definition = definition.as_dict()["function"]
+            response_tools.append({"type": "function", **function_definition})
+
+        input_items: List[Dict[str, Any]] = []
+        for turn in request.history[-4:]:
+            role = str(turn.get("role") or "user")
+            content = turn.get("content") or turn.get("text")
+            if role in {"user", "assistant"} and content:
+                input_items.append({"role": role, "content": str(content)[:2000]})
+        input_items.append({"role": "user", "content": self._build_message(request)})
+
+        client, credential = await self._create_responses_client()
+        tool_calls: List[str] = []
+        try:
+            response = await client.responses.create(
+                model=request.model,
+                instructions=ANALYST_AGENT_INSTRUCTIONS,
+                input=input_items,
+                tools=response_tools,
+                reasoning={"effort": request.reasoning_effort},
+                parallel_tool_calls=False,
+                max_output_tokens=16000,
+            )
+            tool_rounds = 0
+            while True:
+                if invocation.stop_requested:
+                    raise asyncio.CancelledError
+                calls = [
+                    item
+                    for item in response.output
+                    if getattr(item, "type", None) == "function_call"
+                ]
+                if not calls:
+                    return response.output_text or "", tool_calls, list(get_session().evidence)
+                if tool_rounds >= 8:
+                    raise RuntimeError("GPT-5.6 exceeded the eight-step tool-call limit")
+                tool_rounds += 1
+
+                outputs = []
+                for call in calls:
+                    name = str(call.name)
+                    tool_calls.append(name)
+                    function = functions_by_name.get(name)
+                    if function is None:
+                        result = {"success": False, "error": f"Unknown tool: {name}"}
+                    else:
+                        try:
+                            arguments = json.loads(call.arguments or "{}")
+                            result = await function(**arguments)
+                        except Exception as error:
+                            logger.exception("[ANALYST] Responses tool %s failed", name)
+                            result = {"success": False, "error": str(error)}
+                    outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": json.dumps(result, default=str),
+                        }
+                    )
+
+                response = await client.responses.create(
+                    model=request.model,
+                    instructions=ANALYST_AGENT_INSTRUCTIONS,
+                    previous_response_id=response.id,
+                    input=outputs,
+                    tools=response_tools,
+                    reasoning={"effort": request.reasoning_effort},
+                    parallel_tool_calls=False,
+                    max_output_tokens=16000,
+                )
+        finally:
+            await client.close()
+            if credential is not None:
+                await credential.close()
+
     async def _invoke_agent_service(
         self,
         request,
@@ -587,6 +735,7 @@ class AnalystAgent:
                 run = await self._agents_client.runs.create_and_process(
                     thread_id=thread.thread_id,
                     agent_id=self._agent_id,
+                    model=request.model,
                 )
                 if invocation.stop_requested:
                     raise asyncio.CancelledError
@@ -663,12 +812,28 @@ class AnalystAgent:
             # Last 3 turns max, condensed
             tail = request.history[-3:]
             ctx_lines.append(f"- recent_history: {len(tail)} turn(s)")
+        if request.geofm_context is not None:
+            ctx_lines.append(
+                "- geospatial_foundation_models_preflight: "
+                f"{request.geofm_context}"
+            )
 
         ctx_block = "\n".join(ctx_lines) if ctx_lines else "- (no map state)"
 
+        module_instruction = ""
+        if request.geoint_module == "foundation_change":
+            module_instruction = (
+                "\n\n[Foundation Change Module]\n"
+                "The Geospatial Foundation Models registry was already queried for "
+                "this turn. Use that preflight result and prioritize PlanAura "
+                "contextual-change tools. Submit compare_with_geofm only when two "
+                "compatible HLS scenes are available and the user approves billed "
+                "GPU work."
+            )
+
         return (
             f"[Session Context]\n{ctx_block}\n\n"
-            f"[User Question]\n{request.question}"
+            f"[User Question]\n{request.question}{module_instruction}"
         )
 
     def _fallback_answer(self, request, err: str) -> str:

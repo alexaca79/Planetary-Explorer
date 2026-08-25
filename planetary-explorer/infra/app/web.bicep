@@ -10,6 +10,12 @@ param frontendUrl string = '' // Frontend Web App URL for CORS
 @secure()
 param azureOpenAiApiKey string = ''
 param azureOpenAiEndpoint string = ''
+@description('Primary Azure OpenAI deployment name used when a request does not select a model.')
+param azureOpenAiDeploymentName string
+@description('Fast Azure OpenAI deployment name used for routing and extraction.')
+param azureOpenAiFastDeployment string
+@description('Comma-separated deployed chat model names advertised by the health endpoint.')
+param azureOpenAiAvailableModels string
 @secure()
 param openAiApiKey string = ''
 @secure()
@@ -223,6 +229,18 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
+            }
+            {
+              name: 'AZURE_OPENAI_DEPLOYMENT_NAME'
+              value: azureOpenAiDeploymentName
+            }
+            {
+              name: 'AZURE_OPENAI_FAST_DEPLOYMENT'
+              value: azureOpenAiFastDeployment
+            }
+            {
+              name: 'AZURE_OPENAI_AVAILABLE_MODELS'
+              value: azureOpenAiAvailableModels
             }
             {
               // CRITICAL: Enable Managed Identity authentication for Azure OpenAI

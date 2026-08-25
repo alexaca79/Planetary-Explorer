@@ -104,6 +104,10 @@ class AnalysisRequest(BaseModel):
 
     # Hint from the AnalysisRouter (e.g. "methodology", "compute_anomaly")
     hint: Optional[str] = None
+    geoint_module: Optional[str] = None
+    geofm_context: Optional[dict[str, Any]] = None
+    model: Optional[str] = None
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
 
     # ------------------------------------------------------------------
     # Per-request UI toggles (mirrored from chat-request body)

@@ -36,6 +36,16 @@ on:
         required: false
         default: true
         type: boolean
+      deploy_gpt56:
+        description: 'Deploy GPT-5.6 Sol, Terra, and Luna models with reasoning controls.'
+        required: false
+        default: true
+        type: boolean
+      deploy_embedding_model:
+        description: 'Deploy text-embedding-3-small for search and retrieval workloads.'
+        required: false
+        default: true
+        type: boolean
       deploy_mcp_server:
         description: 'Deploy the MCP server Container App (exposes /mcp endpoint for Copilot agents).'
         required: false
@@ -343,6 +353,16 @@ jobs:
           else
             DEPLOY_GPT5="true"
           fi
+          if [ "${{ github.event.inputs.deploy_gpt56 }}" == "false" ]; then
+            DEPLOY_GPT56="false"
+          else
+            DEPLOY_GPT56="true"
+          fi
+          if [ "${{ github.event.inputs.deploy_embedding_model }}" == "false" ]; then
+            DEPLOY_EMBEDDING_MODEL="false"
+          else
+            DEPLOY_EMBEDDING_MODEL="true"
+          fi
 
           # MCP server is OFF by default; only enabled if user explicitly checks deploy_mcp_server.
           # Phase 1 of infra does NOT provision the MCP container app (no image yet); image deployment
@@ -396,11 +416,19 @@ jobs:
           echo "  Project Name: ${{ env.PROJECT_NAME }}"
           echo "  Private Endpoints: $ENABLE_PE"
           echo "  Deploy GPT-5: $DEPLOY_GPT5"
+          echo "  Deploy GPT-5.6: $DEPLOY_GPT56"
+          echo "  Deploy embedding model: $DEPLOY_EMBEDDING_MODEL"
           echo "  Deploy MCP server: $DEPLOY_MCP"
           echo "  Enable MPC Pro: $ENABLE_MPC_PRO (stac url override: ${MPC_PRO_STAC_URL:-<from parameters.json>})"
           echo "  Enable Fabric:  $ENABLE_FABRIC  (provision capacity: $DEPLOY_FABRIC_CAPACITY, byo id: ${FABRIC_CAPACITY_RESOURCE_ID:-<none>})"
           echo "  Weather stub:   $DEPLOY_WEATHER_STUB  (aurora override: ${AURORA_ENDPOINT_URL:-<stub>}, earth2 override: ${EARTH2_FCN_ENDPOINT_URL:-<stub>}, mai: ${MAI_WEATHER_ENDPOINT_URL:-<inert>})"
           echo "  Note: MCP container app is provisioned in a follow-up step after the image is built."
+
+          pwsh -NoProfile -File scripts/select-region.ps1 \
+            -Candidates "${{ env.LOCATION }}" \
+            "-DeployGpt5:\$$DEPLOY_GPT5" \
+            "-DeployGpt56:\$$DEPLOY_GPT56" \
+            "-DeployEmbeddingModel:\$$DEPLOY_EMBEDDING_MODEL"
 
           # Phase 1 of infra: deploy everything EXCEPT container apps (which need images that don't exist yet).
           #
@@ -479,6 +507,8 @@ jobs:
               --parameters location="${{ env.LOCATION }}" \
               --parameters deployAIFoundry=true \
               --parameters deployGpt5=$DEPLOY_GPT5 \
+              --parameters deployGpt56=$DEPLOY_GPT56 \
+              --parameters deployEmbeddingModel=$DEPLOY_EMBEDDING_MODEL \
               --parameters containerImage="" \
               --parameters enablePrivateEndpoints=$ENABLE_PE \
               "${EXTRA_PARAMS[@]}" \

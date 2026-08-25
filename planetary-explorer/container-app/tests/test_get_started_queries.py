@@ -461,7 +461,7 @@ def _make_fake_invoke(expected_tools: List[str]):
     the AnalystAgent's evidence-aggregation path is exercised).
     """
 
-    async def _fake(self, request):
+    async def _fake(self, request, _invocation):
         from agents.analyst_agent.session_context import get_session
 
         sess = get_session()
