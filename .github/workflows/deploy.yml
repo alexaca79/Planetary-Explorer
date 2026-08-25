@@ -521,6 +521,8 @@ jobs:
               --parameters deployGpt5=$DEPLOY_GPT5 \
               --parameters deployGpt56=$DEPLOY_GPT56 \
               --parameters deployEmbeddingModel=$DEPLOY_EMBEDDING_MODEL \
+              --parameters deployGeoFm=false \
+              --parameters deployGeoFmServices=false \
               --parameters containerImage="" \
               --parameters enablePrivateEndpoints=$ENABLE_PE \
               "${EXTRA_PARAMS[@]}" \

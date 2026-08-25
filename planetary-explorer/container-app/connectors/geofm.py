@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from functools import lru_cache
@@ -11,6 +12,7 @@ from urllib.parse import urlsplit
 from mcp_runtime.remote_client import RemoteMcpClient
 
 logger = logging.getLogger(__name__)
+_health_probe_task: asyncio.Task[dict[str, Any]] | None = None
 
 
 def is_enabled() -> bool:
@@ -59,6 +61,14 @@ async def get_health_snapshot() -> dict[str, Any]:
     if not base["enabled"]:
         return {**base, "status": "disabled"}
 
+    global _health_probe_task
+    if _health_probe_task is None or _health_probe_task.done():
+        _health_probe_task = asyncio.create_task(_probe_health_snapshot(base))
+    return await asyncio.shield(_health_probe_task)
+
+
+async def _probe_health_snapshot(base: dict[str, Any]) -> dict[str, Any]:
+    """Run one shared GeoFM health probe for concurrent callers."""
     client = get_health_client()
     try:
         result = await client.call_raw("geofm_list_models", {})

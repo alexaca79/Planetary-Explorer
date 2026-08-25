@@ -20,6 +20,8 @@
 # Each environment lives in its own resource group; resource names are derived
 # from the Bicep resourceToken (subscription + environmentName + location).
 
+#Requires -Version 7.0
+
 param(
     [Parameter(Mandatory=$false)]
     [string]$Location = "",

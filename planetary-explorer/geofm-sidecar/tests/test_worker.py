@@ -15,6 +15,7 @@ from geofm_service.policy import PLAN_AURA_HLS
 from geofm_service.stac import StacItemSummary
 from geofm_service.worker import (
     WorkerError,
+    _upload_artifact,
     build_evidence_manifest,
     build_fixed_grid,
     consume_one_message,
@@ -557,3 +558,32 @@ def test_given_retriable_processing_failure_when_consuming_then_message_is_retai
     # Assert
     service.transition.assert_not_called()
     assert queue.deleted is False
+
+
+def test_given_artifact_upload_outage_when_uploading_then_retryable_error_is_raised(
+    tmp_path,
+) -> None:
+    # Arrange
+    from geofm_service.jobs import RunRepositoryError
+
+    class Blob:
+        def upload_blob(self, _content, **_kwargs) -> None:
+            raise OSError("storage unavailable")
+
+    class Container:
+        url = "https://storage.blob.core.windows.net/geofm"
+
+        def get_blob_client(self, _name):
+            return Blob()
+
+    path = tmp_path / "artifact.json"
+    path.write_text("{}", encoding="utf-8")
+
+    # Act & Assert
+    with pytest.raises(RunRepositoryError, match="could not be uploaded"):
+        _upload_artifact(
+            Container(),
+            UUID("00000000-0000-0000-0000-000000000001"),
+            path,
+            "evidence",
+        )

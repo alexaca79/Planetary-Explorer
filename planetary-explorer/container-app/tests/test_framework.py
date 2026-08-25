@@ -108,6 +108,33 @@ async def test_traced_client_blocks_destructive_when_confirm_denies():
 
 
 @pytest.mark.asyncio
+async def test_given_denied_write_when_traced_then_terminal_result_is_emitted():
+    # Arrange
+    events: list[dict] = []
+
+    async def deny(_entry):
+        return False
+
+    async def listener(event):
+        events.append(event)
+
+    token = set_listener(listener)
+    client = TracedMcpClient(server_id="test", underlying=_FakeMpc(), confirm=deny)
+
+    # Act
+    try:
+        with pytest.raises(PermissionError):
+            await client.call("geofm_compare_epochs", {})
+    finally:
+        reset_listener(token)
+
+    # Assert
+    assert [event["type"] for event in events] == ["tool_call", "tool_result"]
+    assert events[-1]["error"] == "denied_by_user"
+    assert events[-1]["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_traced_client_allows_write_when_confirm_approves():
     fake = _FakeMpc()
     approvals = []

@@ -275,6 +275,7 @@ class TracedMcpClient:
                 entry.error = "denied_by_user"
                 entry.finished_at = time.time()
                 entry.latency_ms = int((entry.finished_at - entry.started_at) * 1000)
+                await _trace_emit({"type": "tool_result", **entry.to_dict()})
                 raise PermissionError(f"User denied {tier.value} call to {tool}")
 
         try:

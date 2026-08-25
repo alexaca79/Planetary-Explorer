@@ -653,7 +653,12 @@ def _upload_artifact(container, run_id: UUID, path: Path, kind: str) -> RunArtif
     content = path.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
     blob_name = f"runs/{run_id}/{path.name}"
-    container.get_blob_client(blob_name).upload_blob(content, overwrite=True)
+    try:
+        container.get_blob_client(blob_name).upload_blob(content, overwrite=True)
+    except Exception as exc:
+        raise RunRepositoryError(
+            f"Artifact '{path.name}' could not be uploaded."
+        ) from exc
     return RunArtifact(
         kind=kind,
         uri=urljoin(container.url.rstrip("/") + "/", blob_name),

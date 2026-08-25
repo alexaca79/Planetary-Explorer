@@ -297,6 +297,17 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Container App update failed"
     }
+
+    Write-Host "[Enabling sticky sessions for conversation continuity]" -ForegroundColor Cyan
+    az containerapp ingress sticky-sessions set `
+        --name $ContainerAppName `
+        --resource-group $ResourceGroup `
+        --affinity sticky `
+        --output none
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Container App sticky-session configuration failed"
+    }
     
     Write-Host "[OK] Image and environment variables updated atomically" -ForegroundColor Green
     Write-Host "[OK] Deployment initiated successfully" -ForegroundColor Green

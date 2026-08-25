@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import connectors.geofm as geofm_module
@@ -120,3 +122,41 @@ async def test_given_repeated_health_probes_then_one_client_instance_is_reused(
     # Assert
     assert created == 1
     geofm_module.get_health_client.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_given_concurrent_health_probes_then_callers_share_one_snapshot(
+    monkeypatch,
+) -> None:
+    # Arrange
+    release = asyncio.Event()
+    calls = 0
+
+    class BlockingClient(_FakeClient):
+        async def call_raw(self, tool: str, arguments: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return await super().call_raw(tool, arguments)
+
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.example")
+    monkeypatch.setattr(geofm_module, "RemoteMcpClient", BlockingClient)
+    geofm_module.get_health_client.cache_clear()
+    geofm_module._health_probe_task = None
+
+    # Act
+    probes = [asyncio.create_task(geofm_module.get_health_snapshot()) for _ in range(3)]
+    await asyncio.sleep(0)
+    release.set()
+    snapshots = await asyncio.gather(*probes)
+
+    # Assert
+    assert calls == 1
+    assert [snapshot["status"] for snapshot in snapshots] == [
+        "connected",
+        "connected",
+        "connected",
+    ]
+    geofm_module.get_health_client.cache_clear()
+    geofm_module._health_probe_task = None

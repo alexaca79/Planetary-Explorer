@@ -68,6 +68,7 @@ These instructions work for any Azure subscription:
 - **Azure Account**: Active Azure subscription
 - **GitHub Account**: To fork this repository
 - **Azure CLI 2.51+**: Required for Azure authentication, the federated-credential setup in Step 7, and resource provider registration. Run `az upgrade` if you're on an older version. ([Install in Step 3](#step-3-install-required-cli-tools))
+- **PowerShell 7+**: Required for `deploy-infrastructure.ps1` and its typed region/model preflight
 - **GitHub CLI**: Optional but recommended for easier secret configuration ([Install in Step 3](#step-3-install-required-cli-tools))
 
 ### Required Azure Permissions
