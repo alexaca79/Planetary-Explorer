@@ -1004,7 +1004,7 @@ export const GlobalStyles = () => (
 
     @media (max-width: 640px) {
       .row.assistant {
-        padding-left: 44px;
+        padding-left: 48px;
       }
     }
 
