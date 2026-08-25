@@ -51,6 +51,10 @@ class RunConflict(RunError):
     """Raised when a concurrent writer changed a run first."""
 
 
+class RunNotFound(RunError):
+    """Raised only when durable storage confirms a run is absent."""
+
+
 class ImageryObservation(BaseModel):
     """Server-derived STAC metadata used for model admission."""
 
@@ -390,7 +394,6 @@ class RunService:
             try:
                 self._dispatcher.dispatch(stored)
             except Exception as exc:
-                self.transition(stored.run_id, RunStatus.FAILED, error=str(exc))
                 raise RunError("Run persisted but queue dispatch failed.") from exc
         return stored, created
 
@@ -398,14 +401,14 @@ class RunService:
         """Return one durable run or raise a specific error."""
         record = self._repository.get(run_id)
         if record is None:
-            raise RunError(f"Run '{run_id}' was not found.")
+            raise RunNotFound(f"Run '{run_id}' was not found.")
         return record
 
     def get_for_owner(self, run_id: UUID, requested_by: str) -> RunRecord:
         """Return a run only when its persisted owner matches the caller."""
         record = self.get(run_id)
         if not hmac.compare_digest(record.request.requested_by, requested_by):
-            raise RunError(f"Run '{run_id}' was not found.")
+            raise RunNotFound(f"Run '{run_id}' was not found.")
         return record
 
     def transition(

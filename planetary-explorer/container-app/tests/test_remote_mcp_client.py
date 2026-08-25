@@ -105,8 +105,8 @@ async def test_given_initialization_timeout_when_contexts_entered_then_stack_is_
     # Act & Assert
     with pytest.raises(RemoteMcpUnavailable, match="timed out"):
         await client.call_raw("geofm_list_models", {})
-    if client._background_tasks:
-        await asyncio.gather(*client._background_tasks, return_exceptions=True)
+    if client._cleanup_task is not None:
+        await asyncio.gather(client._cleanup_task, return_exceptions=True)
     assert _BlockingSession.exited is True
 
 
@@ -135,8 +135,11 @@ async def test_given_cancellation_resistant_exit_when_deadline_expires_then_call
                 client.call_raw("geofm_list_models", {}),
                 timeout=0.1,
             )
-        assert client._background_tasks
+        assert client._cleanup_task is not None
+        with pytest.raises(RemoteMcpUnavailable, match="cleanup is still in progress"):
+            await client.call_raw("geofm_list_models", {})
     finally:
         _CancellationResistantExitSession.release.set()
-        if client._background_tasks:
-            await asyncio.gather(*client._background_tasks, return_exceptions=True)
+        if client._cleanup_task is not None:
+            await asyncio.gather(client._cleanup_task, return_exceptions=True)
+    assert client._cleanup_task is None

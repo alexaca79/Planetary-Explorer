@@ -450,7 +450,7 @@ def test_given_missing_run_when_retry_limit_reached_then_message_is_deleted(
     monkeypatch,
 ) -> None:
     # Arrange
-    from geofm_service.jobs import RunError
+    from geofm_service.jobs import RunNotFound
 
     class Message:
         content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
@@ -468,7 +468,7 @@ def test_given_missing_run_when_retry_limit_reached_then_message_is_deleted(
 
     class MissingRunService:
         def get(self, _run_id):
-            raise RunError("Run was not found.")
+            raise RunNotFound("Run was not found.")
 
     monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
     queue = Queue()
@@ -478,3 +478,37 @@ def test_given_missing_run_when_retry_limit_reached_then_message_is_deleted(
 
     # Assert
     assert queue.deleted is True
+
+
+def test_given_repository_integrity_error_when_retry_limit_reached_then_message_is_retained(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from geofm_service.jobs import RunError
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    class InvalidRepositoryService:
+        def get(self, _run_id):
+            raise RunError("Run was loaded without an ETag.")
+
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+
+    # Act
+    consume_one_message(queue, InvalidRepositoryService(), container=None)
+
+    # Assert
+    assert queue.deleted is False

@@ -38,6 +38,20 @@ class RecordingDispatcher:
         self.run_ids.append(record.run_id)
 
 
+class FailOnceDispatcher(RecordingDispatcher):
+    """Fail the first dispatch and record subsequent redrives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._failed = False
+
+    def dispatch(self, record) -> None:
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("queue unavailable")
+        super().dispatch(record)
+
+
 def _observation(item_id: str, year: int, *, include_fmask: bool = True):
     assets = {"B02", "B03", "B04", "B8A", "B11", "B12"}
     if include_fmask:
@@ -117,6 +131,31 @@ def test_given_queued_request_twice_when_submitting_then_second_call_redrives_it
     assert second_created is False
     assert first.run_id == second.run_id
     assert dispatcher.run_ids == [first.run_id, first.run_id]
+
+
+def test_given_dispatch_failure_when_resubmitting_then_same_queued_run_is_redriven() -> None:
+    # Arrange
+    dispatcher = FailOnceDispatcher()
+    repository = InMemoryRunRepository()
+    service = RunService(
+        repository,
+        dispatcher,
+        inventory_lookup=lambda item_id: _observation(
+            item_id,
+            2023 if item_id == "epoch-a" else 2024,
+        ),
+        allow_conditional_models=True,
+    )
+
+    # Act
+    with pytest.raises(RunError, match="queue dispatch failed"):
+        service.submit(_request())
+    recovered, created = service.submit(_request())
+
+    # Assert
+    assert created is False
+    assert recovered.status is RunStatus.QUEUED
+    assert dispatcher.run_ids == [recovered.run_id]
 
 
 def test_given_running_run_when_progress_updates_then_same_state_is_allowed() -> None:

@@ -30,7 +30,7 @@ from .jobs import (
     BlobRunRepository,
     NoopDispatcher,
     PreprocessingRecipe,
-    RunError,
+    RunNotFound,
     RunService,
 )
 from .model import PlanAuraAdapter, normalize_epochs
@@ -503,7 +503,7 @@ def consume_one_message(queue, service: RunService, container) -> bool:
                     "GeoFM worker could not persist failure state: %s",
                     sanitize_error(persistence_error),
                 )
-        elif isinstance(exc, RunError) and dequeue_count >= max_dequeue_count:
+        elif isinstance(exc, RunNotFound) and dequeue_count >= max_dequeue_count:
             should_delete = True
             logger.error(
                 "GeoFM worker discarded a missing-run message after %d attempts.",
