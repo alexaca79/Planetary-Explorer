@@ -200,6 +200,27 @@ class AnalystAgent:
         logger.info("[ANALYST] thread %s -> %s", session_id, thread.id)
         return rec
 
+    async def reset_session(self, session_id: str) -> None:
+        """Forget one scoped conversation and delete its remote thread."""
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            thread = self._threads.pop(session_id, None)
+            if (
+                thread is None
+                or not thread.thread_id
+                or self._agents_client is None
+            ):
+                return
+            try:
+                async with asyncio.timeout(5.0):
+                    await self._agents_client.threads.delete(thread.thread_id)
+            except Exception:
+                logger.warning(
+                    "[ANALYST] failed to delete reset thread %s",
+                    thread.thread_id,
+                    exc_info=True,
+                )
+
     # ------------------------------------------------------------------
     # Main entry
     # ------------------------------------------------------------------

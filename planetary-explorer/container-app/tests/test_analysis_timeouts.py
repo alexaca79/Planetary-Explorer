@@ -26,6 +26,31 @@ def _request() -> AnalysisRequest:
     )
 
 
+@pytest.mark.asyncio
+async def test_given_existing_thread_when_resetting_session_then_mapping_and_remote_thread_are_deleted(
+) -> None:
+    # Arrange
+    class FakeThreads:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def delete(self, thread_id: str) -> None:
+            self.deleted.append(thread_id)
+
+    agent = AnalystAgent()
+    thread = AnalystThread(session_id="session-1", thread_id="thread-1")
+    agent._threads["session-1"] = thread
+    threads = FakeThreads()
+    agent._agents_client = SimpleNamespace(threads=threads)
+
+    # Act
+    await agent.reset_session("session-1")
+
+    # Assert
+    assert "session-1" not in agent._threads
+    assert threads.deleted == ["thread-1"]
+
+
 class _FakeRuns:
     def __init__(self) -> None:
         self.cancelled: list[tuple[str, str]] = []

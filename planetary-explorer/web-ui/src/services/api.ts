@@ -10,6 +10,7 @@ import { getAuthToken, refreshAuthToken } from './authHelper';
 // But we use it intelligently with a fallback chain
 
 const isDevelopment = import.meta.env.DEV;
+const apiCredentials: RequestCredentials = isDevelopment ? 'omit' : 'include';
 
 // Determine API base URL with intelligent fallback chain:
 // 1. Development: Use localhost backend
@@ -143,7 +144,7 @@ class ApiService {
       this.api = axios.create({
         baseURL: API_BASE || undefined,
         timeout: 300000, // 5 minutes — extreme weather queries via chat can be slow (NetCDF sampling)
-        withCredentials: false,
+        withCredentials: !isDevelopment,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -618,7 +619,7 @@ class ApiService {
         headers,
         body,
         signal,
-        credentials: 'omit',
+        credentials: apiCredentials,
       });
 
     let response = await send();

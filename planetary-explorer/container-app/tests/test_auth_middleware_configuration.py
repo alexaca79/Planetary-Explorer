@@ -27,13 +27,15 @@ def _build_client() -> TestClient:
     return TestClient(app)
 
 
-def _principal_header(*, tenant_id: str | None) -> str:
-    claims = [
-        {
-            "typ": "http://schemas.microsoft.com/identity/claims/objectidentifier",
-            "val": "user-id",
-        }
-    ]
+def _principal_header(*, tenant_id: str | None, include_subject: bool = True) -> str:
+    claims = []
+    if include_subject:
+        claims.append(
+            {
+                "typ": "http://schemas.microsoft.com/identity/claims/objectidentifier",
+                "val": "user-id",
+            }
+        )
     if tenant_id is not None:
         claims.append({"typ": "tid", "val": tenant_id})
     payload = json.dumps({"claims": claims}).encode("utf-8")
@@ -141,6 +143,30 @@ def test_given_trusted_easyauth_header_without_tenant_then_request_is_rejected(
     response = _build_client().get(
         "/protected",
         headers={"X-MS-CLIENT-PRINCIPAL": _principal_header(tenant_id=None)},
+    )
+
+    # Assert
+    assert response.status_code == 401
+
+
+def test_given_trusted_easyauth_header_without_subject_then_request_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    monkeypatch.setattr(auth_middleware, "TENANT_ID", "tenant-id")
+    monkeypatch.setattr(auth_middleware, "CLIENT_ID", "client-id")
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    monkeypatch.setenv("TRUST_EASYAUTH_HEADER", "true")
+
+    # Act
+    response = _build_client().get(
+        "/protected",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL": _principal_header(
+                tenant_id="tenant-id",
+                include_subject=False,
+            )
+        },
     )
 
     # Assert

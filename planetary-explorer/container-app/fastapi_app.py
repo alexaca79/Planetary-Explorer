@@ -8131,8 +8131,12 @@ async def session_reset(request: Request):
             )
         client_conversation_id = str(client_conversation_id)
         owner_id = _request_owner_id(request, client_conversation_id)
-        from pipeline.session_store import scope_session_id
+        from pipeline.session_store import get_session_store, scope_session_id
         conversation_id = scope_session_id(owner_id, client_conversation_id)
+
+        get_session_store().delete(conversation_id)
+        from agents.analyst_agent import get_analyst_agent
+        await get_analyst_agent().reset_session(conversation_id)
         
         # Reset conversation context if translator is available
         if SEMANTIC_KERNEL_AVAILABLE and global_translator:

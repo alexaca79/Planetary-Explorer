@@ -208,10 +208,16 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         if not TENANT_ID or not tid or tid != TENANT_ID:
             logger.warning("[AUTH] X-MS-CLIENT-PRINCIPAL wrong tenant: %s", tid)
             return None
+        subject = (
+            claims.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
+            or claims.get("oid")
+            or claims.get("sub")
+        )
+        if not subject:
+            logger.warning("[AUTH] X-MS-CLIENT-PRINCIPAL missing stable subject")
+            return None
         return {
-            "sub": claims.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
-                or claims.get("oid")
-                or claims.get("sub"),
+            "sub": subject,
             "tid": tid,
             "preferred_username": (
                 claims.get("preferred_username")

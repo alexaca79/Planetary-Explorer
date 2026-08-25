@@ -1551,10 +1551,14 @@ const MapView: React.FC<MapViewProps> = ({
   // a completed PlanAura run updates the map without retriggering STAC layers.
   useEffect(() => {
     const features = getGeoFmMapFeatures(lastChatResponse);
-    if (features === null || !map || !mapLoaded) {
+    if (!map || !mapLoaded) {
       return;
     }
-    if (features.length === 0) {
+    if (
+      features === null
+      || features.length === 0
+      || selectedModule !== 'foundation_change'
+    ) {
       geofmOverlayRef.current?.remove();
       geofmOverlayRef.current = null;
       return;
@@ -1627,7 +1631,12 @@ const MapView: React.FC<MapViewProps> = ({
         },
       };
     }
-  }, [lastChatResponse, map, mapLoaded, mapProvider]);
+  }, [lastChatResponse, map, mapLoaded, mapProvider, selectedModule]);
+
+  useEffect(() => () => {
+    geofmOverlayRef.current?.remove();
+    geofmOverlayRef.current = null;
+  }, [map, mapProvider]);
 
   // Add map update function for bounding box
   // minZoom parameter enforces a minimum zoom level (e.g., 10 for MODIS 1km data)
