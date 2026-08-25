@@ -26,6 +26,15 @@
     "deployEmbeddingModel": {
       "value": true
     },
+    "deployGeoFm": {
+      "value": "${DEPLOY_GEOFM=false}"
+    },
+    "deployGeoFmServices": {
+      "value": "${DEPLOY_GEOFM_SERVICES=true}"
+    },
+    "geoFmMcpApiKey": {
+      "value": "${GEOFM_MCP_API_KEY=}"
+    },
     "deployBotService": {
       "value": false
     },

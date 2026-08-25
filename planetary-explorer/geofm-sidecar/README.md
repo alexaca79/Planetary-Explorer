@@ -103,6 +103,8 @@ which keeps `deployGeoFm=false` environments unchanged. After provisioning an
 environment with `deployGeoFm=true`, publish the optional services explicitly:
 
 ```powershell
+azd env set DEPLOY_GEOFM true
+azd env set-secret GEOFM_MCP_API_KEY
 azd up
 azd deploy geofm
 azd deploy geofm-worker

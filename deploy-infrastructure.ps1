@@ -142,37 +142,50 @@ Write-Host "Authenticated with Azure" -ForegroundColor Green
 # ========================================
 # AUTO-SELECT REGION (preflight)
 # ========================================
+$selectScript = Join-Path $PSScriptRoot 'planetary-explorer/scripts/select-region.ps1'
+$preflightParams = @{
+    DeployGpt5 = $deployGpt5Resolved
+    DeployGpt56 = $deployGpt56Resolved
+    DeployEmbeddingModel = $deployEmbeddingResolved
+    DeployGeoFm = $deployGeoFmResolved
+    EnableMpcPro = $mpcPro
+    EnablePrivateEndpoints = $private
+    EnableFabric = $fabric
+}
+if (-not (Test-Path $selectScript)) {
+    Write-Host "Preflight script not found at $selectScript. Aborting." -ForegroundColor Red
+    exit 1
+}
+
 if (-not $Location) {
     Write-Host "`nNo -Location supplied. Running region preflight..." -ForegroundColor Cyan
-    $selectScript = Join-Path $PSScriptRoot 'planetary-explorer/scripts/select-region.ps1'
-    if (-not (Test-Path $selectScript)) {
-        Write-Host "Preflight script not found at $selectScript. Aborting." -ForegroundColor Red
+    try {
+        $picked = & $selectScript @preflightParams 2>$null
+        if ($picked) {
+            $Location = ($picked | Where-Object { $_ -and $_ -match '^[a-z][a-z0-9]+$' } | Select-Object -Last 1)
+        }
+        if (-not $Location) { throw "preflight returned empty region" }
+        Write-Host "Auto-selected region: $Location" -ForegroundColor Green
+    } catch {
+        Write-Host "Region preflight failed: $($_.Exception.Message). Aborting." -ForegroundColor Red
         exit 1
-    } else {
-        $preflightParams = @{
-            DeployGpt5 = $deployGpt5Resolved
-            DeployGpt56 = $deployGpt56Resolved
-            DeployEmbeddingModel = $deployEmbeddingResolved
-            DeployGeoFm = $deployGeoFmResolved
-            EnableMpcPro = $mpcPro
-            EnablePrivateEndpoints = $private
-            EnableFabric = $fabric
-        }
-
-        try {
-            $picked = & $selectScript @preflightParams 2>$null
-            if ($picked) {
-                $Location = ($picked | Where-Object { $_ -and $_ -match '^[a-z][a-z0-9]+$' } | Select-Object -Last 1)
-            }
-            if (-not $Location) { throw "preflight returned empty region" }
-            Write-Host "Auto-selected region: $Location" -ForegroundColor Green
-        } catch {
-            Write-Host "Region preflight failed: $($_.Exception.Message). Aborting." -ForegroundColor Red
-            exit 1
-        }
     }
 } else {
     Write-Host "Using pinned region: $Location" -ForegroundColor Green
+    if ($deployGeoFmResolved) {
+        Write-Host "Validating GeoFM GPU support and quota in $Location..." -ForegroundColor Cyan
+        try {
+            $pinnedParams = @{} + $preflightParams
+            $pinnedParams.Candidates = @($Location)
+            $picked = & $selectScript @pinnedParams 2>$null
+            if (-not ($picked | Where-Object { $_ -eq $Location })) {
+                throw "GeoFM preflight did not approve $Location"
+            }
+        } catch {
+            Write-Host "Pinned-region GeoFM preflight failed: $($_.Exception.Message). Aborting." -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 Write-Host "`nDeployment Configuration:" -ForegroundColor Yellow

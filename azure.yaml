@@ -43,6 +43,7 @@ workflows:
 services:
   web:
     project: ./planetary-explorer/web-ui
+    dist: dist
     host: appservice
     language: js
 

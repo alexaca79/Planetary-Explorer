@@ -124,6 +124,17 @@ if ($MyInvocation.InvocationName -eq '.') {
     return
 }
 
+if ($DeployGeoFm) {
+    az extension show --name quota --output none 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Info "Installing the Azure CLI quota extension for GeoFM preflight..."
+        az extension add --name quota --upgrade --yes --output none 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "The Azure CLI quota extension is required for GeoFM preflight."
+        }
+    }
+}
+
 # Required providers/resource types for the base stack.
 $required = @(
     @{ ns = 'Microsoft.App';               type = 'managedEnvironments' },
@@ -169,18 +180,18 @@ function Test-Region {
 
     if ($DeployGeoFm) {
         try {
-            $Profiles = az containerapp env workload-profile list-supported `
+            $SupportedGpuSkus = az containerapp env workload-profile list-supported `
                 --location $Region -o json 2>$null | ConvertFrom-Json
-            $Profile = @($Profiles | Where-Object {
+            $GpuSku = @($SupportedGpuSkus | Where-Object {
                 $_.name -eq $GeoFmGpuWorkloadProfileType -or
                 $_.properties.name -eq $GeoFmGpuWorkloadProfileType
             })
-            if ($LASTEXITCODE -ne 0 -or $Profile.Count -eq 0) {
+            if ($LASTEXITCODE -ne 0 -or $GpuSku.Count -eq 0) {
                 Write-Info "  [fail] GeoFM GPU profile '$GeoFmGpuWorkloadProfileType' is unavailable in $Region"
                 return $false
             }
             $RequiredGpuQuota = [double](
-                $Profile[0].cores ?? $Profile[0].properties.cores ?? 1
+                $GpuSku[0].cores ?? $GpuSku[0].properties.cores ?? 1
             )
 
             $SubscriptionId = az account show --query id -o tsv 2>$null
