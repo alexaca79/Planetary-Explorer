@@ -457,18 +457,22 @@ def consume_one_message(queue, service: RunService, container) -> bool:
     dequeue_count = int(getattr(message, "dequeue_count", 1) or 1)
     try:
         payload = json.loads(message.content)
-        record = service.get(UUID(payload["run_id"]))
+        run_id = UUID(payload["run_id"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        logger.error(
+            "GeoFM worker discarded an invalid queue message: %s",
+            sanitize_error(exc),
+        )
+        queue.delete_message(message)
+        return True
+
+    try:
+        record = service.get(run_id)
         # A redelivered running record means the prior queue visibility lease
         # expired. Restart the idempotent run; version checks protect cancel.
         if record.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
             process_run(record, service, container)
         should_delete = True
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        should_delete = True
-        logger.error(
-            "GeoFM worker discarded an invalid queue message: %s",
-            sanitize_error(exc),
-        )
     except Exception as exc:
         logger.error("GeoFM worker failed a queued run: %s", sanitize_error(exc))
         if record and record.status not in TERMINAL_STATUSES:

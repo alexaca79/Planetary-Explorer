@@ -54,6 +54,7 @@ services:
   geofm:
     project: ./planetary-explorer/geofm-sidecar
     host: containerapp
+    language: docker
     docker:
       path: ./Dockerfile
       context: .
@@ -62,6 +63,7 @@ services:
   geofm-worker:
     project: ./planetary-explorer/geofm-sidecar
     host: containerapp
+    language: docker
     docker:
       path: ./Dockerfile.worker
       context: .

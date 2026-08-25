@@ -30,6 +30,7 @@ services:
   geofm:
     project: ./geofm-sidecar
     host: containerapp
+    language: docker
     docker:
       path: ./Dockerfile
       context: .
@@ -38,6 +39,7 @@ services:
   geofm-worker:
     project: ./geofm-sidecar
     host: containerapp
+    language: docker
     docker:
       path: ./Dockerfile.worker
       context: .

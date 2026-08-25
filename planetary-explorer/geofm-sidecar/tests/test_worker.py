@@ -3,6 +3,7 @@
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import numpy as np
 import pytest
@@ -330,6 +331,55 @@ def test_given_repeated_run_load_failure_when_retry_limit_reached_then_message_i
     consume_one_message(queue, FailingService(), container=None)
 
     # Assert
+    assert queue.deleted is True
+
+
+@pytest.mark.parametrize("processing_error", [KeyError("field"), ValueError("shape")])
+def test_given_parse_like_processing_failure_when_consuming_then_run_is_failed_before_delete(
+    monkeypatch,
+    processing_error: Exception,
+) -> None:
+    # Arrange
+    from unittest.mock import MagicMock
+
+    import geofm_service.worker as worker_module
+    from geofm_service.contracts import RunStatus
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 1
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    record = MagicMock()
+    record.status = RunStatus.RUNNING
+    record.run_id = UUID("00000000-0000-0000-0000-000000000001")
+    service = MagicMock()
+    service.get.return_value = record
+    monkeypatch.setattr(
+        worker_module,
+        "process_run",
+        MagicMock(side_effect=processing_error),
+    )
+    queue = Queue()
+
+    # Act
+    consume_one_message(queue, service, container="container")
+
+    # Assert
+    service.transition.assert_called_once_with(
+        record.run_id,
+        RunStatus.FAILED,
+        error=sanitize_error(processing_error),
+    )
     assert queue.deleted is True
 
 

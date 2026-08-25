@@ -143,7 +143,7 @@ class ApiService {
       this.api = axios.create({
         baseURL: API_BASE || undefined,
         timeout: 300000, // 5 minutes — extreme weather queries via chat can be slow (NetCDF sampling)
-        withCredentials: true,
+        withCredentials: false,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -618,7 +618,7 @@ class ApiService {
         headers,
         body,
         signal,
-        credentials: 'include',
+        credentials: 'omit',
       });
 
     let response = await send();

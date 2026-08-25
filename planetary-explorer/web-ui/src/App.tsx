@@ -70,7 +70,7 @@ function App() {
   // we don't poll or refetch.
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_BASE_URL}/api/config`, { credentials: 'include' })
+    fetch(`${API_BASE_URL}/api/config`, { credentials: 'omit' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data || !data.features) return;

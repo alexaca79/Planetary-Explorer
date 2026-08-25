@@ -41,6 +41,7 @@ set -euo pipefail
 USE_MANAGED_IDENTITY="${USE_MANAGED_IDENTITY:-true}"
 DEFAULT_STAC_MODE="${DEFAULT_STAC_MODE:-public}"
 ENABLE_PRIVATE_ENDPOINTS="${ENABLE_PRIVATE_ENDPOINTS:-false}"
+CORS_ORIGINS="${CORS_ORIGINS:-*}"
 
 echo " Building and deploying backend..."
 
@@ -255,7 +256,7 @@ update_container_app() {
       "MPC_PRO_STAC_URL=${MPC_PRO_STAC_URL}" \
       "DEFAULT_STAC_MODE=${DEFAULT_STAC_MODE}" \
       "API_PUBLIC_BASE_URL=${API_PUBLIC_BASE_URL}" \
-      "CORS_ORIGINS=*" \
+      "CORS_ORIGINS=${CORS_ORIGINS}" \
       "AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}" \
       "${OPENAI_KEY_ENV_PAIR}" \
       "AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}" \
@@ -306,7 +307,7 @@ create_container_app() {
       "STAC_API_URL=https://planetarycomputer.microsoft.com/api/stac/v1" \
       "MPC_PRO_STAC_URL=${MPC_PRO_STAC_URL}" \
       "DEFAULT_STAC_MODE=${DEFAULT_STAC_MODE}" \
-      "CORS_ORIGINS=*" \
+      "CORS_ORIGINS=${CORS_ORIGINS}" \
       "AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}" \
       "${OPENAI_KEY_ENV_PAIR}" \
       "AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}" \
@@ -417,6 +418,13 @@ if [ "$CA_EXISTS" = "true" ]; then
 else
   create_container_app
 fi
+
+echo "Enabling sticky sessions for in-process conversation continuity..."
+az containerapp ingress sticky-sessions set \
+  --name "$CA_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --affinity sticky \
+  --output none
 
 # Emit outputs for downstream steps when running under GitHub Actions.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

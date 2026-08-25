@@ -425,11 +425,22 @@ jobs:
           echo "  Weather stub:   $DEPLOY_WEATHER_STUB  (aurora override: ${AURORA_ENDPOINT_URL:-<stub>}, earth2 override: ${EARTH2_FCN_ENDPOINT_URL:-<stub>}, mai: ${MAI_WEATHER_ENDPOINT_URL:-<inert>})"
           echo "  Note: MCP container app is provisioned in a follow-up step after the image is built."
 
-          pwsh -NoProfile -File scripts/select-region.ps1 \
-            -Candidates "${{ env.LOCATION }}" \
-            "-DeployGpt5:\$$DEPLOY_GPT5" \
-            "-DeployGpt56:\$$DEPLOY_GPT56" \
+          PREFLIGHT_ARGS=(
+            -Candidates "${{ env.LOCATION }}"
+            "-DeployGpt5:\$$DEPLOY_GPT5"
+            "-DeployGpt56:\$$DEPLOY_GPT56"
             "-DeployEmbeddingModel:\$$DEPLOY_EMBEDDING_MODEL"
+          )
+          if [[ "$ENABLE_FABRIC" == "true" ]]; then
+            PREFLIGHT_ARGS+=(-EnableFabric)
+          fi
+          if [[ "$ENABLE_PE" == "true" ]]; then
+            PREFLIGHT_ARGS+=(-EnablePrivateEndpoints)
+          fi
+          if [[ "$ENABLE_MPC_PRO" == "true" ]]; then
+            PREFLIGHT_ARGS+=(-EnableMpcPro)
+          fi
+          pwsh -NoProfile -File scripts/select-region.ps1 "${PREFLIGHT_ARGS[@]}"
 
           # Phase 1 of infra: deploy everything EXCEPT container apps (which need images that don't exist yet).
           #
@@ -1236,6 +1247,7 @@ jobs:
             echo "ERROR: Expected frontend and API resources were not found in ${{ env.RESOURCE_GROUP }}" >&2
             exit 1
           fi
+          WEB_URL="https://$(az webapp show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query defaultHostName -o tsv)"
 
           az webapp auth update \
             --name "$WA_NAME" \
@@ -1255,12 +1267,23 @@ jobs:
             --set-env-vars \
               "DISABLE_AUTH=true" \
               "TRUST_EASYAUTH_HEADER=false" \
+              "CORS_ORIGINS=$WEB_URL,https://localhost:5173" \
             --output none
 
           az containerapp ingress update \
             --name "$CA_NAME" \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --type external \
+            --output none
+
+          az containerapp ingress cors update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --allowed-origins "$WEB_URL" "https://localhost:5173" \
+            --allowed-methods "GET" "POST" "PUT" "DELETE" "OPTIONS" "PATCH" \
+            --allowed-headers "*" \
+            --allow-credentials true \
+            --expose-headers "*" \
             --output none
 
           WEB_AUTH_ENABLED=$(az webapp auth show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query enabled -o tsv)
@@ -1406,6 +1429,7 @@ jobs:
               "AZURE_AD_CLIENT_ID=$CLIENT_ID" \
               "DISABLE_AUTH=false" \
               "TRUST_EASYAUTH_HEADER=false" \
+              "CORS_ORIGINS=$WEB_URL,https://localhost:5173" \
               "COLLECTION_SELECTOR=$SELECTOR_MODE" \
             --output none
           echo "Env vars set (AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, COLLECTION_SELECTOR)"
