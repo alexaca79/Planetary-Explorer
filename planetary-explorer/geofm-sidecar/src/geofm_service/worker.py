@@ -26,7 +26,13 @@ from rasterio.warp import Resampling, transform_geom
 from shapely.geometry import mapping, shape
 
 from .contracts import RunArtifact, RunRecord, RunStatus
-from .jobs import BlobRunRepository, NoopDispatcher, PreprocessingRecipe, RunService
+from .jobs import (
+    BlobRunRepository,
+    NoopDispatcher,
+    PreprocessingRecipe,
+    RunError,
+    RunService,
+)
 from .model import PlanAuraAdapter, normalize_epochs
 from .policy import ModelDescriptor
 from .stac import StacItemSummary, get_catalog
@@ -143,10 +149,16 @@ def vectorize_distance(
     crs: object,
     threshold: float,
     max_features: int,
+    clip_geometry: dict | None = None,
 ) -> list[dict]:
     """Convert thresholded model distance into ranked WGS84 polygons."""
     if max_features <= 0:
         return []
+    projected_clip = (
+        shape(transform_geom("EPSG:4326", crs, clip_geometry, precision=7))
+        if clip_geometry is not None
+        else None
+    )
     valid = np.isfinite(values)
     selected = valid & (values >= threshold)
     selected_values = selected.astype(np.uint8)
@@ -167,6 +179,8 @@ def vectorize_distance(
             simplification_tolerance,
             preserve_topology=True,
         )
+        if projected_clip is not None:
+            projected_shape = projected_shape.intersection(projected_clip)
         if projected_shape.is_empty or projected_shape.area <= 0:
             continue
         candidate = (
@@ -285,6 +299,7 @@ def process_run(
         crs=prepared.crs,
         threshold=request.threshold,
         max_features=request.max_features,
+        clip_geometry=request.geometry,
     )
     statistics = summarize_distance(
         distance,
@@ -488,10 +503,10 @@ def consume_one_message(queue, service: RunService, container) -> bool:
                     "GeoFM worker could not persist failure state: %s",
                     sanitize_error(persistence_error),
                 )
-        elif dequeue_count >= max_dequeue_count:
+        elif isinstance(exc, RunError) and dequeue_count >= max_dequeue_count:
             should_delete = True
             logger.error(
-                "GeoFM worker discarded a queue message after %d attempts.",
+                "GeoFM worker discarded a missing-run message after %d attempts.",
                 dequeue_count,
             )
     finally:

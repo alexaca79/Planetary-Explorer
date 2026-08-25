@@ -69,7 +69,11 @@ const FoundationModelsInfo: React.FC<FoundationModelsInfoProps> = ({ apiBaseUrl 
         if (!snapshot) throw new Error('Health payload omitted foundation model status');
         if (!cancelled) {
           setHealth(snapshot);
-          setError(response.ok ? null : `Health endpoint returned ${response.status}`);
+          setError(
+            snapshot.enabled && !snapshot.connected
+              ? 'Foundation model status is unavailable.'
+              : null
+          );
         }
       } catch (reason) {
         console.error('Foundation model status failed:', reason);

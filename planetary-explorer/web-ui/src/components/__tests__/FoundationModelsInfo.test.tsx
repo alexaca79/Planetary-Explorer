@@ -103,4 +103,34 @@ describe('FoundationModelsInfo', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('geofm.internal.example');
     expect(screen.getByRole('dialog')).not.toHaveTextContent('Not enabled');
   });
+
+  it('does not report unrelated overall health failures when GeoFM is connected', async () => {
+    // Arrange
+    mockedFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        checks: {
+          geospatial_foundation_models: {
+            status: 'connected',
+            enabled: true,
+            connected: true,
+            endpoint_host: 'geofm.example',
+            tool_count: 4,
+            tools: [],
+            models: [],
+          },
+        },
+      }),
+    } as Response);
+    render(<FoundationModelsInfo apiBaseUrl="https://api.example" />);
+
+    // Act
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /foundation models/i }));
+
+    // Assert
+    expect(screen.getByRole('dialog')).toHaveTextContent('MCP connected');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('unavailable');
+  });
 });

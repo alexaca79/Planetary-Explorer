@@ -192,9 +192,8 @@ foreach ($r in $Candidates) {
         Write-Info "[OK] selected $r"
         # ONLY emit the region on stdout — callers capture this.
         Write-Output $r
-        exit 0
+        return
     }
 }
 
-Write-Error "No candidate region satisfies the required services. Tried: $($Candidates -join ', ')"
-exit 1
+    throw "No candidate region satisfies the required services. Tried: $($Candidates -join ', ')"

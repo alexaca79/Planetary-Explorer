@@ -119,6 +119,31 @@ def test_given_fragmented_distance_when_vectorizing_then_expensive_masks_are_cap
     assert mask_calls == 3
 
 
+def test_given_boundary_pixel_when_vectorizing_then_geometry_is_clipped_to_aoi() -> None:
+    # Arrange
+    values = np.array([[0.8]], dtype=np.float32)
+    clip_geometry = {
+        "type": "Polygon",
+        "coordinates": [
+            [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0], [0.0, 0.0]]
+        ],
+    }
+
+    # Act
+    features = vectorize_distance(
+        values,
+        transform_value=Affine(1, 0, 0, 0, -1, 1),
+        crs="EPSG:4326",
+        threshold=0.35,
+        max_features=1,
+        clip_geometry=clip_geometry,
+    )
+
+    # Assert
+    coordinates = features[0]["geometry"]["coordinates"][0]
+    assert max(point[0] for point in coordinates) <= 0.5
+
+
 def test_given_valid_distance_when_summarizing_then_all_measurements_are_scalar() -> None:
     # Arrange
     values = np.array([[0.1, 0.5], [np.nan, 0.9]], dtype=np.float32)
@@ -302,7 +327,7 @@ def test_given_malformed_message_when_consuming_then_message_is_deleted() -> Non
     assert queue.deleted is True
 
 
-def test_given_repeated_run_load_failure_when_retry_limit_reached_then_message_is_deleted(
+def test_given_storage_outage_when_retry_limit_reached_then_message_is_retained(
     monkeypatch,
 ) -> None:
     # Arrange
@@ -331,7 +356,7 @@ def test_given_repeated_run_load_failure_when_retry_limit_reached_then_message_i
     consume_one_message(queue, FailingService(), container=None)
 
     # Assert
-    assert queue.deleted is True
+    assert queue.deleted is False
 
 
 @pytest.mark.parametrize("processing_error", [KeyError("field"), ValueError("shape")])
@@ -418,4 +443,38 @@ def test_given_redelivered_running_run_when_consuming_then_processing_restarts(
 
     # Assert
     process.assert_called_once_with(record, service, "container")
+    assert queue.deleted is True
+
+
+def test_given_missing_run_when_retry_limit_reached_then_message_is_deleted(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from geofm_service.jobs import RunError
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    class MissingRunService:
+        def get(self, _run_id):
+            raise RunError("Run was not found.")
+
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+
+    # Act
+    consume_one_message(queue, MissingRunService(), container=None)
+
+    # Assert
     assert queue.deleted is True

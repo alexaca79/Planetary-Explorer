@@ -33,6 +33,7 @@ class RemoteMcpClient:
         self._api_key = api_key
         self._request_timeout = request_timeout_seconds
         self._available_tools: set[str] = set()
+        self._background_tasks: set[asyncio.Task] = set()
 
     @property
     def configured(self) -> bool:
@@ -46,21 +47,34 @@ class RemoteMcpClient:
 
     async def call_raw(self, tool: str, arguments: dict[str, Any]) -> Any:
         """Invoke one advertised tool and unwrap its structured response."""
+        lifecycle = asyncio.create_task(self._call_with_session(tool, arguments))
         try:
-            async with asyncio.timeout(self._request_timeout):
-                stack, session = await self._open_session()
-        except TimeoutError as exc:
-            raise RemoteMcpUnavailable("Remote MCP session initialization timed out.") from exc
+            done, _pending = await asyncio.wait(
+                {lifecycle},
+                timeout=self._request_timeout,
+            )
+        except asyncio.CancelledError:
+            lifecycle.cancel()
+            self._track_background_task(lifecycle)
+            raise
+        if lifecycle not in done:
+            lifecycle.cancel()
+            self._track_background_task(lifecycle)
+            raise RemoteMcpUnavailable(f"Remote MCP tool '{tool}' timed out.")
+        return lifecycle.result()
 
+    async def _call_with_session(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        stack, session = await self._open_session()
         try:
             if self._available_tools and tool not in self._available_tools:
                 raise RemoteMcpUnavailable(
                     f"Remote MCP tool '{tool}' is not advertised by the configured service."
                 )
-            async with asyncio.timeout(self._request_timeout):
-                result = await session.call_tool(tool, arguments)
-        except TimeoutError as exc:
-            raise RemoteMcpUnavailable(f"Remote MCP tool '{tool}' timed out.") from exc
+            result = await session.call_tool(tool, arguments)
         except RemoteMcpUnavailable:
             raise
         except Exception as exc:
@@ -82,6 +96,20 @@ class RemoteMcpClient:
             except (TypeError, ValueError):
                 return text
         return None
+
+    def _track_background_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.add(task)
+
+        def finish(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("Remote MCP lifecycle cleanup failed", exc_info=True)
+
+        task.add_done_callback(finish)
 
     async def close(self) -> None:
         """Clear cached discovery metadata; calls own their transports."""

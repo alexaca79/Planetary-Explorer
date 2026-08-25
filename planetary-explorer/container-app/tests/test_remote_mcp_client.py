@@ -56,6 +56,16 @@ class _BlockingSession(_FakeSession):
         await super().__aexit__(_exc_type, _exc, _traceback)
 
 
+class _CancellationResistantExitSession(_FakeSession):
+    release = asyncio.Event()
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        try:
+            await type(self).release.wait()
+        except asyncio.CancelledError:
+            await type(self).release.wait()
+
+
 @pytest.mark.asyncio
 async def test_given_task_bound_transport_when_closed_then_owner_task_is_preserved(
     monkeypatch,
@@ -93,6 +103,40 @@ async def test_given_initialization_timeout_when_contexts_entered_then_stack_is_
     client = RemoteMcpClient("https://geofm.example", request_timeout_seconds=0.01)
 
     # Act & Assert
-    with pytest.raises(RemoteMcpUnavailable, match="initialization timed out"):
+    with pytest.raises(RemoteMcpUnavailable, match="timed out"):
         await client.call_raw("geofm_list_models", {})
+    if client._background_tasks:
+        await asyncio.gather(*client._background_tasks, return_exceptions=True)
     assert _BlockingSession.exited is True
+
+
+@pytest.mark.asyncio
+async def test_given_cancellation_resistant_exit_when_deadline_expires_then_caller_is_bounded(
+    monkeypatch,
+) -> None:
+    # Arrange
+    _CancellationResistantExitSession.release = asyncio.Event()
+    monkeypatch.setattr(
+        remote_client_module,
+        "streamablehttp_client",
+        lambda **_kwargs: _TaskBoundContext((object(), object(), None)),
+    )
+    monkeypatch.setattr(
+        remote_client_module,
+        "ClientSession",
+        _CancellationResistantExitSession,
+    )
+    client = RemoteMcpClient("https://geofm.example", request_timeout_seconds=0.01)
+
+    # Act & Assert
+    try:
+        with pytest.raises(RemoteMcpUnavailable, match="timed out"):
+            await asyncio.wait_for(
+                client.call_raw("geofm_list_models", {}),
+                timeout=0.1,
+            )
+        assert client._background_tasks
+    finally:
+        _CancellationResistantExitSession.release.set()
+        if client._background_tasks:
+            await asyncio.gather(*client._background_tasks, return_exceptions=True)

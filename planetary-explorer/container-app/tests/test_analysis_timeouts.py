@@ -66,9 +66,17 @@ class _FakeRuns:
         self.cancelled.append((thread_id, run_id))
 
 
+class _FakeThreads:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    async def delete(self, thread_id: str) -> None:
+        self.deleted.append(thread_id)
+
+
 def _attach_active_run(agent: AnalystAgent) -> _FakeRuns:
     runs = _FakeRuns()
-    agent._agents_client = SimpleNamespace(runs=runs)
+    agent._agents_client = SimpleNamespace(runs=runs, threads=_FakeThreads())
     agent._threads["session-1"] = AnalystThread(
         session_id="session-1",
         thread_id="thread-1",
@@ -88,10 +96,14 @@ async def _wait_for_remote_cancellation(
     agent: AnalystAgent,
     runs: _FakeRuns,
 ) -> None:
-    for _ in range(20):
-        if runs.cancelled and "session-1" not in agent._threads:
+    for _ in range(100):
+        if (
+            runs.cancelled
+            and agent._agents_client.threads.deleted
+            and "session-1" not in agent._threads
+        ):
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
@@ -120,6 +132,7 @@ async def test_given_slow_analyst_when_timeout_expires_then_fallback_is_returned
     }
     assert "timed out after 0.0s" in result.answer
     assert runs.cancelled == [("thread-1", "run-active")]
+    assert agent._agents_client.threads.deleted == ["thread-1"]
     assert "session-1" not in agent._threads
     assert get_session().session_id == "default"
 
@@ -205,6 +218,7 @@ async def test_given_outer_cancellation_when_remote_run_is_active_then_run_is_ca
         await task
     await _wait_for_remote_cancellation(agent, runs)
     assert runs.cancelled == [("thread-1", "run-active")]
+    assert agent._agents_client.threads.deleted == ["thread-1"]
     assert "session-1" not in agent._threads
     assert get_session().session_id == "default"
 

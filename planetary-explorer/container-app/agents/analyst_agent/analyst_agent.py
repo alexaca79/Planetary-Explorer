@@ -211,15 +211,7 @@ class AnalystAgent:
                 or self._agents_client is None
             ):
                 return
-            try:
-                async with asyncio.timeout(5.0):
-                    await self._agents_client.threads.delete(thread.thread_id)
-            except Exception:
-                logger.warning(
-                    "[ANALYST] failed to delete reset thread %s",
-                    thread.thread_id,
-                    exc_info=True,
-                )
+            await self._delete_remote_thread(thread)
 
     # ------------------------------------------------------------------
     # Main entry
@@ -525,6 +517,11 @@ class AnalystAgent:
         if not invocation_task.done():
             invocation_task.cancel()
             self._track_background_task(invocation_task, "late invocation")
+        deleted_thread_ids: set[str] = set()
+        for thread in invocation.owned_threads:
+            if thread.thread_id and thread.thread_id not in deleted_thread_ids:
+                await self._delete_remote_thread(thread)
+                deleted_thread_ids.add(thread.thread_id)
         self._abandon_invocation_threads(invocation)
 
     def _abandon_invocation_threads(self, invocation: AnalystInvocation) -> None:
@@ -584,6 +581,21 @@ class AnalystAgent:
                 "[ANALYST] remote run cleanup failed for thread %s: %s",
                 thread.thread_id,
                 exc,
+            )
+
+    async def _delete_remote_thread(self, thread: AnalystThread) -> None:
+        """Best-effort bounded deletion for an invocation-owned thread."""
+        threads = getattr(self._agents_client, "threads", None)
+        if threads is None or not thread.thread_id:
+            return
+        try:
+            async with asyncio.timeout(5.0):
+                await threads.delete(thread.thread_id)
+        except Exception:
+            logger.warning(
+                "[ANALYST] failed to delete remote thread %s",
+                thread.thread_id,
+                exc_info=True,
             )
 
     # ------------------------------------------------------------------

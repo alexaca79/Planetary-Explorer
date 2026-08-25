@@ -48,4 +48,25 @@ Describe 'Test-AzureOpenAIModelContract' -Tag 'Unit' {
         # Assert
         $Result | Should -Be $false
     }
+
+    It 'Does not contain exit statements that terminate a direct caller' {
+        # Arrange
+        $Tokens = $null
+        $Errors = $null
+        $Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot '../select-region.ps1'),
+            [ref]$Tokens,
+            [ref]$Errors
+        )
+
+        # Act
+        $ExitStatements = $Ast.FindAll(
+            { param($Node) $Node -is [System.Management.Automation.Language.ExitStatementAst] },
+            $true
+        )
+
+        # Assert
+        $Errors | Should -HaveCount 0
+        $ExitStatements | Should -HaveCount 0
+    }
 }
