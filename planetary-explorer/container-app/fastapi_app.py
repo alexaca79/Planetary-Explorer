@@ -351,15 +351,20 @@ app = FastAPI(title="Planetary Explorer API", version="1.0.0")
 
 # Configure CORS origins from environment variable
 cors_origins_str = os.environ.get("CORS_ORIGINS", "*")
-cors_origins = [origin.strip() for origin in cors_origins_str.split(",")] if cors_origins_str != "*" else ["*"]
-cors_allow_credentials = cors_origins != ["*"]
+cors_is_wildcard = cors_origins_str == "*"
+cors_origins = (
+    [origin.strip() for origin in cors_origins_str.split(",")]
+    if not cors_is_wildcard
+    else []
+)
 logger.info(f"[LOCK] CORS configured for origins: {cors_origins}")
 
 # Add CORS middleware (must be outermost — runs first on requests, last on responses)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=cors_allow_credentials,
+    allow_origin_regex=r"https?://.*" if cors_is_wildcard else None,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

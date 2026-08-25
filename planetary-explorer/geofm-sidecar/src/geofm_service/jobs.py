@@ -55,6 +55,10 @@ class RunNotFound(RunError):
     """Raised only when durable storage confirms a run is absent."""
 
 
+class RunRepositoryError(RunError):
+    """Raised when durable run storage is unavailable or inconsistent."""
+
+
 class ImageryObservation(BaseModel):
     """Server-derived STAC metadata used for model admission."""
 
@@ -283,7 +287,9 @@ class BlobRunRepository:
             pointer = json.loads(pointer_blob.download_blob().readall())
             existing = self.get(UUID(pointer["run_id"]))
             if existing is None:
-                raise RunError("Idempotency pointer refers to a missing run.") from None
+                raise RunRepositoryError(
+                    "Idempotency pointer refers to a missing run."
+                ) from None
             return existing, False
 
     def get(self, run_id: UUID) -> RunRecord | None:
@@ -300,7 +306,7 @@ class BlobRunRepository:
         if etag is None and isinstance(properties, dict):
             etag = properties.get("etag")
         if not etag:
-            raise RunError(f"Run '{run_id}' was loaded without an ETag.")
+            raise RunRepositoryError(f"Run '{run_id}' was loaded without an ETag.")
         record = RunRecord.model_validate_json(content)
         self._etags[(run_id, record.version)] = str(etag)
         return record
@@ -308,7 +314,9 @@ class BlobRunRepository:
     def save(self, record: RunRecord, *, expected_version: int) -> None:
         etag = self._etags.get((record.run_id, expected_version))
         if not etag:
-            raise RunConflict(f"Run '{record.run_id}' has no concurrency token.")
+            raise RunRepositoryError(
+                f"Run '{record.run_id}' has no concurrency token."
+            )
         blob = self._container.get_blob_client(f"runs/{record.run_id}/run.json")
         try:
             response = blob.upload_blob(
@@ -399,7 +407,12 @@ class RunService:
 
     def get(self, run_id: UUID) -> RunRecord:
         """Return one durable run or raise a specific error."""
-        record = self._repository.get(run_id)
+        try:
+            record = self._repository.get(run_id)
+        except RunError:
+            raise
+        except Exception as exc:
+            raise RunRepositoryError(f"Run '{run_id}' could not be loaded.") from exc
         if record is None:
             raise RunNotFound(f"Run '{run_id}' was not found.")
         return record
@@ -442,7 +455,12 @@ class RunService:
             record.features = features
         record.version = expected_version + 1
         record.updated_at = datetime.now(UTC)
-        self._repository.save(record, expected_version=expected_version)
+        try:
+            self._repository.save(record, expected_version=expected_version)
+        except RunError:
+            raise
+        except Exception as exc:
+            raise RunRepositoryError(f"Run '{run_id}' could not be saved.") from exc
         return record
 
     def cancel(self, run_id: UUID) -> RunRecord:

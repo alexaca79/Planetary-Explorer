@@ -47,6 +47,7 @@ async def test_given_connected_geofm_when_probed_then_models_and_tools_are_repor
     monkeypatch.setenv("GEOFM_ENABLED", "true")
     monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.example")
     monkeypatch.setattr(geofm_module, "RemoteMcpClient", _FakeClient)
+    geofm_module.get_health_client.cache_clear()
 
     # Act
     snapshot = await geofm_module.get_health_snapshot()
@@ -75,6 +76,7 @@ async def test_given_connected_geofm_when_probed_then_models_and_tools_are_repor
             }
         ],
     }
+    geofm_module.get_health_client.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -92,3 +94,29 @@ async def test_given_disabled_geofm_when_probed_then_optional_service_is_reporte
     assert snapshot["status"] == "disabled"
     assert snapshot["enabled"] is False
     assert snapshot["connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_given_repeated_health_probes_then_one_client_instance_is_reused(
+    monkeypatch,
+) -> None:
+    # Arrange
+    created = 0
+
+    class CountingClient(_FakeClient):
+        def __init__(self, *_args, **_kwargs) -> None:
+            nonlocal created
+            created += 1
+
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.example")
+    monkeypatch.setattr(geofm_module, "RemoteMcpClient", CountingClient)
+    geofm_module.get_health_client.cache_clear()
+
+    # Act
+    await geofm_module.get_health_snapshot()
+    await geofm_module.get_health_snapshot()
+
+    # Assert
+    assert created == 1
+    geofm_module.get_health_client.cache_clear()

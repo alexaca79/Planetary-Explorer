@@ -56,6 +56,7 @@ The script will:
 $env:MPC_PRO = 'true'      # surface MPC Pro toggle in the UI
 $env:PRIVATE = 'true'      # private endpoints + VNet
 $env:FABRIC  = 'true'      # provision Microsoft Fabric capacity
+$env:DEPLOY_GEOFM = 'true' # PlanAura control plane + serverless T4 worker
 $env:LOCATION = 'eastus2'  # pin a region, skip preflight
 .\deploy-infrastructure.ps1
 ```

@@ -33,7 +33,7 @@ class RemoteMcpClient:
         self._api_key = api_key
         self._request_timeout = request_timeout_seconds
         self._available_tools: set[str] = set()
-        self._cleanup_task: asyncio.Task | None = None
+        self._active_task: asyncio.Task | None = None
 
     @property
     def configured(self) -> bool:
@@ -47,12 +47,13 @@ class RemoteMcpClient:
 
     async def call_raw(self, tool: str, arguments: dict[str, Any]) -> Any:
         """Invoke one advertised tool and unwrap its structured response."""
-        if self._cleanup_task is not None and not self._cleanup_task.done():
+        if self._active_task is not None and not self._active_task.done():
             raise RemoteMcpUnavailable(
-                "Remote MCP transport cleanup is still in progress."
+                "Remote MCP transport lifecycle is already in progress."
             )
-        self._cleanup_task = None
         lifecycle = asyncio.create_task(self._call_with_session(tool, arguments))
+        self._active_task = lifecycle
+        self._consume_lifecycle(lifecycle)
         try:
             done, _pending = await asyncio.wait(
                 {lifecycle},
@@ -60,11 +61,9 @@ class RemoteMcpClient:
             )
         except asyncio.CancelledError:
             lifecycle.cancel()
-            self._quarantine_cleanup(lifecycle)
             raise
         if lifecycle not in done:
             lifecycle.cancel()
-            self._quarantine_cleanup(lifecycle)
             raise RemoteMcpUnavailable(f"Remote MCP tool '{tool}' timed out.")
         return lifecycle.result()
 
@@ -102,12 +101,10 @@ class RemoteMcpClient:
                 return text
         return None
 
-    def _quarantine_cleanup(self, task: asyncio.Task) -> None:
-        self._cleanup_task = task
-
+    def _consume_lifecycle(self, task: asyncio.Task) -> None:
         def finish(completed: asyncio.Task) -> None:
-            if self._cleanup_task is completed:
-                self._cleanup_task = None
+            if self._active_task is completed:
+                self._active_task = None
             try:
                 completed.result()
             except asyncio.CancelledError:
@@ -120,9 +117,9 @@ class RemoteMcpClient:
     async def close(self) -> None:
         """Cancel the one quarantined lifecycle without blocking shutdown."""
         self._available_tools = set()
-        cleanup_task = self._cleanup_task
-        if cleanup_task is not None and not cleanup_task.done():
-            cleanup_task.cancel()
+        active_task = self._active_task
+        if active_task is not None and not active_task.done():
+            active_task.cancel()
 
     async def _open_session(self) -> tuple[AsyncExitStack, ClientSession]:
         if not self.configured:

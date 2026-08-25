@@ -30,7 +30,9 @@ from .jobs import (
     BlobRunRepository,
     NoopDispatcher,
     PreprocessingRecipe,
+    RunConflict,
     RunNotFound,
+    RunRepositoryError,
     RunService,
 )
 from .model import PlanAuraAdapter, normalize_epochs
@@ -488,6 +490,11 @@ def consume_one_message(queue, service: RunService, container) -> bool:
         if record.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
             process_run(record, service, container)
         should_delete = True
+    except (RunConflict, RunRepositoryError) as exc:
+        logger.warning(
+            "GeoFM worker retained a queued run after a retriable failure: %s",
+            sanitize_error(exc),
+        )
     except Exception as exc:
         logger.error("GeoFM worker failed a queued run: %s", sanitize_error(exc))
         if record and record.status not in TERMINAL_STATUSES:

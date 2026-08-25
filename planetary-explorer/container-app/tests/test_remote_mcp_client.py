@@ -105,8 +105,8 @@ async def test_given_initialization_timeout_when_contexts_entered_then_stack_is_
     # Act & Assert
     with pytest.raises(RemoteMcpUnavailable, match="timed out"):
         await client.call_raw("geofm_list_models", {})
-    if client._cleanup_task is not None:
-        await asyncio.gather(client._cleanup_task, return_exceptions=True)
+    if client._active_task is not None:
+        await asyncio.gather(client._active_task, return_exceptions=True)
     assert _BlockingSession.exited is True
 
 
@@ -135,11 +135,42 @@ async def test_given_cancellation_resistant_exit_when_deadline_expires_then_call
                 client.call_raw("geofm_list_models", {}),
                 timeout=0.1,
             )
-        assert client._cleanup_task is not None
-        with pytest.raises(RemoteMcpUnavailable, match="cleanup is still in progress"):
+        assert client._active_task is not None
+        with pytest.raises(RemoteMcpUnavailable, match="lifecycle is already in progress"):
             await client.call_raw("geofm_list_models", {})
     finally:
         _CancellationResistantExitSession.release.set()
-        if client._cleanup_task is not None:
-            await asyncio.gather(client._cleanup_task, return_exceptions=True)
-    assert client._cleanup_task is None
+        if client._active_task is not None:
+            await asyncio.gather(client._active_task, return_exceptions=True)
+    assert client._active_task is None
+
+
+@pytest.mark.asyncio
+async def test_given_concurrent_calls_when_first_lifecycle_is_active_then_second_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    release = asyncio.Event()
+
+    class BlockingCallSession(_FakeSession):
+        async def call_tool(self, _tool, _arguments):
+            await release.wait()
+            return await super().call_tool(_tool, _arguments)
+
+    monkeypatch.setattr(
+        remote_client_module,
+        "streamablehttp_client",
+        lambda **_kwargs: _TaskBoundContext((object(), object(), None)),
+    )
+    monkeypatch.setattr(remote_client_module, "ClientSession", BlockingCallSession)
+    client = RemoteMcpClient("https://geofm.example", request_timeout_seconds=1)
+    first_call = asyncio.create_task(client.call_raw("geofm_list_models", {}))
+    await asyncio.sleep(0)
+
+    # Act & Assert
+    try:
+        with pytest.raises(RemoteMcpUnavailable, match="lifecycle is already in progress"):
+            await client.call_raw("geofm_list_models", {})
+    finally:
+        release.set()
+    assert await first_call == {"payload": {"models": []}}

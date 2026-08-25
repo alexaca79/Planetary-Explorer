@@ -24,6 +24,8 @@ param(
     [bool]$DeployGpt5 = $false,
     [bool]$DeployGpt56 = $false,
     [bool]$DeployEmbeddingModel = $true,
+    [bool]$DeployGeoFm = $false,
+    [string]$GeoFmGpuWorkloadProfileType = 'Consumption-GPU-NC8as-T4',
     [switch]$EnableFabric,
     [switch]$EnablePrivateEndpoints,
     [switch]$EnableMpcPro
@@ -88,6 +90,36 @@ function Test-AzureOpenAIModelContract {
     )
 }
 
+function Get-NormalizedText([object]$Value) {
+    return ([string]$Value -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+}
+
+function Find-GeoFmQuotaEntry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProfileType
+    )
+
+    $ProfileToken = Get-NormalizedText (
+        $ProfileType -replace '^Consumption-GPU-', ''
+    )
+    return @($Entries | Where-Object {
+        $Names = @(
+            $_.name.value,
+            $_.name.localizedValue,
+            $_.properties.name.value,
+            $_.properties.name.localizedValue
+        )
+        @($Names | Where-Object {
+            (Get-NormalizedText $_).Contains($ProfileToken)
+        }).Count -gt 0
+    } | Select-Object -First 1)
+}
+
 if ($MyInvocation.InvocationName -eq '.') {
     return
 }
@@ -131,6 +163,52 @@ function Test-Region {
         }
         if ($providerLocs[$key] -notcontains $norm) {
             Write-Info "  [fail] $key not available in $Region"
+            return $false
+        }
+    }
+
+    if ($DeployGeoFm) {
+        try {
+            $Profiles = az containerapp env workload-profile list-supported `
+                --location $Region -o json 2>$null | ConvertFrom-Json
+            $Profile = @($Profiles | Where-Object {
+                $_.name -eq $GeoFmGpuWorkloadProfileType -or
+                $_.properties.name -eq $GeoFmGpuWorkloadProfileType
+            })
+            if ($LASTEXITCODE -ne 0 -or $Profile.Count -eq 0) {
+                Write-Info "  [fail] GeoFM GPU profile '$GeoFmGpuWorkloadProfileType' is unavailable in $Region"
+                return $false
+            }
+            $RequiredGpuQuota = [double](
+                $Profile[0].cores ?? $Profile[0].properties.cores ?? 1
+            )
+
+            $SubscriptionId = az account show --query id -o tsv 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $SubscriptionId) {
+                Write-Info "  [fail] could not resolve the subscription for GeoFM quota checks"
+                return $false
+            }
+            $QuotaScope = "/subscriptions/$SubscriptionId/providers/Microsoft.App/locations/$Region"
+            $Limits = az quota list --scope $QuotaScope -o json 2>$null | ConvertFrom-Json
+            $Usages = az quota usage list --scope $QuotaScope -o json 2>$null | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not $Limits -or -not $Usages) {
+                Write-Info "  [fail] could not query Container Apps GPU quota in $Region"
+                return $false
+            }
+            $LimitEntry = Find-GeoFmQuotaEntry -Entries @($Limits) -ProfileType $GeoFmGpuWorkloadProfileType
+            $UsageEntry = Find-GeoFmQuotaEntry -Entries @($Usages) -ProfileType $GeoFmGpuWorkloadProfileType
+            if ($LimitEntry.Count -eq 0 -or $UsageEntry.Count -eq 0) {
+                Write-Info "  [fail] quota for '$GeoFmGpuWorkloadProfileType' is unavailable in $Region"
+                return $false
+            }
+            $Limit = [double]($LimitEntry[0].limit.value ?? $LimitEntry[0].properties.limit.value ?? 0)
+            $Usage = [double]($UsageEntry[0].usageValue ?? $UsageEntry[0].properties.usageValue ?? 0)
+            if (($Limit - $Usage) -lt $RequiredGpuQuota) {
+                Write-Info "  [fail] GeoFM GPU quota has $($Limit - $Usage) remaining; $RequiredGpuQuota is required"
+                return $false
+            }
+        } catch {
+            Write-Info "  [fail] GeoFM GPU profile or quota check threw in $Region`: $($_.Exception.Message)"
             return $false
         }
     }

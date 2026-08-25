@@ -71,6 +71,12 @@ param(
     [Parameter(Mandatory=$false)]
     [bool]$DeployEmbeddingModel = $true,
 
+    [Parameter(Mandatory=$false)]
+    [bool]$DeployGeoFm = $false,
+
+    [Parameter(Mandatory=$false)]
+    [string]$GeoFmMcpApiKey = '',
+
     # Forecast Agent weather models. When on, provisions the CPU-only weather
     # stub Container App and points AURORA_ENDPOINT_URL / EARTH2_FCN_ENDPOINT_URL
     # at it so the Forecast Agent works end-to-end without GPU quota. MAI
@@ -103,6 +109,11 @@ $weather = Resolve-Flag $EnableWeatherModels.IsPresent    'WEATHER_MODELS'
 $deployGpt5Resolved = Resolve-Bool $DeployGpt5 'DEPLOY_GPT5'
 $deployGpt56Resolved = Resolve-Bool $DeployGpt56 'DEPLOY_GPT56'
 $deployEmbeddingResolved = Resolve-Bool $DeployEmbeddingModel 'DEPLOY_EMBEDDING_MODEL'
+$deployGeoFmResolved = Resolve-Bool $DeployGeoFm 'DEPLOY_GEOFM'
+
+if ($deployGeoFmResolved -and $GeoFmMcpApiKey.Length -lt 32) {
+    throw "GeoFmMcpApiKey must contain at least 32 characters when GeoFM is enabled."
+}
 
 if (-not $Location -and $env:LOCATION) { $Location = $env:LOCATION }
 
@@ -111,7 +122,7 @@ Write-Host "============================================" -ForegroundColor Green
 Write-Host "Environment   : $EnvironmentName"            -ForegroundColor Cyan
 Write-Host "Resource Group: rg-$EnvironmentName"          -ForegroundColor Cyan
 Write-Host "Flags         : MpcPro=$mpcPro  Private=$private  Fabric=$fabric  WeatherModels=$weather" -ForegroundColor Cyan
-Write-Host "Models        : GPT5=$deployGpt5Resolved  GPT56=$deployGpt56Resolved  Embeddings=$deployEmbeddingResolved" -ForegroundColor Cyan
+Write-Host "Models        : GPT5=$deployGpt5Resolved  GPT56=$deployGpt56Resolved  Embeddings=$deployEmbeddingResolved  GeoFM=$deployGeoFmResolved" -ForegroundColor Cyan
 
 $deploymentName = "planetary-explorer-$EnvironmentName-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
@@ -142,6 +153,7 @@ if (-not $Location) {
             DeployGpt5 = $deployGpt5Resolved
             DeployGpt56 = $deployGpt56Resolved
             DeployEmbeddingModel = $deployEmbeddingResolved
+            DeployGeoFm = $deployGeoFmResolved
             EnableMpcPro = $mpcPro
             EnablePrivateEndpoints = $private
             EnableFabric = $fabric
@@ -192,6 +204,8 @@ $inlineParams += "deployWeatherStub=$($weather.ToString().ToLower())"
 $inlineParams += "deployGpt5=$($deployGpt5Resolved.ToString().ToLower())"
 $inlineParams += "deployGpt56=$($deployGpt56Resolved.ToString().ToLower())"
 $inlineParams += "deployEmbeddingModel=$($deployEmbeddingResolved.ToString().ToLower())"
+$inlineParams += "deployGeoFm=$($deployGeoFmResolved.ToString().ToLower())"
+if ($GeoFmMcpApiKey) { $inlineParams += "geoFmMcpApiKey=$GeoFmMcpApiKey" }
 
 # Validate before deploying - surfaces region/SKU/quota issues without partial provisioning.
 Write-Host "`nValidating template..." -ForegroundColor Cyan

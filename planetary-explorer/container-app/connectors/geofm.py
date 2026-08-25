@@ -34,6 +34,17 @@ def get_client() -> RemoteMcpClient:
     )
 
 
+@lru_cache(maxsize=1)
+def get_health_client() -> RemoteMcpClient:
+    """Return the process-wide GeoFM health-probe client."""
+    timeout = min(float(os.getenv("GEOFM_MCP_TIMEOUT_SECONDS", "30")), 5.0)
+    return RemoteMcpClient(
+        os.getenv("GEOFM_MCP_URL", ""),
+        api_key=os.getenv("GEOFM_MCP_API_KEY") or None,
+        request_timeout_seconds=timeout,
+    )
+
+
 async def get_health_snapshot() -> dict[str, Any]:
     """Probe the configured GeoFM MCP without reusing the analysis session."""
     endpoint = (os.getenv("GEOFM_MCP_URL") or "").strip()
@@ -48,12 +59,7 @@ async def get_health_snapshot() -> dict[str, Any]:
     if not base["enabled"]:
         return {**base, "status": "disabled"}
 
-    timeout = min(float(os.getenv("GEOFM_MCP_TIMEOUT_SECONDS", "30")), 5.0)
-    client = RemoteMcpClient(
-        endpoint,
-        api_key=os.getenv("GEOFM_MCP_API_KEY") or None,
-        request_timeout_seconds=timeout,
-    )
+    client = get_health_client()
     try:
         result = await client.call_raw("geofm_list_models", {})
         payload = result.get("payload", {}) if isinstance(result, dict) else {}
@@ -83,8 +89,3 @@ async def get_health_snapshot() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("GeoFM health probe failed: %s", exc)
         return {**base, "status": "degraded"}
-    finally:
-        try:
-            await client.close()
-        except Exception as exc:
-            logger.debug("GeoFM health probe cleanup failed: %s", exc)

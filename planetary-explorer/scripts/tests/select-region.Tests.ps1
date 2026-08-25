@@ -69,4 +69,24 @@ Describe 'Test-AzureOpenAIModelContract' -Tag 'Unit' {
         $Errors | Should -HaveCount 0
         $ExitStatements | Should -HaveCount 0
     }
+
+    It 'Matches GeoFM quota entries by normalized GPU profile token' {
+        # Arrange
+        $Entries = @(
+            [pscustomobject]@{
+                name = [pscustomobject]@{
+                    value = 'ManagedEnvironmentConsumptionGpuNC8asT4Cores'
+                    localizedValue = 'Managed Environment GPU NC8as T4 Cores'
+                }
+            }
+        )
+
+        # Act
+        $Result = Find-GeoFmQuotaEntry `
+            -Entries $Entries `
+            -ProfileType 'Consumption-GPU-NC8as-T4'
+
+        # Assert
+        $Result | Should -HaveCount 1
+    }
 }
