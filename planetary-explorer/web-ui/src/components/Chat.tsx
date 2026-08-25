@@ -2607,7 +2607,7 @@ const Chat: React.FC<ChatProps> = ({
                   <div className="msg">
                     <div className="loading-indicator">
                       <span></span>
-                      <span>Thinking...</span>
+                      <span>{message.content || 'Thinking...'}</span>
                     </div>
                   </div>
                 ) : (
@@ -2659,7 +2659,7 @@ const Chat: React.FC<ChatProps> = ({
             </div>
           ))}
 
-          {(chatMutation.isPending || partsPending) && (
+          {chatMutation.isPending && (
             <div className="row assistant">
               <div>
                 <div className="msg">

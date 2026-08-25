@@ -9,6 +9,7 @@ import pytest
 
 import mcp_runtime.remote_client as remote_client_module
 from mcp_runtime.remote_client import RemoteMcpClient
+from mcp_runtime.remote_client import RemoteMcpUnavailable
 
 
 class _TaskBoundContext:
@@ -44,6 +45,17 @@ class _FakeSession(_TaskBoundContext):
         )
 
 
+class _BlockingSession(_FakeSession):
+    exited = False
+
+    async def initialize(self) -> None:
+        await asyncio.Event().wait()
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        type(self).exited = True
+        await super().__aexit__(_exc_type, _exc, _traceback)
+
+
 @pytest.mark.asyncio
 async def test_given_task_bound_transport_when_closed_then_owner_task_is_preserved(
     monkeypatch,
@@ -63,3 +75,24 @@ async def test_given_task_bound_transport_when_closed_then_owner_task_is_preserv
 
     # Assert
     assert result == {"payload": {"models": []}}
+
+
+@pytest.mark.asyncio
+async def test_given_initialization_timeout_when_contexts_entered_then_stack_is_closed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    transport = _TaskBoundContext((object(), object(), None))
+    _BlockingSession.exited = False
+    monkeypatch.setattr(
+        remote_client_module,
+        "streamablehttp_client",
+        lambda **_kwargs: transport,
+    )
+    monkeypatch.setattr(remote_client_module, "ClientSession", _BlockingSession)
+    client = RemoteMcpClient("https://geofm.example", request_timeout_seconds=0.01)
+
+    # Act & Assert
+    with pytest.raises(RemoteMcpUnavailable, match="initialization timed out"):
+        await client.call_raw("geofm_list_models", {})
+    assert _BlockingSession.exited is True

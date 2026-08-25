@@ -18,10 +18,10 @@
       "value": true
     },
     "deployGpt5": {
-      "value": true
+      "value": false
     },
     "deployGpt56": {
-      "value": true
+      "value": false
     },
     "deployEmbeddingModel": {
       "value": true

@@ -64,11 +64,12 @@ const FoundationModelsInfo: React.FC<FoundationModelsInfoProps> = ({ apiBaseUrl 
     const refresh = async () => {
       try {
         const response = await authenticatedFetch(`${apiBaseUrl}/api/health`);
-        if (!response.ok) throw new Error(`Health endpoint returned ${response.status}`);
         const payload = await response.json();
+        const snapshot = payload.checks?.geospatial_foundation_models;
+        if (!snapshot) throw new Error('Health payload omitted foundation model status');
         if (!cancelled) {
-          setHealth(payload.checks?.geospatial_foundation_models || EMPTY_HEALTH);
-          setError(null);
+          setHealth(snapshot);
+          setError(response.ok ? null : `Health endpoint returned ${response.status}`);
         }
       } catch (reason) {
         console.error('Foundation model status failed:', reason);

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ from pyproj import Geod
 from rasterio.features import geometry_mask, shapes
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import Resampling, transform_geom
-from shapely.geometry import shape
+from shapely.geometry import mapping, shape
 
 from .contracts import RunArtifact, RunRecord, RunStatus
 from .jobs import BlobRunRepository, NoopDispatcher, PreprocessingRecipe, RunService
@@ -130,7 +131,7 @@ def build_fixed_grid(
 
 def valid_hls_fmask(values: np.ndarray) -> np.ndarray:
     """Return pixels without HLS cloud, adjacency, shadow, snow, or high aerosol."""
-    contaminated = (values & np.uint8(0b0001_1110)) != 0
+    contaminated = (values & np.uint8(0b0001_1111)) != 0
     high_aerosol = ((values >> np.uint8(6)) & np.uint8(0b11)) == 0b11
     return ~(contaminated | high_aerosol)
 
@@ -144,18 +145,42 @@ def vectorize_distance(
     max_features: int,
 ) -> list[dict]:
     """Convert thresholded model distance into ranked WGS84 polygons."""
+    if max_features <= 0:
+        return []
     valid = np.isfinite(values)
     selected = valid & (values >= threshold)
     selected_values = selected.astype(np.uint8)
-    features: list[dict] = []
-    for projected_geometry, value in shapes(
+    candidates: list[tuple[float, int, dict]] = []
+    simplification_tolerance = max(
+        abs(transform_value.a),
+        abs(transform_value.e),
+    ) * 0.5
+    for candidate_index, (projected_geometry, value) in enumerate(shapes(
         selected_values,
         mask=selected,
         transform=transform_value,
         connectivity=8,
-    ):
+    )):
         if int(value) != 1:
             continue
+        projected_shape = shape(projected_geometry).simplify(
+            simplification_tolerance,
+            preserve_topology=True,
+        )
+        if projected_shape.is_empty or projected_shape.area <= 0:
+            continue
+        candidate = (
+            float(projected_shape.area),
+            candidate_index,
+            mapping(projected_shape),
+        )
+        if len(candidates) < max_features:
+            heapq.heappush(candidates, candidate)
+        elif candidate[0] > candidates[0][0]:
+            heapq.heapreplace(candidates, candidate)
+
+    features: list[dict] = []
+    for _, _, projected_geometry in sorted(candidates, reverse=True):
         region = geometry_mask(
             [projected_geometry],
             out_shape=values.shape,
@@ -186,7 +211,7 @@ def vectorize_distance(
         features,
         key=lambda feature: feature["properties"]["area_km2"],
         reverse=True,
-    )[:max_features]
+    )
     for rank, feature in enumerate(ranked, start=1):
         feature["properties"]["rank"] = rank
     return ranked
@@ -428,6 +453,8 @@ def consume_one_message(queue, service: RunService, container) -> bool:
 
     record: RunRecord | None = None
     should_delete = False
+    max_dequeue_count = int(os.getenv("GEOFM_MAX_DEQUEUE_COUNT", "5"))
+    dequeue_count = int(getattr(message, "dequeue_count", 1) or 1)
     try:
         payload = json.loads(message.content)
         record = service.get(UUID(payload["run_id"]))
@@ -436,6 +463,12 @@ def consume_one_message(queue, service: RunService, container) -> bool:
         if record.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
             process_run(record, service, container)
         should_delete = True
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        should_delete = True
+        logger.error(
+            "GeoFM worker discarded an invalid queue message: %s",
+            sanitize_error(exc),
+        )
     except Exception as exc:
         logger.error("GeoFM worker failed a queued run: %s", sanitize_error(exc))
         if record and record.status not in TERMINAL_STATUSES:
@@ -451,6 +484,12 @@ def consume_one_message(queue, service: RunService, container) -> bool:
                     "GeoFM worker could not persist failure state: %s",
                     sanitize_error(persistence_error),
                 )
+        elif dequeue_count >= max_dequeue_count:
+            should_delete = True
+            logger.error(
+                "GeoFM worker discarded a queue message after %d attempts.",
+                dequeue_count,
+            )
     finally:
         if should_delete:
             queue.delete_message(message)

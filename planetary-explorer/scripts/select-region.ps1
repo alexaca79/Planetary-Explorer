@@ -21,8 +21,8 @@ param(
     [string[]]$Candidates = @('eastus2','swedencentral','westus3','australiaeast','uksouth','francecentral'),
     [Alias('RequiredOpenAiModel')]
     [string[]]$RequiredOpenAiModels = @(),
-    [bool]$DeployGpt5 = $true,
-    [bool]$DeployGpt56 = $true,
+    [bool]$DeployGpt5 = $false,
+    [bool]$DeployGpt56 = $false,
     [bool]$DeployEmbeddingModel = $true,
     [switch]$EnableFabric,
     [switch]$EnablePrivateEndpoints,
@@ -53,6 +53,44 @@ if ($PSBoundParameters.ContainsKey('RequiredOpenAiModels')) {
 }
 
 function Write-Info($msg) { Write-Host $msg -ForegroundColor Gray -ErrorAction SilentlyContinue }
+
+function Test-AzureOpenAIModelContract {
+    <#
+    .SYNOPSIS
+        Tests one location-scoped Azure AI model catalog entry.
+    .DESCRIPTION
+        Matches the model name and version under `model` and the deployment
+        SKU exposed by `az cognitiveservices model list` as sibling `skuName`.
+    .PARAMETER CatalogEntry
+        One location-scoped Azure AI model catalog entry.
+    .PARAMETER RequiredModel
+        Required deployment model name.
+    .PARAMETER Contract
+        Required model version and deployment SKU.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$CatalogEntry,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RequiredModel,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Contract
+    )
+
+    return (
+        $CatalogEntry.model.name -eq $RequiredModel -and
+        $CatalogEntry.model.version -eq $Contract.Version -and
+        $CatalogEntry.skuName -eq $Contract.Sku
+    )
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
 
 # Required providers/resource types for the base stack.
 $required = @(
@@ -116,9 +154,10 @@ function Test-Region {
                 return $false
             }
             $Hit = @($models | Where-Object {
-                $_.model.name -eq $RequiredModel -and
-                $_.model.version -eq $Contract.Version -and
-                @($_.model.skus | ForEach-Object { $_.name }) -contains $Contract.Sku
+                Test-AzureOpenAIModelContract `
+                    -CatalogEntry $_ `
+                    -RequiredModel $RequiredModel `
+                    -Contract $Contract
             })
             if ($Hit.Count -eq 0) {
                 Write-Info "  [fail] AOAI model '$RequiredModel' version '$($Contract.Version)' with SKU '$($Contract.Sku)' is unavailable in $Region"

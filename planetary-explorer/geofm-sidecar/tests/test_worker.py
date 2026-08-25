@@ -40,13 +40,13 @@ AOI = {
 
 def test_given_hls_quality_flags_when_masking_then_contaminated_pixels_are_rejected() -> None:
     # Arrange
-    quality = np.array([0, 2, 4, 8, 16, 32, 192], dtype=np.uint8)
+    quality = np.array([0, 1, 2, 4, 8, 16, 32, 192], dtype=np.uint8)
 
     # Act
     valid = valid_hls_fmask(quality)
 
     # Assert
-    assert valid.tolist() == [True, False, False, False, False, True, False]
+    assert valid.tolist() == [True, False, False, False, False, False, True, False]
 
 
 def test_given_small_aoi_when_building_grid_then_native_dimensions_are_fixed() -> None:
@@ -84,6 +84,38 @@ def test_given_distance_region_when_vectorizing_then_ranked_geojson_is_returned(
     assert features[0]["type"] == "Feature"
     assert features[0]["properties"]["rank"] == 1
     assert features[0]["properties"]["mean_distance"] == pytest.approx(0.8)
+
+
+def test_given_fragmented_distance_when_vectorizing_then_expensive_masks_are_capped(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import geofm_service.worker as worker_module
+
+    values = np.full((12, 12), np.nan, dtype=np.float32)
+    values[::3, ::3] = 0.8
+    mask_calls = 0
+    real_geometry_mask = worker_module.geometry_mask
+
+    def counting_geometry_mask(*args, **kwargs):
+        nonlocal mask_calls
+        mask_calls += 1
+        return real_geometry_mask(*args, **kwargs)
+
+    monkeypatch.setattr(worker_module, "geometry_mask", counting_geometry_mask)
+
+    # Act
+    features = vectorize_distance(
+        values,
+        transform_value=Affine(30, 0, 500000, 0, -30, 6300000),
+        crs="EPSG:32612",
+        threshold=0.35,
+        max_features=3,
+    )
+
+    # Assert
+    assert len(features) == 3
+    assert mask_calls == 3
 
 
 def test_given_valid_distance_when_summarizing_then_all_measurements_are_scalar() -> None:
@@ -241,6 +273,64 @@ def test_given_run_load_failure_when_consuming_then_queue_message_is_not_deleted
     # Assert
     assert consumed is True
     assert queue.deleted is False
+
+
+def test_given_malformed_message_when_consuming_then_message_is_deleted() -> None:
+    # Arrange
+    class Message:
+        content = "not-json"
+        dequeue_count = 1
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    queue = Queue()
+
+    # Act
+    consumed = consume_one_message(queue, service=None, container=None)
+
+    # Assert
+    assert consumed is True
+    assert queue.deleted is True
+
+
+def test_given_repeated_run_load_failure_when_retry_limit_reached_then_message_is_deleted(
+    monkeypatch,
+) -> None:
+    # Arrange
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    class FailingService:
+        def get(self, _run_id):
+            raise RuntimeError("storage unavailable")
+
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+
+    # Act
+    consume_one_message(queue, FailingService(), container=None)
+
+    # Assert
+    assert queue.deleted is True
 
 
 def test_given_redelivered_running_run_when_consuming_then_processing_restarts(

@@ -3,6 +3,7 @@
 import pytest
 
 from pipeline.dispatch import _build_request
+from pipeline.layer1_agents import _has_model_backed_geofm_evidence
 
 
 def test_given_frontend_map_bounds_when_building_request_then_bbox_is_normalized() -> None:
@@ -24,6 +25,39 @@ def test_given_frontend_map_bounds_when_building_request_then_bbox_is_normalized
 
     # Assert
     assert request.bbox == (-111.35, 56.70, -111.34, 56.71)
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "failed"])
+def test_given_incomplete_geofm_result_when_attributing_then_planaura_is_not_claimed(
+    status: str,
+) -> None:
+    # Act
+    attributed = _has_model_backed_geofm_evidence(
+        {
+            "get_geofm_run": {
+                "success": status != "failed",
+                "structured": {"status": status},
+            }
+        }
+    )
+
+    # Assert
+    assert attributed is False
+
+
+def test_given_completed_geofm_result_when_attributing_then_planaura_is_claimed() -> None:
+    # Act
+    attributed = _has_model_backed_geofm_evidence(
+        {
+            "get_geofm_run": {
+                "success": True,
+                "structured": {"status": "complete"},
+            }
+        }
+    )
+
+    # Assert
+    assert attributed is True
 
 
 @pytest.mark.asyncio

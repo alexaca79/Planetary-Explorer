@@ -59,6 +59,7 @@ describe('Chat sequential parts cancellation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await screen.findByText('I will answer this in two parts.');
     await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText('Working on part 1 of 2…')).toHaveLength(1);
     const stopButton = await screen.findByRole('button', { name: 'Stop generating' });
 
     // Act

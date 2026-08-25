@@ -14,11 +14,21 @@ depending on Semantic Kernel.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def scope_session_id(owner_id: str, client_session_id: str | None) -> str:
+    """Return a stable internal key isolated by authenticated owner."""
+    conversation_id = client_session_id or "anonymous"
+    digest = hashlib.sha256(
+        f"{owner_id}\0{conversation_id}".encode("utf-8")
+    ).hexdigest()
+    return f"session-{digest}"
 
 
 class SessionContextStore:

@@ -4462,6 +4462,26 @@ async def resilience_snapshot(
     )
 
 
+def _request_owner_id(request: Request, client_session_id: str | None) -> str:
+    """Resolve an opaque owner from trusted claims or explicit public mode."""
+    authenticated_user = getattr(request.state, "user", {}) or {}
+    authenticated_subject = (
+        authenticated_user.get("oid")
+        or authenticated_user.get("sub")
+        or authenticated_user.get(
+            "http://schemas.microsoft.com/identity/claims/objectidentifier"
+        )
+    )
+    authenticated_tenant = authenticated_user.get("tid")
+    if authenticated_subject:
+        return (
+            f"{authenticated_tenant}:{authenticated_subject}"
+            if authenticated_tenant
+            else str(authenticated_subject)
+        )
+    return f"session:{client_session_id or 'anonymous'}"
+
+
 @app.post("/api/query")
 async def unified_query_processor(request: Request):
     """
@@ -4485,24 +4505,13 @@ async def unified_query_processor(request: Request):
         
         # Support both 'query' and 'user_query' keys (frontend uses 'user_query')
         natural_query = req_body.get('query') or req_body.get('user_query') or 'No query provided'
-        session_id = req_body.get('session_id') or req_body.get('conversation_id')
-        authenticated_user = getattr(request.state, "user", {}) or {}
-        authenticated_subject = (
-            authenticated_user.get("oid")
-            or authenticated_user.get("sub")
-            or authenticated_user.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
-        )
-        authenticated_tenant = authenticated_user.get("tid")
-        if authenticated_subject:
-            req_body["_authenticated_user_id"] = (
-                f"{authenticated_tenant}:{authenticated_subject}"
-                if authenticated_tenant
-                else str(authenticated_subject)
-            )
-        else:
-            # Auth can be disabled for local development. Keep those runs
-            # session-scoped without trusting a caller-provided owner field.
-            req_body["_authenticated_user_id"] = f"session:{session_id or 'anonymous'}"
+        raw_session_id = req_body.get('session_id') or req_body.get('conversation_id')
+        client_session_id = str(raw_session_id) if raw_session_id is not None else None
+        owner_id = _request_owner_id(request, client_session_id)
+        req_body["_authenticated_user_id"] = owner_id
+        from pipeline.session_store import scope_session_id
+        session_id = scope_session_id(owner_id, client_session_id)
+        req_body["session_id"] = session_id
         pin = req_body.get('pin') or req_body.get('vision_pin')  # Pin {lat, lng} (web-ui sends 'vision_pin')
         selected_model = _resolve_chat_deployment(req_body.get('model'))
         selected_reasoning_effort = _resolve_reasoning_effort(
@@ -4631,7 +4640,7 @@ async def unified_query_processor(request: Request):
                     "target_route": None,
                     "missing_slot": "intent",
                     "processing_type": "clarification",
-                    "session_id": session_id,
+                    "session_id": client_session_id,
                     "timestamp": datetime.utcnow().isoformat(),
                 }
         except Exception as _greet_outer_err:
@@ -4704,7 +4713,7 @@ async def unified_query_processor(request: Request):
                         "user_response": _split.intro,
                         "parts": [p.model_dump() for p in _split.parts],
                         "processing_type": "sequential_parts",
-                        "session_id": session_id,
+                        "session_id": client_session_id,
                         "timestamp": datetime.utcnow().isoformat(),
                     }
         except Exception as _split_err:
@@ -4802,7 +4811,7 @@ async def unified_query_processor(request: Request):
                         ),
                         "error": f"{type(_v2_err).__name__}: {_v2_err}",
                         "pipeline": "v2",
-                        "session_id": session_id,
+                        "session_id": client_session_id,
                         "timestamp": datetime.utcnow().isoformat(),
                     },
                 )
@@ -4883,13 +4892,13 @@ async def unified_query_processor(request: Request):
                 "target_route": "vision_analysis",
                 "processing_type": "clarification",
                 "pipeline": "v2",
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "timestamp": datetime.utcnow().isoformat(),
             }
         # ANALYZE / LOAD_AND_ANALYZE — v2 owns the answer end-to-end.
         if v2_result.get("action") in ("ANALYZE", "LOAD_AND_ANALYZE"):
             return JSONResponse(content={
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "sources": v2_result.get("sources", []),
@@ -4935,7 +4944,7 @@ async def unified_query_processor(request: Request):
                 logger.warning(f"[PIPELINE-V2] NAVIGATE: agent returned no navigate_to payload for {location_display!r}")
 
             return JSONResponse(content={
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "success": True,
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
@@ -5465,7 +5474,7 @@ async def unified_query_processor(request: Request):
                                     "target_route": _clarify_action.get("target_route"),
                                     "missing_slot": _clarify_action.get("missing_slot"),
                                     "processing_type": "clarification",
-                                    "session_id": session_id,
+                                    "session_id": client_session_id,
                                     "timestamp": datetime.utcnow().isoformat(),
                                 }
                 except Exception as _clarify_resume_err:
@@ -5592,7 +5601,7 @@ async def unified_query_processor(request: Request):
                                 "target_route": _ca.get("target_route"),
                                 "missing_slot": _ca.get("missing_slot"),
                                 "processing_type": "clarification",
-                                "session_id": session_id,
+                                "session_id": client_session_id,
                                 "timestamp": datetime.utcnow().isoformat(),
                             }
 
@@ -5665,7 +5674,7 @@ async def unified_query_processor(request: Request):
                                     "target_route": _decision.target_route,
                                     "missing_slot": _decision.missing_slot or "intent",
                                     "processing_type": "clarification",
-                                    "session_id": session_id,
+                                    "session_id": client_session_id,
                                     "timestamp": datetime.utcnow().isoformat(),
                                 }
                         except Exception as _clarifier_err:
@@ -5722,7 +5731,7 @@ async def unified_query_processor(request: Request):
                                 "target_route": _ca.get("target_route"),
                                 "missing_slot": _ca.get("missing_slot"),
                                 "processing_type": "clarification",
-                                "session_id": session_id,
+                                "session_id": client_session_id,
                                 "timestamp": datetime.utcnow().isoformat(),
                             }
                 except Exception as _clarify_validate_err:
@@ -8109,30 +8118,37 @@ async def session_reset(request: Request):
         # Parse request body
         try:
             request_data = await request.json()
-            conversation_id = request_data.get("session_id") or request_data.get("conversation_id")
-        except:
+            client_conversation_id = request_data.get("session_id") or request_data.get("conversation_id")
+        except Exception:
             # Try query parameters if JSON parsing fails
-            conversation_id = request.query_params.get("session_id") or request.query_params.get("conversation_id")
+            client_conversation_id = request.query_params.get("session_id") or request.query_params.get("conversation_id")
         
-        if not conversation_id:
+        if not client_conversation_id:
             raise HTTPException(
                 status_code=400,
                 detail="Missing session_id or conversation_id. Please provide a session_id to reset."
             )
+        client_conversation_id = str(client_conversation_id)
+        owner_id = _request_owner_id(request, client_conversation_id)
+        from pipeline.session_store import scope_session_id
+        conversation_id = scope_session_id(owner_id, client_conversation_id)
         
         # Reset conversation context if translator is available
         if SEMANTIC_KERNEL_AVAILABLE and global_translator:
             global_translator.reset_conversation_context(conversation_id)
-            message = f"Session {conversation_id} reset successfully"
+            message = f"Session {client_conversation_id} reset successfully"
         else:
-            message = f"Session reset requested for {conversation_id} (semantic translator not available)"
+            message = (
+                f"Session reset requested for {client_conversation_id} "
+                "(semantic translator not available)"
+            )
         
         logger.info(f"[SYNC] {message}")
         
         return {
             "status": "success",
             "message": message,
-            "session_id": conversation_id,
+            "session_id": client_conversation_id,
             "timestamp": datetime.utcnow().isoformat()
         }
         

@@ -411,6 +411,18 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 
+def _has_model_backed_geofm_evidence(structured: Dict[str, Any]) -> bool:
+    """Return whether a GeoFM tool produced completed model evidence."""
+    for tool_name in ("compare_with_geofm", "get_geofm_run"):
+        payload = structured.get(tool_name)
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        result = payload.get("structured")
+        if isinstance(result, dict) and result.get("status") == "complete":
+            return True
+    return False
+
+
 class AnalyzeAgent(Executor):  # type: ignore[misc]
     """ANALYZE specialist.
 
@@ -497,7 +509,7 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
         )
         _data_source = (
             f"PlanAura + {_catalog_source}"
-            if any("geofm" in tool for tool in _tools_used)
+            if _has_model_backed_geofm_evidence(response.structured or {})
             else _catalog_source
         )
         _visualizations = [v.model_dump() for v in response.visualizations]

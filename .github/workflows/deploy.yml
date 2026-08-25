@@ -32,14 +32,14 @@ on:
         default: false
         type: boolean
       deploy_gpt5:
-        description: 'Deploy GPT-5 model (requires GlobalStandard quota â€” set false to use GPT-4o instead)'
+        description: 'Deploy GPT-5 model (opt-in; requires GlobalStandard quota)'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_gpt56:
         description: 'Deploy GPT-5.6 Sol, Terra, and Luna models with reasoning controls.'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_embedding_model:
         description: 'Deploy text-embedding-3-small for search and retrieval workloads.'
@@ -347,16 +347,17 @@ jobs:
             ENABLE_PE="false"
           fi
           
-          # GPT-5 is ON by default; only disabled if user explicitly unchecks deploy_gpt5
-          if [ "${{ github.event.inputs.deploy_gpt5 }}" == "false" ]; then
-            DEPLOY_GPT5="false"
-          else
+          # Premium models are opt-in because their GlobalStandard quota is
+          # not available in every subscription.
+          if [ "${{ github.event.inputs.deploy_gpt5 }}" == "true" ]; then
             DEPLOY_GPT5="true"
-          fi
-          if [ "${{ github.event.inputs.deploy_gpt56 }}" == "false" ]; then
-            DEPLOY_GPT56="false"
           else
+            DEPLOY_GPT5="false"
+          fi
+          if [ "${{ github.event.inputs.deploy_gpt56 }}" == "true" ]; then
             DEPLOY_GPT56="true"
+          else
+            DEPLOY_GPT56="false"
           fi
           if [ "${{ github.event.inputs.deploy_embedding_model }}" == "false" ]; then
             DEPLOY_EMBEDDING_MODEL="false"
@@ -1256,11 +1257,18 @@ jobs:
               "TRUST_EASYAUTH_HEADER=false" \
             --output none
 
+          az containerapp ingress update \
+            --name "$CA_NAME" \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --type external \
+            --output none
+
           WEB_AUTH_ENABLED=$(az webapp auth show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query enabled -o tsv)
           API_DISABLE_AUTH=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='DISABLE_AUTH'].value | [0]" -o tsv)
           API_TRUST_HEADER=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[0].env[?name=='TRUST_EASYAUTH_HEADER'].value | [0]" -o tsv)
           API_PLATFORM_AUTH=$(az containerapp auth show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.platform.enabled" -o tsv)
-          if [ "$WEB_AUTH_ENABLED" != "false" ] || [ "$API_DISABLE_AUTH" != "true" ] || [ "$API_TRUST_HEADER" != "false" ] || [ "$API_PLATFORM_AUTH" == "true" ]; then
+          API_EXTERNAL=$(az containerapp show --name "$CA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.configuration.ingress.external" -o tsv)
+          if [ "$WEB_AUTH_ENABLED" != "false" ] || [ "$API_DISABLE_AUTH" != "true" ] || [ "$API_TRUST_HEADER" != "false" ] || [ "$API_PLATFORM_AUTH" == "true" ] || [ "$API_EXTERNAL" != "true" ]; then
             echo "ERROR: Public authentication mode verification failed" >&2
             exit 1
           fi
@@ -1363,10 +1371,16 @@ jobs:
             --type internal \
             --output none
 
-          # Update the Entra app only after the API is no longer publicly
-          # reachable. A Graph failure therefore leaves the data plane closed.
-          az ad app update --id "$CLIENT_ID" \
-            --web-redirect-uris "$REDIRECT_URI"
+          # Updating the app registration is a convenience. Standard Azure
+          # deployment identities do not have Microsoft Graph application-write
+          # permission, so an authorization failure must not strand the API.
+          if az ad app update --id "$CLIENT_ID" \
+            --web-redirect-uris "$REDIRECT_URI" \
+            --output none; then
+            echo "Entra redirect URI configured: $REDIRECT_URI"
+          else
+            echo "::warning::Could not update the Entra redirect URI. Configure it manually if it is not already registered: $REDIRECT_URI"
+          fi
 
           # Disable Container Apps EasyAuth (auth is handled by FastAPI middleware)
           az containerapp auth update \
@@ -1441,6 +1455,18 @@ jobs:
 
           # -- Restrict access to assigned users only (only when AUTH_AUTHORIZED_USERS is set) --
           if [ -z "$AUTH_AUTHORIZED_USERS" ]; then
+            SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || true)
+            if [ -n "$SP_ID" ]; then
+              ASSIGNMENT_REQUIRED=$(az ad sp show --id "$SP_ID" --query appRoleAssignmentRequired -o tsv)
+              if [ "$ASSIGNMENT_REQUIRED" == "true" ]; then
+                az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=false
+                ASSIGNMENT_REQUIRED=$(az ad sp show --id "$SP_ID" --query appRoleAssignmentRequired -o tsv)
+                if [ "$ASSIGNMENT_REQUIRED" != "false" ]; then
+                  echo "ERROR: Service principal assignment enforcement was not disabled" >&2
+                  exit 1
+                fi
+              fi
+            fi
             echo "No AUTH_AUTHORIZED_USERS configured - all tenant users can access the app"
           else
             SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || true)

@@ -10,10 +10,10 @@ param sku object = {
 param deployModels bool = true
 
 @description('Deploy GPT-5 model (requires GlobalStandard SKU quota — set to false if unavailable in your region)')
-param deployGpt5 bool = true
+param deployGpt5 bool = false
 
 @description('Deploy all GPT-5.6 variants (requires GlobalStandard SKU quota — set to false if unavailable in your region)')
-param deployGpt56 bool = true
+param deployGpt56 bool = false
 
 @description('Deploy the text embedding model used by search and retrieval workloads')
 param deployEmbeddingModel bool = true

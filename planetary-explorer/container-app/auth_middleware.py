@@ -12,12 +12,8 @@
 #   (B) FALLBACK — `Authorization: Bearer <jwt>` (transitional)
 #       The current topology has the browser calling the backend container
 #       directly, bypassing EasyAuth. While we still operate that way, the
-#       frontend forwards the user's `/.auth/me` access_token and we
-#       validate signature + tenant issuer here. Audience is checked against
-#       an allow-list that includes the UI app, the Fabric API app, and
-#       Microsoft Graph — because depending on EasyAuth's scope config the
-#       returned token's `aud` can be any of them, but ALL are still
-#       AAD-signed proof that the user is authenticated to our tenant.
+#       frontend forwards the user's `/.auth/me` ID token and we validate its
+#       signature, tenant issuer, and application-specific audience here.
 #
 #       This fallback can be removed once the UI App Service proxies /api/*
 #       through itself so that EasyAuth headers are injected on every
@@ -49,20 +45,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 TENANT_ID = os.environ.get("AZURE_AD_TENANT_ID", "")
 CLIENT_ID = os.environ.get("AZURE_AD_CLIENT_ID", "")
-# Fabric OBO API app — when frontend forwards an access_token with this audience.
-FABRIC_API_CLIENT_ID = os.environ.get("FABRIC_CLIENT_ID", "")
-# Microsoft Graph app id (constant across all tenants). EasyAuth often hands
-# back a Graph-scoped access_token from /.auth/me when the login scope is
-# `openid profile email offline_access` — those tokens are still signed by
-# our tenant so they remain valid proof of authentication.
-GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 
 # Separate JWKS endpoints for v1.0 vs v2.0 tokens. AAD signs v1 and v2 tokens
 # with overlapping but not identical key sets; pick by the token's `iss` claim.
 JWKS_URL_V2 = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 JWKS_URL_V1 = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/keys"
-# Cross-tenant common endpoints — useful for Graph-signed tokens whose signing
-# key may not appear in any single-tenant JWKS during rotation windows.
+# Cross-tenant common endpoints provide a fallback during signing-key rotation.
 JWKS_URL_COMMON_V2 = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
 JWKS_URL_COMMON_V1 = "https://login.microsoftonline.com/common/discovery/keys"
 
@@ -72,21 +60,12 @@ VALID_ISSUERS: List[str] = [
     f"https://sts.windows.net/{TENANT_ID}/",
 ]
 
-# Accepted audiences: the UI app itself, the Fabric OBO API app, and Microsoft
-# Graph. We accept Graph because EasyAuth's `/.auth/me` typically returns a
-# Graph access_token when the login scope includes `offline_access`. The token
-# is still a valid AAD-signed proof of the user's identity, which is all the
-# backend needs — downstream Fabric calls use service-principal credentials
-# (`fabric_client.acquire_app_token`), not user-OBO.
-VALID_AUDIENCES: List[str] = [
-    CLIENT_ID,
-    f"api://{CLIENT_ID}",
-    FABRIC_API_CLIENT_ID,
-    f"api://{FABRIC_API_CLIENT_ID}",
-    GRAPH_APP_ID,
-    "https://graph.microsoft.com",
-    "https://graph.microsoft.com/",
-]
+# Accept only audiences bound to an application surface controlled by this
+# deployment. Tenant-signed Graph or unrelated API tokens do not prove that a
+# caller is assigned to Planetary Explorer.
+VALID_AUDIENCES: List[str] = (
+    [CLIENT_ID, f"api://{CLIENT_ID}"] if CLIENT_ID else []
+)
 
 # M365 declarative agent surface — separate app registration so its lifecycle
 # (revoke, rescope, secret rotation) is independent from the UI's. Backward
@@ -178,10 +157,8 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
     def _signing_key_for_token(self, token: str, iss: str):
         """Resolve the signing key for `token` by trying multiple JWKS endpoints.
 
-        AAD's discovery endpoints aren't a single source of truth — depending
-        on token version (v1/v2) and audience (your-app vs Graph) the kid
-        may only appear in one specific JWKS feed. We try the most-likely
-        endpoint first (based on iss claim) then fall back to the others.
+        AAD's discovery endpoints aren't a single source of truth. We try the
+        most likely endpoint first based on the issuer, then fall back.
         """
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid", "")

@@ -63,10 +63,10 @@ param(
     [switch]$EnableFabric,
 
     [Parameter(Mandatory=$false)]
-    [bool]$DeployGpt5 = $true,
+    [bool]$DeployGpt5 = $false,
 
     [Parameter(Mandatory=$false)]
-    [bool]$DeployGpt56 = $true,
+    [bool]$DeployGpt56 = $false,
 
     [Parameter(Mandatory=$false)]
     [bool]$DeployEmbeddingModel = $true,

@@ -109,8 +109,8 @@ Edit `main.parameters.json` or pass as command-line arguments:
 | `environmentName` | Name prefix for all resources | `planetaryexplorer` |
 | `location` | Azure region | `eastus` |
 | `deployAISearch` | Include Azure AI Search | `false` |
-| `deployGpt5` | Deploy the GPT-5 model | `true` |
-| `deployGpt56` | Deploy GPT-5.6 Sol, Terra, and Luna models | `true` |
+| `deployGpt5` | Deploy the GPT-5 model | `false` |
+| `deployGpt56` | Deploy GPT-5.6 Sol, Terra, and Luna models | `false` |
 | `enableAuthentication` | Enable Entra ID auth | `false` |
 
 ### Resource Naming

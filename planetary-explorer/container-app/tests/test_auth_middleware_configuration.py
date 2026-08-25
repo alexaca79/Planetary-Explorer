@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from cryptography.hazmat.primitives.asymmetric import rsa
+import jwt
+import pytest
 
 import auth_middleware
 
@@ -140,3 +145,62 @@ def test_given_trusted_easyauth_header_without_tenant_then_request_is_rejected(
 
     # Assert
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "audience",
+    [
+        "00000003-0000-0000-c000-000000000000",
+        "https://graph.microsoft.com",
+        "https://graph.microsoft.com/",
+    ],
+)
+def test_given_graph_token_when_requesting_protected_path_then_audience_is_rejected(
+    monkeypatch,
+    audience: str,
+) -> None:
+    # Arrange
+    tenant_id = "tenant-id"
+    client_id = "client-id"
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(
+        {
+            "aud": audience,
+            "iss": f"https://login.microsoftonline.com/{tenant_id}/v2.0",
+            "sub": "user-id",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 300,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+    monkeypatch.setattr(auth_middleware, "TENANT_ID", tenant_id)
+    monkeypatch.setattr(auth_middleware, "CLIENT_ID", client_id)
+    monkeypatch.setattr(
+        auth_middleware,
+        "VALID_ISSUERS",
+        [f"https://login.microsoftonline.com/{tenant_id}/v2.0"],
+    )
+    monkeypatch.setattr(
+        auth_middleware,
+        "VALID_AUDIENCES",
+        [client_id, f"api://{client_id}"],
+    )
+    monkeypatch.setattr(
+        auth_middleware.EntraAuthMiddleware,
+        "_signing_key_for_token",
+        lambda _self, _token, _issuer: SimpleNamespace(key=private_key.public_key()),
+    )
+    monkeypatch.delenv("DISABLE_AUTH", raising=False)
+    monkeypatch.delenv("TRUST_EASYAUTH_HEADER", raising=False)
+
+    # Act
+    response = _build_client().get(
+        "/protected",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Assert
+    assert response.status_code == 401
+    assert response.json() == {"error": "Invalid token audience"}

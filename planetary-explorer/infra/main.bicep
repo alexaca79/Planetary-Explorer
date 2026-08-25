@@ -49,10 +49,10 @@ param cloudEnvironment string = 'Commercial'
 param deployAIFoundry bool = true
 
 @description('Deploy GPT-5 model (requires GlobalStandard quota — set false if unavailable)')
-param deployGpt5 bool = true
+param deployGpt5 bool = false
 
 @description('Deploy GPT-5.6 Sol, Terra, and Luna models (requires GlobalStandard quota — set false if unavailable)')
-param deployGpt56 bool = true
+param deployGpt56 bool = false
 
 @description('Deploy the text embedding model used by search and retrieval workloads')
 param deployEmbeddingModel bool = true

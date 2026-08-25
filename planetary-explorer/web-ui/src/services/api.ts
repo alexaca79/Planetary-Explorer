@@ -579,7 +579,7 @@ class ApiService {
     } catch (error: any) {
       // If the caller aborted via AbortController, surface that as a
       // distinct error so the UI can drop the result silently.
-      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
+      if (error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
         const cancelErr: any = new Error('Request cancelled by user.');
         cancelErr.name = 'CanceledError';
         cancelErr.cancelled = true;

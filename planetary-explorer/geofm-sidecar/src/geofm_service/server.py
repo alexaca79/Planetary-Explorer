@@ -199,6 +199,11 @@ def get_service() -> RunService:
         "yes",
         "on",
     }
+    if bool(blob_url) != bool(queue_url):
+        raise RuntimeError(
+            "AZURE_STORAGE_BLOB_ENDPOINT and AZURE_STORAGE_QUEUE_ENDPOINT "
+            "must be configured together."
+        )
     if blob_url and queue_url:
         from azure.identity import DefaultAzureCredential
         from azure.storage.blob import ContainerClient

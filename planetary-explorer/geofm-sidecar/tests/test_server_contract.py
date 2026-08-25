@@ -4,7 +4,7 @@ import anyio
 import pytest
 from starlette.testclient import TestClient
 
-from geofm_service.server import build_app, geofm_list_models, mcp
+from geofm_service.server import build_app, geofm_list_models, get_service, mcp
 
 HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -101,3 +101,27 @@ def test_given_required_auth_without_key_when_building_app_then_startup_fails(
     # Act & Assert
     with pytest.raises(RuntimeError, match="GEOFM_MCP_API_KEY is required"):
         build_app()
+
+
+@pytest.mark.parametrize(
+    ("blob_endpoint", "queue_endpoint"),
+    [
+        ("https://storage.blob.core.windows.net", ""),
+        ("", "https://storage.queue.core.windows.net"),
+    ],
+)
+def test_given_partial_azure_storage_when_building_service_then_startup_fails(
+    monkeypatch,
+    blob_endpoint: str,
+    queue_endpoint: str,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("AZURE_STORAGE_BLOB_ENDPOINT", blob_endpoint)
+    monkeypatch.setenv("AZURE_STORAGE_QUEUE_ENDPOINT", queue_endpoint)
+    get_service.cache_clear()
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="must be configured together"):
+        get_service()
+
+    get_service.cache_clear()
