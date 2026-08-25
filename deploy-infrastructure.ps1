@@ -138,17 +138,17 @@ if (-not $Location) {
         Write-Host "Preflight script not found at $selectScript. Aborting." -ForegroundColor Red
         exit 1
     } else {
-        $preflightArgs = @(
-            ('-DeployGpt5:${0}' -f $deployGpt5Resolved.ToString().ToLower()),
-            ('-DeployGpt56:${0}' -f $deployGpt56Resolved.ToString().ToLower()),
-            ('-DeployEmbeddingModel:${0}' -f $deployEmbeddingResolved.ToString().ToLower())
-        )
-        if ($mpcPro)  { $preflightArgs += '-EnableMpcPro' }
-        if ($private) { $preflightArgs += '-EnablePrivateEndpoints' }
-        if ($fabric)  { $preflightArgs += '-EnableFabric' }
+        $preflightParams = @{
+            DeployGpt5 = $deployGpt5Resolved
+            DeployGpt56 = $deployGpt56Resolved
+            DeployEmbeddingModel = $deployEmbeddingResolved
+            EnableMpcPro = $mpcPro
+            EnablePrivateEndpoints = $private
+            EnableFabric = $fabric
+        }
 
         try {
-            $picked = & pwsh -NoProfile -File $selectScript @preflightArgs 2>$null
+            $picked = & $selectScript @preflightParams 2>$null
             if ($picked) {
                 $Location = ($picked | Where-Object { $_ -and $_ -match '^[a-z][a-z0-9]+$' } | Select-Object -Last 1)
             }
@@ -171,7 +171,8 @@ Write-Host "Note: main.bicep is subscription-scoped and will create resource gro
 # Build inline parameter overrides. These take precedence over main.parameters.json
 # so the same parameters file can serve prod + dev + any future env.
 $inlineParams = @(
-    "environmentName=$EnvironmentName"
+    "environmentName=$EnvironmentName",
+    "location=$Location"
 )
 if ($ContainerImage)            { $inlineParams += "containerImage=$ContainerImage" }
 if ($EnableAuthentication)      { $inlineParams += "enableAuthentication=true" }

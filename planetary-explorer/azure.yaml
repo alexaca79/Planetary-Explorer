@@ -13,6 +13,8 @@ workflows:
       - azd: provision
       - azd: deploy web
       - azd: deploy api
+      # GeoFM is opt-in because deployGeoFm defaults to false. After enabling
+      # it, run: azd deploy geofm; azd deploy geofm-worker.
 
 services:
   web:

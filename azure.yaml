@@ -36,6 +36,9 @@ workflows:
       - azd: provision
       - azd: deploy web
       - azd: deploy api
+      # GeoFM is opt-in because deployGeoFm defaults to false and provisions
+      # billed GPU/private-link resources. After enabling it, publish both
+      # optional services explicitly: azd deploy geofm; azd deploy geofm-worker.
 
 services:
   web:

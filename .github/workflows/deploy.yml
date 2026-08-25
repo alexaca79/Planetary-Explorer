@@ -1443,7 +1443,7 @@ jobs:
           if [ -z "$AUTH_AUTHORIZED_USERS" ]; then
             echo "No AUTH_AUTHORIZED_USERS configured - all tenant users can access the app"
           else
-            SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv)
+            SP_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || true)
             if [ -z "$SP_ID" ]; then
               SP_ID=$(az ad sp create --id "$CLIENT_ID" --query id -o tsv)
             fi
