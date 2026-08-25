@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --mode production",
+    "build": "vite build --mode production && node scripts/prepare-deployment.cjs",
     "build:dev": "vite build --mode development",
     "preview": "vite preview --port 5173",
     "build:analyze": "vite build --mode production && npx vite-bundle-analyzer dist",
     "clean": "rimraf dist",
     "test": "vitest",
+    "test:deployment": "node --test deployment/server.test.cjs",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"

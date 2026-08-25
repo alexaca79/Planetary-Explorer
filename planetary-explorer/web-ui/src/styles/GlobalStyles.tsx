@@ -1002,6 +1002,12 @@ export const GlobalStyles = () => (
       justify-content: flex-start;
     }
 
+    @media (max-width: 640px) {
+      .row.assistant {
+        padding-left: 44px;
+      }
+    }
+
     .message-wrapper {
       display: flex;
       flex-direction: column;

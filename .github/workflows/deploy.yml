@@ -868,27 +868,22 @@ jobs:
           VITE_API_BASE_URL="${{ steps.get-backend-url.outputs.backend_url }}" \
           VITE_AZURE_MAPS_SUBSCRIPTION_KEY="${{ steps.get-maps-key.outputs.maps_key }}" \
           npm run build
-          
-          # Create server for App Service
-          cat > dist/server.js << 'EOF'
-          const express = require('express');
-          const path = require('path');
-          const app = express();
-          const port = process.env.PORT || 8080;
-          app.use(express.static(__dirname));
-          app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-          app.listen(port, () => console.log('Server running on port ' + port));
-          EOF
-          
-          cat > dist/package.json << 'EOF'
-          {"name":"planetary-explorer-ui","version":"1.0.0","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^4.18.0"}}
-          EOF
-          
+
+          # The production build emits a dependency-free Node static host.
+          test -f dist/server.js
+          test -f dist/package.json
+          node --check dist/server.js
+
           cd dist
-          npm install --production
           zip -r ../deploy.zip .
           cd ..
-          
+
+          az webapp config set \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --name "$WA_NAME" \
+            --startup-file "node server.js" \
+            --output none
+
           # Deploy to App Service
           az webapp deploy \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
