@@ -48,6 +48,16 @@ from .contracts import ActionDecision, AnalysisRequest
 logger = logging.getLogger(__name__)
 
 
+def _consume_detached_task(task: asyncio.Task) -> None:
+    """Consume a detached task result after response-path cancellation."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("[LOAD_AND_ANALYZE] detached analysis task failed")
+
+
 # ---------------------------------------------------------------------------
 # MAF base class (optional — degrades to plain object when not installed).
 # Mirrors the import block in pipeline/executors.py so behavior is identical.
@@ -564,6 +574,7 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         self.id = id
         self._load = load_agent
         self._analyze = analyze_agent
+        self._background_tasks: set[asyncio.Task] = set()
         self._analysis_timeout_seconds = max(
             1.0,
             float(os.getenv("LOAD_AND_ANALYZE_TIMEOUT_SECONDS", "45")),
@@ -598,14 +609,26 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
                 update={"hint": f"load_agent_stac_query:{load_stac_query}"}
             )
 
+        analysis_task = asyncio.create_task(
+            self._analyze.run(
+                decision,
+                enriched_request,
+                body,
+            )
+        )
         try:
-            async with asyncio.timeout(self._analysis_timeout_seconds):
-                analyze_result = await self._analyze.run(
-                    decision,
-                    enriched_request,
-                    body,
-                )
-        except TimeoutError:
+            done, _pending = await asyncio.wait(
+                {analysis_task},
+                timeout=self._analysis_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            analysis_task.cancel()
+            self._track_background_analysis(analysis_task)
+            raise
+
+        if analysis_task not in done:
+            analysis_task.cancel()
+            self._track_background_analysis(analysis_task)
             analysis_status = {
                 "status": "timeout",
                 "timeout_seconds": self._analysis_timeout_seconds,
@@ -615,6 +638,14 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
                 started,
                 analysis_status,
             )
+
+        if analysis_task.cancelled():
+            return self._preserve_load_result(
+                load_result,
+                started,
+                {"status": "error", "error_type": "CancelledError"},
+            )
+        analyze_result = analysis_task.result()
 
         analyst_status = (
             (analyze_result.get("structured") or {}).get("analyst_status") or {}
@@ -695,6 +726,16 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         analyze_result["structured"] = merged_structured
         analyze_result["elapsed_ms"] = int((time.time() - started) * 1000)
         return analyze_result
+
+    def _track_background_analysis(self, task: asyncio.Task) -> None:
+        """Strongly retain detached analysis until its result is consumed."""
+        self._background_tasks.add(task)
+
+        def finish(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            _consume_detached_task(completed)
+
+        task.add_done_callback(finish)
 
     @staticmethod
     def _preserve_load_result(

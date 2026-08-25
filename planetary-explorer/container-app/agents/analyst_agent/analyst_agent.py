@@ -27,8 +27,10 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from contextvars import Context
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from weakref import WeakValueDictionary
 
 if TYPE_CHECKING:
     from pipeline.contracts import SynthesizedResponse
@@ -64,6 +66,16 @@ class AnalystThread:
     thread_id: Optional[str] = None
 
 
+@dataclass
+class AnalystInvocation:
+    session_id: str
+    thread: Optional[AnalystThread] = None
+    owned_threads: List[AnalystThread] = field(default_factory=list)
+    stop_requested: bool = False
+    stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+    provider_task: Optional[asyncio.Task] = None
+
+
 # ---------------------------------------------------------------------------
 # AnalystAgent
 # ---------------------------------------------------------------------------
@@ -78,6 +90,10 @@ class AnalystAgent:
         self._initialized = False
         self._init_lock = asyncio.Lock()
         self._threads: Dict[str, AnalystThread] = {}
+        self._session_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+        self._background_tasks: set[asyncio.Task] = set()
         self._max_init_retries = 2
         self._run_timeout_seconds = max(
             1.0,
@@ -163,14 +179,23 @@ class AnalystAgent:
     # Thread management
     # ------------------------------------------------------------------
 
-    async def _get_or_create_thread(self, session_id: str) -> AnalystThread:
+    async def _get_or_create_thread(
+        self,
+        session_id: str,
+        invocation: AnalystInvocation,
+    ) -> AnalystThread:
         existing = self._threads.get(session_id)
         if existing and existing.thread_id:
+            invocation.thread = existing
+            invocation.owned_threads.append(existing)
             return existing
         await self._ensure_initialized()
         thread = await self._agents_client.threads.create()  # type: ignore[union-attr]
         rec = AnalystThread(session_id=session_id, thread_id=thread.id)
-        self._threads[session_id] = rec
+        invocation.thread = rec
+        invocation.owned_threads.append(rec)
+        if not invocation.stop_requested:
+            self._threads[session_id] = rec
         logger.info("[ANALYST] thread %s -> %s", session_id, thread.id)
         return rec
 
@@ -179,6 +204,15 @@ class AnalystAgent:
     # ------------------------------------------------------------------
 
     async def run(self, request) -> "SynthesizedResponse":
+        """Run analysis and always clear caller-visible session context."""
+        from .session_context import clear_session
+
+        try:
+            return await self._run_with_session(request)
+        finally:
+            clear_session()
+
+    async def _run_with_session(self, request) -> "SynthesizedResponse":
         """Run the ReAct loop for a single AnalysisRequest.
 
         Returns a SynthesizedResponse that's drop-in compatible with the
@@ -191,7 +225,7 @@ class AnalystAgent:
             Source,
             Visualization,
         )
-        from .session_context import AnalystSession, clear_session, set_session
+        from .session_context import AnalystSession, set_session
 
         started = time.time()
 
@@ -225,15 +259,33 @@ class AnalystAgent:
         set_session(sess)
 
         analyst_status: Optional[Dict[str, Any]] = None
+        invocation = AnalystInvocation(session_id=request.session_id)
+        invocation_task = asyncio.create_task(
+            self._invoke_serialized(request, invocation)
+        )
         try:
-            async with asyncio.timeout(self._run_timeout_seconds):
-                answer, _tool_calls, evidence = await self._invoke_agent_service(request)
-        except TimeoutError:
+            done, _pending = await asyncio.wait(
+                {invocation_task},
+                timeout=self._run_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            invocation.stop_requested = True
+            invocation.stop_event.set()
+            self._abandon_invocation_threads(invocation)
+            self._track_background_task(invocation_task, "cancelled invocation")
+            self._schedule_invocation_cleanup(invocation, invocation_task)
+            raise
+
+        if invocation_task not in done:
             logger.warning(
                 "[ANALYST] run timed out after %.1fs, returning fallback response",
                 self._run_timeout_seconds,
             )
-            await self._cancel_active_runs(request.session_id)
+            invocation.stop_requested = True
+            invocation.stop_event.set()
+            self._abandon_invocation_threads(invocation)
+            self._track_background_task(invocation_task, "timed-out invocation")
+            self._schedule_invocation_cleanup(invocation, invocation_task)
             answer = self._fallback_answer(
                 request,
                 f"timed out after {self._run_timeout_seconds:.1f}s",
@@ -243,18 +295,25 @@ class AnalystAgent:
                 "status": "timeout",
                 "timeout_seconds": self._run_timeout_seconds,
             }
-        except asyncio.CancelledError:
-            await self._cancel_active_runs(request.session_id)
-            clear_session()
-            raise
-        except Exception as e:
-            logger.exception("[ANALYST] run failed, returning fallback response")
-            answer = self._fallback_answer(request, str(e))
-            evidence = []
-            analyst_status = {
-                "status": "error",
-                "error_type": type(e).__name__,
-            }
+        else:
+            if invocation_task.cancelled():
+                answer = self._fallback_answer(request, "analysis was cancelled")
+                evidence = []
+                analyst_status = {
+                    "status": "error",
+                    "error_type": "CancelledError",
+                }
+            else:
+                try:
+                    answer, _tool_calls, evidence = invocation_task.result()
+                except Exception as e:
+                    logger.exception("[ANALYST] run failed, returning fallback response")
+                    answer = self._fallback_answer(request, str(e))
+                    evidence = []
+                    analyst_status = {
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                    }
 
         # Aggregate sources from tool evidence
         sources: List[Source] = []
@@ -312,8 +371,6 @@ class AnalystAgent:
         except Exception:
             plan = None  # type: ignore
 
-        clear_session()
-
         elapsed_ms = int((time.time() - started) * 1000)
         return SynthesizedResponse(
             answer=answer,
@@ -324,11 +381,112 @@ class AnalystAgent:
             elapsed_ms=elapsed_ms,
         )
 
-    async def _cancel_active_runs(self, session_id: str) -> None:
-        """Cancel active remote runs and abandon the affected local thread."""
-        thread = self._threads.pop(session_id, None)
-        if not thread or not thread.thread_id or self._agents_client is None:
+    def _track_background_task(self, task: asyncio.Task, label: str) -> None:
+        """Keep detached cleanup alive and consume its terminal result."""
+        if task in self._background_tasks:
             return
+        self._background_tasks.add(task)
+
+        def finish(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("[ANALYST] background %s failed", label)
+
+        task.add_done_callback(finish)
+
+    async def _invoke_serialized(self, request, invocation: AnalystInvocation):
+        """Allow at most one remote Agent run per user session."""
+        lock = self._session_locks.setdefault(request.session_id, asyncio.Lock())
+        async with lock:
+            if invocation.stop_requested:
+                raise asyncio.CancelledError
+            provider_task = asyncio.create_task(
+                self._invoke_agent_service(request, invocation)
+            )
+            invocation.provider_task = provider_task
+            stop_task = asyncio.create_task(
+                invocation.stop_event.wait(),
+                context=Context(),
+            )
+            try:
+                done, _pending = await asyncio.wait(
+                    {provider_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if provider_task in done:
+                    if provider_task.cancelled():
+                        raise asyncio.CancelledError
+                    return provider_task.result()
+
+                provider_task.cancel()
+                self._track_background_task(provider_task, "stopped provider")
+                raise asyncio.CancelledError
+            finally:
+                stop_task.cancel()
+                self._track_background_task(stop_task, "stop waiter")
+                if invocation.stop_requested:
+                    self._abandon_invocation_threads(invocation)
+
+    def _schedule_invocation_cleanup(
+        self,
+        invocation: AnalystInvocation,
+        invocation_task: asyncio.Task,
+    ) -> None:
+        """Cancel only the remote thread owned by one timed-out invocation."""
+        cleanup_task = asyncio.create_task(
+            self._cleanup_invocation(invocation, invocation_task),
+            context=Context(),
+        )
+        self._track_background_task(cleanup_task, "remote run cleanup")
+
+    async def _cleanup_invocation(
+        self,
+        invocation: AnalystInvocation,
+        invocation_task: asyncio.Task,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        scanned_after_completion = False
+        cancelled_run_ids: set[str] = set()
+        while asyncio.get_running_loop().time() < deadline:
+            provider_task = invocation.provider_task
+            if provider_task is not None and not provider_task.done():
+                provider_task.cancel()
+                self._track_background_task(provider_task, "late provider")
+
+            threads = list(invocation.owned_threads)
+            if self._agents_client is not None:
+                for thread in threads:
+                    if thread.thread_id:
+                        await self._cancel_thread_runs(thread, cancelled_run_ids)
+
+            provider_done = provider_task is None or provider_task.done()
+            invocation_done = invocation_task.done()
+            if provider_done and invocation_done:
+                if scanned_after_completion:
+                    break
+                scanned_after_completion = True
+            await asyncio.sleep(0.1)
+
+        if not invocation_task.done():
+            invocation_task.cancel()
+            self._track_background_task(invocation_task, "late invocation")
+        self._abandon_invocation_threads(invocation)
+
+    def _abandon_invocation_threads(self, invocation: AnalystInvocation) -> None:
+        for thread in invocation.owned_threads:
+            if self._threads.get(invocation.session_id) is thread:
+                self._threads.pop(invocation.session_id, None)
+
+    async def _cancel_thread_runs(
+        self,
+        thread: AnalystThread,
+        cancelled_run_ids: Optional[set[str]] = None,
+    ) -> None:
+        """Best-effort bounded cancellation for one detached remote thread."""
 
         active_statuses = {"queued", "in_progress", "requires_action"}
 
@@ -339,6 +497,9 @@ class AnalystAgent:
                 order="desc",
             )
             async for run in runs:
+                run_id = str(run.id)
+                if cancelled_run_ids is not None and run_id in cancelled_run_ids:
+                    continue
                 raw_status = getattr(run, "status", "")
                 status = str(getattr(raw_status, "value", raw_status)).lower()
                 if status not in active_statuses:
@@ -347,15 +508,26 @@ class AnalystAgent:
                     thread_id=thread.thread_id,
                     run_id=run.id,
                 )
+                if cancelled_run_ids is not None:
+                    cancelled_run_ids.add(run_id)
                 logger.info(
                     "[ANALYST] cancelled timed-out remote run %s on thread %s",
                     run.id,
                     thread.thread_id,
                 )
 
+        cleanup_task = asyncio.create_task(cancel_runs(), context=Context())
+        done, _pending = await asyncio.wait({cleanup_task}, timeout=5.0)
+        if cleanup_task not in done:
+            cleanup_task.cancel()
+            self._track_background_task(cleanup_task, "late remote cleanup")
+            logger.warning(
+                "[ANALYST] remote run cleanup timed out for thread %s",
+                thread.thread_id,
+            )
+            return
         try:
-            async with asyncio.timeout(5.0):
-                await asyncio.shield(cancel_runs())
+            cleanup_task.result()
         except Exception as exc:
             logger.warning(
                 "[ANALYST] remote run cleanup failed for thread %s: %s",
@@ -367,14 +539,20 @@ class AnalystAgent:
     # Agent Service invocation
     # ------------------------------------------------------------------
 
-    async def _invoke_agent_service(self, request):
+    async def _invoke_agent_service(
+        self,
+        request,
+        invocation: AnalystInvocation,
+    ):
         """Send message, run, collect assistant text + tool-call evidence."""
         from azure.ai.agents.models import ListSortOrder  # type: ignore
 
         await self._ensure_initialized()
         assert self._agents_client is not None and self._agent_id is not None
 
-        thread = await self._get_or_create_thread(request.session_id)
+        thread = await self._get_or_create_thread(request.session_id, invocation)
+        if invocation.stop_requested:
+            raise asyncio.CancelledError
 
         augmented = self._build_message(request)
 
@@ -383,23 +561,39 @@ class AnalystAgent:
             try:
                 if attempt > 0:
                     await asyncio.sleep(2**attempt)
+                    if invocation.stop_requested:
+                        raise asyncio.CancelledError
                     new_thread = await self._agents_client.threads.create()
-                    self._threads[request.session_id] = AnalystThread(
+                    new_record = AnalystThread(
                         session_id=request.session_id, thread_id=new_thread.id
                     )
-                    thread = self._threads[request.session_id]
+                    invocation.thread = new_record
+                    invocation.owned_threads.append(new_record)
+                    if invocation.stop_requested:
+                        raise asyncio.CancelledError
+                    self._threads[request.session_id] = new_record
+                    thread = new_record
+
+                if invocation.stop_requested:
+                    raise asyncio.CancelledError
 
                 await self._agents_client.messages.create(
                     thread_id=thread.thread_id,
                     role="user",
                     content=augmented,
                 )
+                if invocation.stop_requested:
+                    raise asyncio.CancelledError
                 run = await self._agents_client.runs.create_and_process(
                     thread_id=thread.thread_id,
                     agent_id=self._agent_id,
                 )
+                if invocation.stop_requested:
+                    raise asyncio.CancelledError
                 break
             except Exception as e:
+                if invocation.stop_requested:
+                    raise asyncio.CancelledError from e
                 logger.warning("[ANALYST] run attempt %d failed: %s", attempt + 1, e)
                 if attempt == 2:
                     raise
