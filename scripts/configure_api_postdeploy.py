@@ -134,6 +134,7 @@ def build_update_document(
     configuration["ingress"] = ingress
 
     template = dict(properties["template"])
+    template.pop("revisionSuffix", None)
     containers = [dict(container) for container in template["containers"]]
     if not containers:
         raise ValueError("Container App does not define an application container.")

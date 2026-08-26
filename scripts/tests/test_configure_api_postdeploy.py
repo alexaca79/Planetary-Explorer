@@ -73,6 +73,7 @@ def test_given_geofm_profile_when_building_update_then_dependency_probe_is_resto
                 }
             },
             "template": {
+                "revisionSuffix": "existing-revision",
                 "containers": [{"name": "geofm", "image": "example/geofm:latest"}],
                 "scale": {"minReplicas": 1, "maxReplicas": 3},
             },
@@ -84,6 +85,7 @@ def test_given_geofm_profile_when_building_update_then_dependency_probe_is_resto
 
     # Assert
     properties = document["properties"]
+    assert "revisionSuffix" not in properties["template"]
     ingress = properties["configuration"]["ingress"]
     assert "fqdn" not in ingress
     assert "stickySessions" not in ingress
