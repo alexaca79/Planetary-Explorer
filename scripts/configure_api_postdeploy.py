@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.request import urlopen
 
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
@@ -246,11 +247,45 @@ def wait_for_geofm_readiness(
     attempts: int = 40,
 ) -> None:
     """Wait for GeoFM storage and queue permissions to become usable."""
+    ingress = json.loads(
+        run_az(
+            [
+                "containerapp",
+                "show",
+                "--name",
+                name,
+                "--resource-group",
+                resource_group,
+                "--query",
+                "{external:properties.configuration.ingress.external,"
+                "fqdn:properties.configuration.ingress.fqdn}",
+                "--output",
+                "json",
+            ]
+        )
+    )
+    readiness_url = (
+        f"https://{ingress.get('fqdn')}/ready"
+        if ingress.get("external") and ingress.get("fqdn")
+        else ""
+    )
     readiness_command = (
         "python -c \"import urllib.request; "
         "urllib.request.urlopen('http://localhost:8080/ready', timeout=10).read()\""
     )
     for attempt in range(1, attempts + 1):
+        if readiness_url:
+            try:
+                with urlopen(readiness_url, timeout=10) as response:
+                    snapshot = json.load(response)
+                if response.status == 200 and snapshot.get("ready") is True:
+                    return
+            except (OSError, ValueError):
+                pass
+            if attempt < attempts:
+                time.sleep(15)
+            continue
+
         revision = run_az(
             [
                 "containerapp",

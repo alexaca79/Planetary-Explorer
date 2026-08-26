@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -115,6 +116,8 @@ def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retrie
     def fake_run_az(arguments: list[str]) -> str:
         nonlocal execution_attempts
         if arguments[1] == "show":
+            if "{external:" in arguments[arguments.index("--query") + 1]:
+                return json.dumps({"external": False, "fqdn": ""})
             return "geofm--revision"
         execution_attempts += 1
         if execution_attempts == 1:
@@ -129,3 +132,39 @@ def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retrie
 
     # Assert
     assert execution_attempts == 2
+
+
+def test_given_external_geofm_when_waiting_then_https_readiness_is_used(
+    monkeypatch,
+) -> None:
+    # Arrange
+    executed_commands: list[list[str]] = []
+
+    def fake_run_az(arguments: list[str]) -> str:
+        executed_commands.append(arguments)
+        return json.dumps({"external": True, "fqdn": "geofm.example"})
+
+    class ReadyResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ready":true}'
+
+    monkeypatch.setattr(MODULE, "run_az", fake_run_az)
+    monkeypatch.setattr(
+        MODULE,
+        "urlopen",
+        lambda url, timeout: ReadyResponse(),
+    )
+
+    # Act
+    MODULE.wait_for_geofm_readiness("geofm", "rg-geofm", attempts=1)
+
+    # Assert
+    assert len(executed_commands) == 1
