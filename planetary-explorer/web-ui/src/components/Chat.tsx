@@ -2,13 +2,15 @@
 // Licensed under the MIT license.
 
 import React, { useState, useRef, useEffect } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { apiService, Dataset, ChatMessage, MapContext } from '../services/api';
+import { useMutation } from '@tanstack/react-query';
+import { History } from 'lucide-react';
+import { apiService, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
 import { enhanceMessageForMapVisualization, hasVisualizableData } from './PlanetaryExplorerMapIntegration';
 import vedaSearchService from '../services/vedaSearchService';
 import SourceChips from './SourceChips';
 import { TraceDrawer, ConfirmationCard, useToolTrace } from './trace';
 import type { PendingConfirm } from './trace';
+import ChatHistoryDrawer from './ChatHistoryDrawer';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -211,6 +213,7 @@ interface ChatProps {
   onComparisonResult?: (result: any) => void; // Callback for comparison analysis results (before/after data)
   selectedModel?: string; // Selected AI model (gpt-5)
   reasoningEffort?: string; // Selected GPT-5.6 reasoning effort
+  chatHistoryEnabled?: boolean; // Durable Cosmos-backed chat archive
   stacMode?: 'public' | 'pro'; // Public MPC vs MPC Pro (private GeoCatalog) for STAC routing
 }
 
@@ -237,6 +240,7 @@ const Chat: React.FC<ChatProps> = ({
   onComparisonResult,
   selectedModel,
   reasoningEffort,
+  chatHistoryEnabled = false,
   stacMode,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -326,7 +330,10 @@ const Chat: React.FC<ChatProps> = ({
   const initialQueryRef = useRef(false);
   const [lastResponse, setLastResponse] = useState<string>('');
   // Add conversation ID to maintain context across messages
-  const [conversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [conversationId, setConversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySaveState, setHistorySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const lastSavedMessagesRef = useRef('');
   
   //  Local vision session ID tracking (for first message -> follow-ups)
   const [localVisionSessionId, setLocalVisionSessionId] = useState<string | null>(null);
@@ -2482,6 +2489,91 @@ const Chat: React.FC<ChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    if (
+      !chatHistoryEnabled ||
+      chatMutation.isPending ||
+      privateSearchMutation.isPending ||
+      partsPending
+    ) {
+      return;
+    }
+
+    const persistedMessages = messages.filter((message) => !message.isThinking);
+    if (!persistedMessages.some((message) => message.role === 'user')) {
+      return;
+    }
+    const fingerprint = JSON.stringify(persistedMessages);
+    if (fingerprint === lastSavedMessagesRef.current) {
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setHistorySaveState('saving');
+      try {
+        await apiService.saveChatSession(conversationId, {
+          messages: persistedMessages,
+          context: {
+            selectedModel: selectedModel || undefined,
+            reasoningEffort: reasoningEffort || undefined,
+            selectedModule: selectedModule || undefined,
+            selectedDataset: selectedDataset
+              ? { id: selectedDataset.id, title: selectedDataset.title }
+              : undefined,
+            stacMode,
+            pin: currentPin || undefined,
+            map: mapContext
+              ? {
+                  bounds: mapContext.bounds,
+                  current_collection: mapContext.current_collection,
+                  has_satellite_data: mapContext.has_satellite_data,
+                  imagery_url: mapContext.imagery_url,
+                  tile_urls: mapContext.tile_urls?.slice(0, 20),
+                  vision_mode: mapContext.vision_mode,
+                  vision_pin: mapContext.vision_pin,
+                }
+              : undefined,
+          },
+        });
+        lastSavedMessagesRef.current = fingerprint;
+        setHistorySaveState('saved');
+      } catch (error) {
+        console.error(' Chat: Failed to save chat history:', error);
+        setHistorySaveState('error');
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    chatHistoryEnabled,
+    chatMutation.isPending,
+    conversationId,
+    currentPin,
+    mapContext,
+    messages,
+    partsPending,
+    privateSearchMutation.isPending,
+    reasoningEffort,
+    selectedDataset,
+    selectedModel,
+    selectedModule,
+    stacMode,
+  ]);
+
+  const handleLoadHistorySession = (session: ChatHistorySession) => {
+    const restoredMessages = session.messages.map((message) => ({
+      ...message,
+      timestamp: new Date(message.timestamp),
+      isThinking: false,
+    }));
+    lastSavedMessagesRef.current = JSON.stringify(restoredMessages);
+    setConversationId(session.sessionId);
+    setMessages(restoredMessages);
+    setPendingConfirms([]);
+    setFeedback({});
+    setHistorySaveState('saved');
+  };
+
   const getPlanetaryComputerExamples = (dataset: Dataset | null): string[] => {
     const defaultExamples = [
       'Show Sentinel-2 images of Seattle from last month',
@@ -2580,8 +2672,36 @@ const Chat: React.FC<ChatProps> = ({
     <div className="right">
       <div className="chat chat-container">
         <div className="header">
-          <span>Planetary Explorer Agent</span>
+          <span className="chat-header-title">Planetary Explorer Agent</span>
+          {chatHistoryEnabled && (
+            <div className="chat-history-toolbar">
+              <span className={`chat-save-state ${historySaveState}`} aria-live="polite">
+                {historySaveState === 'saving' && 'Saving'}
+                {historySaveState === 'saved' && 'Saved'}
+                {historySaveState === 'error' && 'Save failed'}
+              </span>
+              <button
+                type="button"
+                className="chat-history-trigger"
+                onClick={() => setHistoryOpen(true)}
+                aria-label="Open saved chat sessions"
+                title="Saved chat sessions"
+              >
+                <History size={17} aria-hidden="true" />
+                <span>History</span>
+              </button>
+            </div>
+          )}
         </div>
+
+        <ChatHistoryDrawer
+          activeSessionId={conversationId}
+          enabled={chatHistoryEnabled}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onLoad={handleLoadHistorySession}
+          onActiveSessionDeleted={onRestartSession}
+        />
 
         <div className="messages">
           {/* Examples removed to prevent flash on page load */}

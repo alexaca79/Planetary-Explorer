@@ -11,6 +11,7 @@ param cloudEnvironment string = 'Commercial'
 
 // DNS zone names differ between Commercial and Government clouds
 var dnsZones = cloudEnvironment == 'Government' ? {
+  cosmosSql: 'privatelink.documents.azure.us'
   keyVault: 'privatelink.vaultcore.usgovcloudapi.net'
   storageBlob: 'privatelink.blob.core.usgovcloudapi.net'
   storageFile: 'privatelink.file.core.usgovcloudapi.net'
@@ -23,6 +24,7 @@ var dnsZones = cloudEnvironment == 'Government' ? {
   mlNotebooks: 'privatelink.notebooks.usgovcloudapi.net'
   servicesAi: 'privatelink.services.ai.azure.us'
 } : {
+  cosmosSql: 'privatelink.documents.azure.com'
   keyVault: 'privatelink.vaultcore.azure.net'
   #disable-next-line no-hardcoded-env-urls // Private DNS zone names must be exact strings
   storageBlob: 'privatelink.blob.core.windows.net'
@@ -37,6 +39,22 @@ var dnsZones = cloudEnvironment == 'Government' ? {
   mlWorkspace: 'privatelink.api.azureml.ms'
   mlNotebooks: 'privatelink.notebooks.azure.net'
   servicesAi: 'privatelink.services.ai.azure.com'
+}
+
+// ── Cosmos DB for NoSQL ──
+resource dnsZoneCosmosSql 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: dnsZones.cosmosSql
+  location: 'global'
+  tags: tags
+}
+resource dnsZoneCosmosSqlLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: dnsZoneCosmosSql
+  name: 'link-cosmos-sql'
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnetId }
+    registrationEnabled: false
+  }
 }
 
 // ── Key Vault ──
@@ -220,6 +238,7 @@ resource dnsZoneServicesAiLink 'Microsoft.Network/privateDnsZones/virtualNetwork
 }
 
 // Outputs — DNS zone IDs needed when creating private endpoints
+output cosmosSqlDnsZoneId string = dnsZoneCosmosSql.id
 output keyVaultDnsZoneId string = dnsZoneKeyVault.id
 output storageBlobDnsZoneId string = dnsZoneStorageBlob.id
 output storageFileDnsZoneId string = dnsZoneStorageFile.id

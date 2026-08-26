@@ -19,11 +19,12 @@ interface MainAppProps {
   onGeointToggle: (enabled: boolean) => void; // Deprecated - will be removed
   selectedModel?: string;
   reasoningEffort?: string;
+  chatHistoryEnabled?: boolean;
   stacMode?: 'public' | 'pro';
   onStacModeChange?: (mode: 'public' | 'pro') => void;
 }
 
-const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnToLanding, onRestartSession, geointMode, onGeointToggle, selectedModel, reasoningEffort, stacMode, onStacModeChange }) => {
+const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnToLanding, onRestartSession, geointMode, onGeointToggle, selectedModel, reasoningEffort, chatHistoryEnabled, stacMode, onStacModeChange }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [lastChatResponse, setLastChatResponse] = useState<any>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(420);
@@ -442,6 +443,7 @@ const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnTo
           onComparisonResult={handleComparisonResult}
           selectedModel={selectedModel}
           reasoningEffort={reasoningEffort}
+          chatHistoryEnabled={chatHistoryEnabled}
           stacMode={stacMode}
         />
       </ResizablePanel>

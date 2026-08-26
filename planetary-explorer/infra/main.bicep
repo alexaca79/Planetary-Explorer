@@ -51,6 +51,9 @@ param enableAuthentication bool = false
 @description('Explicitly expose protected API routes without authentication for development or demos.')
 param publicDemoMode bool = false
 
+@description('Deploy durable per-user chat history in Cosmos DB with downloadable artifacts in Blob Storage.')
+param deployChatHistory bool = true
+
 @description('Microsoft Entra Client ID (Application ID)')
 param microsoftEntraClientId string = ''
 
@@ -352,7 +355,7 @@ module appsEnv './shared/apps-env.bicep' = if (shouldDeployAppsEnvironment) {
 }
 
 // Storage Account (required for AI Foundry Hub)
-module storage './shared/storage.bicep' = if (deployAIFoundry || deployGeoFm) {
+module storage './shared/storage.bicep' = if (deployAIFoundry || deployGeoFm || deployChatHistory) {
   name: 'storage'
   scope: rg
   params: {
@@ -361,6 +364,18 @@ module storage './shared/storage.bicep' = if (deployAIFoundry || deployGeoFm) {
     tags: tags
     enablePrivateEndpoints: enablePrivateEndpoints
     deployGeoFmResources: deployGeoFm
+    deployChatHistoryResources: deployChatHistory
+  }
+}
+
+module chatHistory './shared/cosmos-chat-history.bicep' = if (deployChatHistory) {
+  name: 'chat-history'
+  scope: rg
+  params: {
+    name: '${abbrs.documentDBDatabaseAccounts}${resourceToken}'
+    location: location
+    tags: tags
+    enablePrivateEndpoints: enablePrivateEndpoints
   }
 }
 
@@ -446,7 +461,7 @@ module peKeyVault './shared/private-endpoint.bicep' = if (enablePrivateEndpoints
   }
 }
 
-module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && (deployAIFoundry || deployGeoFm)) {
+module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && (deployAIFoundry || deployGeoFm || deployChatHistory)) {
   name: 'pe-storage-blob'
   scope: rg
   params: {
@@ -457,6 +472,20 @@ module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoi
     groupId: 'blob'
     subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
     privateDnsZoneId: privateDnsZones.?outputs.?storageBlobDnsZoneId ?? ''
+  }
+}
+
+module peChatHistory './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployChatHistory) {
+  name: 'pe-chat-history'
+  scope: rg
+  params: {
+    name: 'pe-cosmos-${resourceToken}'
+    location: location
+    tags: tags
+    serviceResourceId: chatHistory.?outputs.?accountId ?? ''
+    groupId: 'Sql'
+    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
+    privateDnsZoneId: privateDnsZones.?outputs.?cosmosSqlDnsZoneId ?? ''
   }
 }
 
@@ -601,6 +630,12 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     microsoftEntraClientId: microsoftEntraClientId
     microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
+    enableChatHistory: deployChatHistory && !publicDemoMode
+    cosmosChatEndpoint: chatHistory.?outputs.?endpoint ?? ''
+    cosmosChatDatabase: chatHistory.?outputs.?databaseName ?? 'planetary-explorer'
+    cosmosChatContainer: chatHistory.?outputs.?containerName ?? 'chat-history'
+    chatArtifactBlobEndpoint: storage.?outputs.?blobEndpoint ?? ''
+    chatArtifactContainer: storage.?outputs.?chatArtifactContainerName ?? 'chat-artifacts'
     // Cloud environment
     cloudEnvironment: cloudEnvironment
     // AI Agent Service project endpoint
@@ -638,6 +673,19 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     earth2FcnEndpointUrlConfigured: !empty(earth2FcnEndpointUrl)
     maiWeatherEndpointUrlConfigured: !empty(maiWeatherEndpointUrl)
     maiWeatherScorePath: maiWeatherScorePath
+  }
+}
+
+module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHistory && shouldDeployApiContainer) {
+  name: 'chat-history-access'
+  scope: rg
+  params: {
+    cosmosAccountName: chatHistory.?outputs.?accountName ?? ''
+    cosmosDatabaseName: chatHistory.?outputs.?databaseName ?? ''
+    cosmosContainerName: chatHistory.?outputs.?containerName ?? ''
+    storageAccountName: storage.?outputs.?name ?? ''
+    blobContainerName: storage.?outputs.?chatArtifactContainerName ?? ''
+    principalId: web.?outputs.?principalId ?? ''
   }
 }
 
@@ -756,6 +804,7 @@ output AZURE_CONTAINER_REGISTRY_NAME string = registry.outputs.name
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
 output AZURE_CONTAINER_APP_NAME string = shouldDeployApiContainer ? (web.?outputs.?name ?? '') : apiContainerAppName
 output AZURE_CONTAINER_APP_URL string = shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
+output AZURE_COSMOS_CHAT_HISTORY_ENDPOINT string = chatHistory.?outputs.?endpoint ?? ''
 output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName
 output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl ?? '') : resolvedFrontendUrl
 output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName

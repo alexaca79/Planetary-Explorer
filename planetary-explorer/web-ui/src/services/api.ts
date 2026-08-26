@@ -90,6 +90,36 @@ export interface ChatMessage {
   }>;
 }
 
+export interface ChatHistoryAttachment {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  createdAt: string;
+}
+
+export interface ChatHistorySummary {
+  sessionId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  attachments: ChatHistoryAttachment[];
+}
+
+export interface ChatHistorySession extends ChatHistorySummary {
+  schemaVersion: number;
+  messages: ChatMessage[];
+  context: Record<string, any>;
+}
+
+export interface ChatHistorySnapshot {
+  title?: string;
+  messages: ChatMessage[];
+  context: Record<string, any>;
+}
+
 export interface MapContext {
   bounds?: {
     north: number;
@@ -1125,6 +1155,79 @@ class ApiService {
       top_k: topK,
     });
     return res.data?.results || [];
+  }
+
+  async listChatSessions(): Promise<ChatHistorySummary[]> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get('/api/chat-history/sessions');
+    return response.data?.sessions || [];
+  }
+
+  async getChatSession(sessionId: string): Promise<ChatHistorySession> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return response.data;
+  }
+
+  async saveChatSession(
+    sessionId: string,
+    snapshot: ChatHistorySnapshot,
+  ): Promise<ChatHistorySession> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.put(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+      snapshot,
+    );
+    return response.data;
+  }
+
+  async deleteChatSession(sessionId: string): Promise<void> {
+    if (!this.api) throw new Error('API service not initialized');
+    await this.api.delete(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+    );
+  }
+
+  async uploadChatFile(sessionId: string, file: File): Promise<ChatHistoryAttachment> {
+    if (!this.api) throw new Error('API service not initialized');
+    const form = new FormData();
+    form.append('file', file);
+    const response = await this.api.post(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files`,
+      form,
+      { headers: { 'Content-Type': undefined } },
+    );
+    return response.data;
+  }
+
+  async downloadChatFile(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<Blob> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(attachmentId)}`,
+      { responseType: 'blob' },
+    );
+    return response.data;
+  }
+
+  async deleteChatFile(sessionId: string, attachmentId: string): Promise<void> {
+    if (!this.api) throw new Error('API service not initialized');
+    await this.api.delete(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(attachmentId)}`,
+    );
+  }
+
+  async exportChatSession(sessionId: string): Promise<Blob> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/export`,
+      { responseType: 'blob' },
+    );
+    return response.data;
   }
 
   // ------------------------------------------------------------------

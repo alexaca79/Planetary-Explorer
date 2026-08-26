@@ -61,6 +61,24 @@ param microsoftEntraClientId string = ''
 @secure()
 param microsoftEntraClientSecret string = ''
 
+@description('Enable durable per-user chat history and downloadable test artifacts.')
+param enableChatHistory bool = false
+
+@description('Keyless Cosmos DB endpoint for chat history.')
+param cosmosChatEndpoint string = ''
+
+@description('Cosmos DB database containing chat sessions.')
+param cosmosChatDatabase string = 'planetary-explorer'
+
+@description('Cosmos DB container containing user-partitioned chat sessions.')
+param cosmosChatContainer string = 'chat-history'
+
+@description('Blob service endpoint for private chat artifact files.')
+param chatArtifactBlobEndpoint string = ''
+
+@description('Private Blob container containing chat artifact files.')
+param chatArtifactContainer string = 'chat-artifacts'
+
 // Cloud environment
 @description('Cloud environment: Commercial or Government')
 @allowed(['Commercial', 'Government'])
@@ -86,6 +104,12 @@ param geoFmMcpApiKey string = ''
 @secure()
 @description('HMAC key used to sign authenticated GeoFM run-owner operations.')
 param geoFmOwnerSigningKey string = ''
+
+@description('Internal URL of the Azure Web Search MCP service. Empty disables current-web tools.')
+param webSearchMcpUrl string = ''
+
+@description('Enable current-date and web-search MCP tools in the AnalystAgent.')
+param enableWebSearch bool = false
 
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
@@ -264,6 +288,38 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: microsoftEntraClientId
             }
             {
+              name: 'PE_FEATURE_CHAT_HISTORY'
+              value: enableChatHistory ? 'true' : 'false'
+            }
+            {
+              name: 'CHAT_HISTORY_STORE'
+              value: enableChatHistory ? 'cosmos' : 'disabled'
+            }
+            {
+              name: 'COSMOS_CHAT_ENDPOINT'
+              value: cosmosChatEndpoint
+            }
+            {
+              name: 'COSMOS_CHAT_DATABASE'
+              value: cosmosChatDatabase
+            }
+            {
+              name: 'COSMOS_CHAT_CONTAINER'
+              value: cosmosChatContainer
+            }
+            {
+              name: 'CHAT_ARTIFACT_STORE'
+              value: enableChatHistory ? 'blob' : 'disabled'
+            }
+            {
+              name: 'CHAT_ARTIFACT_BLOB_ENDPOINT'
+              value: chatArtifactBlobEndpoint
+            }
+            {
+              name: 'CHAT_ARTIFACT_CONTAINER'
+              value: chatArtifactContainer
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
             }
@@ -317,6 +373,14 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'GEOFM_MCP_URL'
               value: geoFmMcpUrl
+            }
+            {
+              name: 'WEB_SEARCH_ENABLED'
+              value: enableWebSearch ? 'true' : 'false'
+            }
+            {
+              name: 'WEB_SEARCH_MCP_URL'
+              value: webSearchMcpUrl
             }
             {
               // UI feature flags. Read by the backend's /api/config

@@ -349,6 +349,10 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Planetary Explorer API", version="1.0.0")
 
+from chat_history_api import router as chat_history_router
+
+app.include_router(chat_history_router)
+
 # Configure CORS origins from environment variable
 cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
 cors_origin_tokens = [
@@ -2682,6 +2686,7 @@ async def get_config():
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
+            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
             # Forecast agent is "available" when at least one weather
             # provider endpoint is configured (real Foundry endpoint or
             # the CPU weather stub). With none of these set the
