@@ -248,6 +248,8 @@ var apiBootstrapImage = 'mcr.microsoft.com/k8se/quickstart:latest'
 var isApiBootstrapImage = containerImage == apiBootstrapImage
 var resolvedApiImage = contains(containerImage, '/') ? containerImage : '${registry.outputs.loginServer}/${containerImage}'
 var shouldDeployApiContainer = deployApiContainer && !empty(containerImage)
+var shouldDeployAppsEnvironment = shouldDeployApiContainer || deployGeoFm || deployMcpServer || deployMpcMcp || deployWeatherStub
+var resolvedContainerAppsEnvironmentName = '${abbrs.appManagedEnvironments}${resourceToken}'
 var tags = {
   'azd-env-name': environmentName
   'azd-app-name': 'planetary-explorer'
@@ -330,11 +332,11 @@ module registry './shared/registry.bicep' = {
   }
 }
 
-module appsEnv './shared/apps-env.bicep' = {
+module appsEnv './shared/apps-env.bicep' = if (shouldDeployAppsEnvironment) {
   name: 'apps-env'
   scope: rg
   params: {
-    name: '${abbrs.appManagedEnvironments}${resourceToken}'
+    name: resolvedContainerAppsEnvironmentName
     location: location
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
@@ -539,7 +541,7 @@ module geoFm './app/geofm.bicep' = if (deployGeoFm && deployGeoFmServices) {
     workerName: '${abbrs.appContainerApps}geofm-worker-${resourceToken}'
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     storageAccountName: storage.?outputs.?name ?? ''
     storageBlobEndpoint: storage.?outputs.?blobEndpoint ?? ''
@@ -575,7 +577,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     name: resolvedApiContainerAppName
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     imageName: resolvedApiImage
     targetPort: isApiBootstrapImage ? 80 : 8080
@@ -692,7 +694,7 @@ module mcp './app/mcp.bicep' = if (deployMcpServer && (shouldDeployApiContainer 
     name: '${abbrs.appContainerApps}mcp-${resourceToken}'
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     imageName: mcpImageName
     planetaryExplorerApiUrl: shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
@@ -712,7 +714,7 @@ module mpcMcp './app/mpc-mcp.bicep' = if (deployMpcMcp) {
     name: '${abbrs.appContainerApps}mpc-mcp-${resourceToken}'
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     imageName: mpcMcpImageName
     defaultGeoCatalogUri: mpcDefaultGeoCatalogUri
@@ -751,7 +753,7 @@ output AZURE_LOCATION string = location
 output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registry.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = registry.outputs.name
-output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.outputs.name
+output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
 output AZURE_CONTAINER_APP_NAME string = shouldDeployApiContainer ? (web.?outputs.?name ?? '') : apiContainerAppName
 output AZURE_CONTAINER_APP_URL string = shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
 output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName

@@ -85,6 +85,15 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         $script:DeploymentScript | Should -Match 'resolve_deployment_targets\.py'
     }
 
+    It 'Does not reconcile a legacy Container Apps environment for adopted services' {
+        $mainBicep = Get-Content (
+            Join-Path $PSScriptRoot '../../infra/main.bicep'
+        ) -Raw
+        $mainBicep | Should -Match 'var shouldDeployAppsEnvironment = shouldDeployApiContainer \|\| deployGeoFm'
+        $mainBicep | Should -Match "module appsEnv './shared/apps-env\.bicep' = if \(shouldDeployAppsEnvironment\)"
+        $mainBicep | Should -Match 'appsEnv\.\?outputs\.\?name \?\? resolvedContainerAppsEnvironmentName'
+    }
+
     It 'Uses either an explicit HTTPS frontend origin or the provisioned Web App origin' {
         $mainBicep = Get-Content (
             Join-Path $PSScriptRoot '../../infra/main.bicep'
