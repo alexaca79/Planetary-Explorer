@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -25,6 +26,18 @@ from .contracts import ActionDecision
 from .prompts import ACTION_ROUTER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+_EXPLICIT_WEB_REQUEST = re.compile(
+    r"\b(?:search|browse)\s+(?:the\s+)?(?:public\s+)?web\b"
+    r"|\b(?:look\s*up|lookup)\b.{0,200}\b(?:on\s+)?the\s+(?:public\s+)?web\b"
+    r"|\bweb\s+search\b",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_web_request(query: str) -> bool:
+    """Return whether the user explicitly requested public-web retrieval."""
+    return bool(_EXPLICIT_WEB_REQUEST.search(query))
 
 
 _RESPONSE_SCHEMA: dict[str, Any] = {
@@ -67,6 +80,14 @@ class ActionRouter:
         has_pin: bool = False,
         has_screenshot: bool = False,
     ) -> ActionDecision:
+        if is_explicit_web_request(query):
+            return ActionDecision(
+                action="ANALYZE",
+                analysis_question=query,
+                reasoning="explicit_web_search",
+                confidence=1.0,
+            )
+
         ctx_lines = []
         if loaded_collections:
             ctx_lines.append(f"Currently loaded collections: {', '.join(loaded_collections)}")

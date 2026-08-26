@@ -501,6 +501,8 @@ def test_tool_catalog_has_all_required_tools():
     functions = create_analyst_functions()
     names = {f.__name__ for f in functions}
     expected = {
+            "get_current_datetime",
+            "search_web",
         "search_graphrag",
         "general_earth_qa",
         "describe_map_screenshot",

@@ -1,4 +1,9 @@
-# Quick Deploy - Planetary Explorer (GitHub Actions)
+---
+title: Quick Deploy - Planetary Explorer
+description: Deploy Planetary Explorer to Azure with GitHub Actions or Azure Developer CLI
+---
+
+## Quick Deploy with GitHub Actions
 
 **Full automated deployment to Azure via GitHub Actions**
 
@@ -13,7 +18,7 @@ Deploy Planetary Explorer to your Azure subscription with full automation. This 
 
 ### What Gets Deployed
 
-Planetary Explorer is a multi-agent geospatial AI system powered by **Azure AI Foundry**, **Microsoft Agent Framework (MAF)**, **Semantic Kernel**, **Azure AI Agent Service**, and **Model Context Protocol (MCP)**.
+Planetary Explorer is a multi-agent geospatial AI system powered by **Azure AI Foundry**, **Microsoft Agent Framework (MAF)**, **Azure AI Agent Service**, and **Model Context Protocol (MCP)**.
 
 **Core stack (always deployed):**
 - **Azure AI Foundry** - Model deployment for AI agents (GPT-5 or model of choice)

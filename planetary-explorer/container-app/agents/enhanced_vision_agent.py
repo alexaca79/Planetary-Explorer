@@ -1,7 +1,6 @@
 """
 Enhanced Vision Agent - Azure AI Agent Service
 
-Refactored from Semantic Kernel ChatCompletionAgent to Azure AI Agent Service.
 Uses AgentsClient with FunctionTool/ToolSet for automatic function calling.
 
 This agent:
@@ -347,7 +346,7 @@ class EnhancedVisionAgent:
     """
     Azure AI Agent Service-based vision analysis agent.
 
-    Replaces the Semantic Kernel ChatCompletionAgent with:
+    Uses:
     - AgentsClient for agent creation and management
     - FunctionTool for 13 standalone tool functions
     - ToolSet with auto function calling

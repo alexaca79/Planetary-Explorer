@@ -44,6 +44,22 @@ Describe 'backend deployment origin controls' -Tag 'Unit' {
         $script:BashDeployment | Should -Match 'configure_api_postdeploy\.py'
     }
 
+    It 'Configures durable chat history for the manual Container App path' {
+        $chatRoleFunction = [regex]::Match(
+            $script:BashDeployment,
+            'grant_chat_history_roles\(\) \{(?s).*?\n\}'
+        ).Value
+        $script:BashDeployment | Should -Match 'resolve_chat_history'
+        $script:BashDeployment | Should -Match 'grant_chat_history_roles'
+        $script:BashDeployment | Should -Match 'PE_FEATURE_CHAT_HISTORY=\$\{CHAT_HISTORY_ENABLED\}'
+        $script:BashDeployment | Should -Match 'COSMOS_CHAT_ENDPOINT=\$\{COSMOS_CHAT_ENDPOINT\}'
+        $script:BashDeployment | Should -Match 'CHAT_ARTIFACT_BLOB_ENDPOINT=\$\{CHAT_ARTIFACT_BLOB_ENDPOINT\}'
+        $script:BashDeployment | Should -Match '00000000-0000-0000-0000-000000000002'
+        $script:BashDeployment | Should -Match 'Storage Blob Data Contributor'
+        $chatRoleFunction | Should -Not -Match '\|\| true'
+        $script:BashDeployment | Should -Match 'Chat history data roles could not be verified'
+    }
+
     It 'Builds the standalone frontend against the exact API origin' {
         $script:FrontendDeployment | Should -Match '\$env:VITE_API_BASE_URL = \$ApiBaseUrl'
         $script:FrontendDeployment | Should -Match 'properties\.configuration\.ingress\.fqdn'

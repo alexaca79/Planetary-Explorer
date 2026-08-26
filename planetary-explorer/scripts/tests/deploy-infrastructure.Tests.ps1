@@ -89,7 +89,8 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         $mainBicep = Get-Content (
             Join-Path $PSScriptRoot '../../infra/main.bicep'
         ) -Raw
-        $mainBicep | Should -Match 'var shouldDeployAppsEnvironment = shouldDeployApiContainer \|\| deployGeoFm'
+        $mainBicep | Should -Match 'var resolvedContainerAppsEnvironmentName = empty\(existingContainerAppsEnvironmentName\)'
+        $mainBicep | Should -Match 'var shouldDeployAppsEnvironment = empty\(existingContainerAppsEnvironmentName\) && \(shouldDeployApiContainer \|\| deployGeoFm \|\| deployMcpServer \|\| deployMpcMcp \|\| shouldDeployWebSearchMcp \|\| deployWeatherStub\)'
         $mainBicep | Should -Match "module appsEnv './shared/apps-env\.bicep' = if \(shouldDeployAppsEnvironment\)"
         $mainBicep | Should -Match 'appsEnv\.\?outputs\.\?name \?\? resolvedContainerAppsEnvironmentName'
     }
@@ -131,6 +132,43 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         $postDeploy | Should -Match '"stickySessions"\] = \{"affinity": "sticky"\}'
         $postDeploy | Should -Match '"Liveness"'
         $postDeploy | Should -Match '"Readiness"'
+    }
+
+    It 'Provisions the bootstrap API and deploys the optional Web Search image' {
+        $script:DeploymentScript | Should -Match 'DeployWebSearchMcp'
+        $script:DeploymentScript | Should -Match 'deployWebSearchMcp=\$\(\$deployWebSearchResolved'
+        $script:DeploymentScript | Should -Match 'planetary-explorer-web-search-mcp:'
+        $script:Workflow | Should -Match '--parameters deployApiContainer=true'
+        $script:Workflow | Should -Match '--parameters containerImage="mcr\.microsoft\.com/k8se/quickstart:latest"'
+        $script:Workflow | Should -Match 'existingContainerAppsEnvironmentName'
+        $script:Workflow | Should -Match 'deploy-web-search:'
+        $script:Workflow | Should -Match "azd-service-name.*web-search-mcp"
+        $script:Workflow | Should -Match 'planetary-explorer-web-search-mcp:\$TAG'
+        $script:Workflow | Should -Match '--profile web-search'
+        $script:Workflow | Should -Match 'PUBLIC_DEMO_MODE:.*github\.event\.inputs\.disable_auth'
+        $script:Workflow | Should -Match 'containerapp registry set'
+        $script:Workflow | Should -Match '--agent-pool.*\$AGENT_POOL'
+        $script:Workflow | Should -Match 'TEMP_BUILD_ACR'
+        $script:Workflow | Should -Match 'az acr import'
+        $script:Workflow | Should -Match 'WEB_SEARCH_MCP_URL=\$WEB_SEARCH_URL'
+        $script:DeploymentScript | Should -Match 'existingContainerAppsEnvironmentName=\$existingContainerAppsEnvironmentName'
+        $script:DeploymentScript | Should -Match 'temporaryBuildRegistry'
+        $script:DeploymentScript | Should -Match 'acr import'
+    }
+
+    It 'Does not interpolate free-form dispatch inputs into shell source' {
+        $freeFormInputs = @(
+            'web_app_name',
+            'mpc_pro_stac_url',
+            'fabric_capacity_resource_id',
+            'weather_stub_image_name',
+            'aurora_endpoint_url',
+            'earth2_fcn_endpoint_url',
+            'mai_weather_endpoint_url'
+        ) -join '|'
+        $shellInterpolation = '\$\{\{\s*github\.event\.inputs\.(' + $freeFormInputs + ')'
+        $workflowBody = ($script:Workflow -split 'jobs:', 2)[1]
+        $workflowBody | Should -Not -Match $shellInterpolation
     }
 
     It 'Deploys backend changes made through root runtime scripts' {

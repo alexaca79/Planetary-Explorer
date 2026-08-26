@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import io
+import asyncio
 import json
 import logging
 import os
@@ -16,7 +16,9 @@ from fastapi.responses import StreamingResponse
 
 from chat_history_store import (
     MAX_ATTACHMENT_BYTES,
+    MAX_EXPORT_BYTES,
     ArtifactStore,
+    ChatHistoryConflictError,
     ChatHistoryError,
     ChatHistoryNotFoundError,
     ChatHistoryRepository,
@@ -56,6 +58,8 @@ def get_request_owner(request: Request) -> str:
 async def _history_call(operation: Awaitable[_Result]) -> _Result:
     try:
         return await operation
+    except ChatHistoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ChatHistoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ChatHistoryValidationError as exc:
@@ -111,6 +115,7 @@ async def save_chat_session(
     request: Request,
     owner_id: str = Depends(get_request_owner),
     repository: ChatHistoryRepository = Depends(get_chat_history_repository),
+    artifacts: ArtifactStore = Depends(get_artifact_store),
 ) -> dict[str, Any]:
     try:
         payload = await request.json()
@@ -119,6 +124,8 @@ async def save_chat_session(
     document = await _history_call(
         repository.upsert_session(owner_id, session_id, payload)
     )
+    for attachment in document.get("attachments", []):
+        await _history_call(artifacts.touch(attachment))
     return public_session_document(document)
 
 
@@ -130,15 +137,36 @@ async def delete_chat_session(
     artifacts: ArtifactStore = Depends(get_artifact_store),
 ) -> Response:
     document = await _history_call(repository.get_session(owner_id, session_id))
+    if document.get("deleting") is not True:
+        document = await _history_call(
+            repository.mark_deleting(
+                owner_id,
+                session_id,
+                expected_etag=document.get("_etag"),
+            )
+        )
+    cleanup_failures: list[str] = []
     for attachment in document.get("attachments", []):
         try:
             await artifacts.delete(attachment)
         except Exception:
+            cleanup_failures.append(str(attachment.get("id") or "unknown"))
             logger.exception(
                 "[ChatHistory] orphan cleanup failed for attachment %s",
                 attachment.get("id"),
             )
-    await _history_call(repository.delete_session(owner_id, session_id))
+    if cleanup_failures:
+        raise HTTPException(
+            status_code=503,
+            detail="Session files could not be deleted; retry the request.",
+        )
+    await _history_call(
+        repository.delete_session(
+            owner_id,
+            session_id,
+            expected_etag=document.get("_etag"),
+        )
+    )
     return Response(status_code=204)
 
 
@@ -202,10 +230,12 @@ async def delete_chat_file(
     repository: ChatHistoryRepository = Depends(get_chat_history_repository),
     artifacts: ArtifactStore = Depends(get_artifact_store),
 ) -> Response:
-    attachment = await _history_call(
+    document = await _history_call(repository.get_session(owner_id, session_id))
+    attachment = _find_attachment(document, attachment_id)
+    await _history_call(artifacts.delete(attachment))
+    await _history_call(
         repository.remove_attachment(owner_id, session_id, attachment_id)
     )
-    await _history_call(artifacts.delete(attachment))
     return Response(status_code=204)
 
 
@@ -240,22 +270,47 @@ async def export_chat_session(
 ) -> StreamingResponse:
     document = await _history_call(repository.get_session(owner_id, session_id))
     exported = public_session_document(document)
-    archive = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
-    with ZipFile(archive, mode="w", compression=ZIP_DEFLATED) as bundle:
-        bundle.writestr(
-            "session.json",
-            json.dumps(exported, indent=2, ensure_ascii=True).encode("utf-8"),
+    declared_size = sum(
+        max(0, int(attachment.get("size") or 0))
+        for attachment in document.get("attachments", [])
+    )
+    if declared_size > MAX_EXPORT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Session files exceed the 100 MB export limit.",
         )
-        bundle.writestr("README.txt", _test_bundle_readme(exported).encode("utf-8"))
-        used_names: set[str] = set()
-        for attachment in document.get("attachments", []):
-            content = await _history_call(artifacts.download(attachment))
-            filename = attachment["name"]
-            archive_name = f"files/{filename}"
-            if archive_name in used_names:
-                archive_name = f"files/{attachment['id']}-{filename}"
-            used_names.add(archive_name)
-            bundle.writestr(archive_name, content)
+    archive = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+    try:
+        with ZipFile(archive, mode="w", compression=ZIP_DEFLATED) as bundle:
+            await asyncio.to_thread(
+                bundle.writestr,
+                "session.json",
+                json.dumps(exported, indent=2, ensure_ascii=True).encode("utf-8"),
+            )
+            await asyncio.to_thread(
+                bundle.writestr,
+                "README.txt",
+                _test_bundle_readme(exported).encode("utf-8"),
+            )
+            used_names: set[str] = set()
+            actual_size = 0
+            for attachment in document.get("attachments", []):
+                content = await _history_call(artifacts.download(attachment))
+                actual_size += len(content)
+                if actual_size > MAX_EXPORT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Session files exceed the 100 MB export limit.",
+                    )
+                filename = attachment["name"]
+                archive_name = f"files/{filename}"
+                if archive_name in used_names:
+                    archive_name = f"files/{attachment['id']}-{filename}"
+                used_names.add(archive_name)
+                await asyncio.to_thread(bundle.writestr, archive_name, content)
+    except Exception:
+        archive.close()
+        raise
     archive.seek(0)
 
     def stream_archive():

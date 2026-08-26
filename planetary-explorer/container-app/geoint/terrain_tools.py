@@ -1,8 +1,7 @@
 """
 Terrain Analysis Tools for Azure AI Agent Service
 
-Refactored from Semantic Kernel @kernel_function class methods to standalone
-functions compatible with Azure AI Agent Service FunctionTool.
+Standalone functions compatible with Azure AI Agent Service FunctionTool.
 
 Each function uses docstring-based parameter descriptions (the format
 FunctionTool expects) and returns JSON-serializable results.

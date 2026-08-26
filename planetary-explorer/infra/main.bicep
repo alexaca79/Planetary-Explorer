@@ -11,6 +11,9 @@ param apiContainerAppName string = ''
 @description('Provision or reconcile the API Container App infrastructure.')
 param deployApiContainer bool = true
 
+@description('Exact existing Container Apps environment name. When set, services reuse it and skip environment reconciliation.')
+param existingContainerAppsEnvironmentName string = ''
+
 @description('HTTPS URL of an adopted API Container App when its infrastructure is not reconciled.')
 param existingApiUrl string = ''
 
@@ -160,6 +163,19 @@ param mcpImageName string = 'planetary-explorer-mcp:latest'
 @secure()
 param mcpApiKey string = ''
 
+@description('Deploy the internal Azure Web Search MCP service. Requires the Microsoft Foundry project deployed by this template.')
+param deployWebSearchMcp bool = false
+
+@description('Existing Microsoft Foundry account name used by Web Search when deployAIFoundry is false.')
+param webSearchFoundryAccountName string = ''
+
+@description('Existing Microsoft Foundry project endpoint used by Web Search when deployAIFoundry is false.')
+param webSearchFoundryProjectEndpoint string = ''
+
+@secure()
+@description('Shared API key for API-to-Web Search MCP calls.')
+param webSearchMcpApiKey string = ''
+
 // MPC Pro MCP sidecar (Microsoft\'s upstream geocatalog-mcp-server, run as an
 // internal Container App for the backend to call as an MCP client). The image
 // is built from planetary-explorer/mpc-mcp-sidecar/ which vendors the MIT-licensed
@@ -251,8 +267,9 @@ var apiBootstrapImage = 'mcr.microsoft.com/k8se/quickstart:latest'
 var isApiBootstrapImage = containerImage == apiBootstrapImage
 var resolvedApiImage = contains(containerImage, '/') ? containerImage : '${registry.outputs.loginServer}/${containerImage}'
 var shouldDeployApiContainer = deployApiContainer && !empty(containerImage)
-var shouldDeployAppsEnvironment = shouldDeployApiContainer || deployGeoFm || deployMcpServer || deployMpcMcp || deployWeatherStub
-var resolvedContainerAppsEnvironmentName = '${abbrs.appManagedEnvironments}${resourceToken}'
+var shouldDeployWebSearchMcp = deployWebSearchMcp && length(webSearchMcpApiKey) >= 32 && (deployAIFoundry || (!empty(webSearchFoundryAccountName) && !empty(webSearchFoundryProjectEndpoint)))
+var resolvedContainerAppsEnvironmentName = empty(existingContainerAppsEnvironmentName) ? '${abbrs.appManagedEnvironments}${resourceToken}' : existingContainerAppsEnvironmentName
+var shouldDeployAppsEnvironment = empty(existingContainerAppsEnvironmentName) && (shouldDeployApiContainer || deployGeoFm || deployMcpServer || deployMpcMcp || shouldDeployWebSearchMcp || deployWeatherStub)
 var tags = {
   'azd-env-name': environmentName
   'azd-app-name': 'planetary-explorer'
@@ -280,6 +297,11 @@ resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: 'rg-${environmentName}'
   location: location
   tags: tags
+}
+
+resource adoptedApi 'Microsoft.App/containerApps@2025-01-01' existing = if (!shouldDeployApiContainer && !empty(apiContainerAppName)) {
+  name: resolvedApiContainerAppName
+  scope: rg
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -583,6 +605,34 @@ module geoFm './app/geofm.bicep' = if (deployGeoFm && deployGeoFmServices) {
   }
 }
 
+module webSearchMcp './app/web-search-mcp.bicep' = if (shouldDeployWebSearchMcp) {
+  name: 'web-search-mcp'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}web-search-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+    containerRegistryName: registry.outputs.name
+    foundryProjectEndpoint: deployAIFoundry
+      ? (aiFoundry.?outputs.?agentProjectEndpoint ?? '')
+      : webSearchFoundryProjectEndpoint
+    modelDeploymentName: primaryChatModel
+    apiKey: webSearchMcpApiKey
+  }
+}
+
+module webSearchMcpFoundryAccess './shared/foundry-role.bicep' = if (shouldDeployWebSearchMcp) {
+  name: 'web-search-mcp-foundry-access'
+  scope: rg
+  params: {
+    aiFoundryAccountName: deployAIFoundry
+      ? 'cog-foundry-${resourceToken}'
+      : webSearchFoundryAccountName
+    principalId: webSearchMcp.?outputs.?principalId ?? ''
+  }
+}
+
 module frontend './app/frontend.bicep' = if (deployFrontend) {
   name: 'frontend'
   scope: rg
@@ -631,10 +681,10 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
     enableChatHistory: deployChatHistory && !publicDemoMode
-    cosmosChatEndpoint: chatHistory.?outputs.?endpoint ?? ''
+    cosmosChatEndpoint: deployChatHistory && !publicDemoMode ? (chatHistory.?outputs.?endpoint ?? '') : ''
     cosmosChatDatabase: chatHistory.?outputs.?databaseName ?? 'planetary-explorer'
     cosmosChatContainer: chatHistory.?outputs.?containerName ?? 'chat-history'
-    chatArtifactBlobEndpoint: storage.?outputs.?blobEndpoint ?? ''
+    chatArtifactBlobEndpoint: deployChatHistory && !publicDemoMode ? (storage.?outputs.?blobEndpoint ?? '') : ''
     chatArtifactContainer: storage.?outputs.?chatArtifactContainerName ?? 'chat-artifacts'
     // Cloud environment
     cloudEnvironment: cloudEnvironment
@@ -654,6 +704,9 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     enableGeoFm: deployGeoFm && deployGeoFmServices
     geoFmMcpApiKey: geoFmMcpApiKey
     geoFmOwnerSigningKey: geoFmOwnerSigningKey
+    webSearchMcpUrl: shouldDeployWebSearchMcp ? (webSearchMcp.?outputs.?uri ?? '') : ''
+    enableWebSearch: shouldDeployWebSearchMcp
+    webSearchMcpApiKey: webSearchMcpApiKey
     // Feature flags surfaced to the UI via /api/config. These are
     // independent of the deploy* flags so an operator can disable a
     // feature's UI without tearing down its infrastructure.
@@ -676,7 +729,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
   }
 }
 
-module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHistory && shouldDeployApiContainer) {
+module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHistory && (shouldDeployApiContainer || !empty(apiContainerAppName)) && !publicDemoMode) {
   name: 'chat-history-access'
   scope: rg
   params: {
@@ -685,7 +738,9 @@ module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHi
     cosmosContainerName: chatHistory.?outputs.?containerName ?? ''
     storageAccountName: storage.?outputs.?name ?? ''
     blobContainerName: storage.?outputs.?chatArtifactContainerName ?? ''
-    principalId: web.?outputs.?principalId ?? ''
+    principalId: shouldDeployApiContainer
+      ? (web.?outputs.?principalId ?? '')
+      : (adoptedApi.?identity.?principalId ?? '')
   }
 }
 
@@ -805,6 +860,10 @@ output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.?outputs.?name ?? 
 output AZURE_CONTAINER_APP_NAME string = shouldDeployApiContainer ? (web.?outputs.?name ?? '') : apiContainerAppName
 output AZURE_CONTAINER_APP_URL string = shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
 output AZURE_COSMOS_CHAT_HISTORY_ENDPOINT string = chatHistory.?outputs.?endpoint ?? ''
+output AZURE_COSMOS_CHAT_HISTORY_DATABASE string = chatHistory.?outputs.?databaseName ?? ''
+output AZURE_COSMOS_CHAT_HISTORY_CONTAINER string = chatHistory.?outputs.?containerName ?? ''
+output AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT string = storage.?outputs.?blobEndpoint ?? ''
+output AZURE_CHAT_ARTIFACT_CONTAINER string = storage.?outputs.?chatArtifactContainerName ?? ''
 output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName
 output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl ?? '') : resolvedFrontendUrl
 output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName
@@ -830,6 +889,10 @@ output AZURE_BOT_SERVICE_NAME string = botService.?outputs.?botServiceName ?? ''
 output AZURE_MCP_CONTAINER_APP_NAME string = mcp.?outputs.?name ?? ''
 output AZURE_MCP_CONTAINER_APP_URL string = mcp.?outputs.?uri ?? ''
 output AZURE_MCP_CONTAINER_APP_FQDN string = mcp.?outputs.?fqdn ?? ''
+
+// Azure Web Search MCP outputs (empty when deployWebSearchMcp = false).
+output AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME string = webSearchMcp.?outputs.?name ?? ''
+output AZURE_WEB_SEARCH_MCP_URL string = webSearchMcp.?outputs.?uri ?? ''
 
 // MPC Pro MCP sidecar outputs (empty when deployMpcMcp = false). The
 // principalId is what an operator pastes into the GeoCatalog instance's

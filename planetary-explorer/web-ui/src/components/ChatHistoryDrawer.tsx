@@ -22,6 +22,7 @@ import {
 
 interface ChatHistoryDrawerProps {
   activeSessionId: string;
+  busy: boolean;
   enabled: boolean;
   open: boolean;
   onClose: () => void;
@@ -73,6 +74,7 @@ function formatActionError(error: any): string {
 
 const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
   activeSessionId,
+  busy,
   enabled,
   open,
   onClose,
@@ -93,6 +95,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
   const activeSession = sessions.find((session) => session.sessionId === activeSessionId);
 
   const runAction = async (key: string, action: () => Promise<void>) => {
+    if (busy || actionKey !== null) return;
     setActionKey(key);
     setActionError(null);
     try {
@@ -170,7 +173,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
               title="Refresh saved sessions"
               aria-label="Refresh saved sessions"
               onClick={() => historyQuery.refetch()}
-              disabled={historyQuery.isFetching}
+              disabled={busy || historyQuery.isFetching}
             >
               <RefreshCw size={17} aria-hidden="true" />
             </button>
@@ -199,7 +202,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={actionKey !== null}
+                disabled={busy || actionKey !== null}
               >
                 <FileUp size={16} aria-hidden="true" />
                 Add data file
@@ -207,7 +210,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
               <button
                 type="button"
                 onClick={() => exportSession(activeSession)}
-                disabled={actionKey !== null}
+                disabled={busy || actionKey !== null}
               >
                 <FileDown size={16} aria-hidden="true" />
                 Test bundle
@@ -238,7 +241,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                         title={`Download ${attachment.name}`}
                         aria-label={`Download ${attachment.name}`}
                         onClick={() => downloadAttachment(activeSession, attachment)}
-                        disabled={actionKey !== null}
+                        disabled={busy || actionKey !== null}
                       >
                         <Download size={15} aria-hidden="true" />
                       </button>
@@ -247,7 +250,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                         title={`Delete ${attachment.name}`}
                         aria-label={`Delete ${attachment.name}`}
                         onClick={() => deleteAttachment(activeSession, attachment)}
-                        disabled={actionKey !== null}
+                        disabled={busy || actionKey !== null}
                       >
                         <Trash2 size={15} aria-hidden="true" />
                       </button>
@@ -276,7 +279,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                 type="button"
                 className="chat-history-session-main"
                 onClick={() => openSession(session.sessionId)}
-                disabled={actionKey !== null}
+                disabled={busy || actionKey !== null}
               >
                 <span className="chat-history-session-title">{session.title}</span>
                 <span className="chat-history-session-meta">
@@ -290,7 +293,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                   title="Open session"
                   aria-label={`Open ${session.title}`}
                   onClick={() => openSession(session.sessionId)}
-                  disabled={actionKey !== null}
+                  disabled={busy || actionKey !== null}
                 >
                   <FolderOpen size={16} aria-hidden="true" />
                 </button>
@@ -299,7 +302,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                   title="Download test bundle"
                   aria-label={`Download ${session.title} test bundle`}
                   onClick={() => exportSession(session)}
-                  disabled={actionKey !== null}
+                  disabled={busy || actionKey !== null}
                 >
                   <Download size={16} aria-hidden="true" />
                 </button>
@@ -308,7 +311,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                   title="Delete session"
                   aria-label={`Delete ${session.title}`}
                   onClick={() => deleteSession(session)}
-                  disabled={actionKey !== null}
+                  disabled={busy || actionKey !== null}
                 >
                   <Trash2 size={16} aria-hidden="true" />
                 </button>

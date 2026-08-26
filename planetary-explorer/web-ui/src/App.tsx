@@ -8,6 +8,7 @@ import LandingPage from './components/LandingPage';
 import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
+import type { ChatHistoryContext } from './services/api';
 
 const queryClient = new QueryClient();
 
@@ -155,6 +156,20 @@ function App() {
     setAppState(prev => ({ ...prev, selectedDataset: dataset, chatMode: true }));
   };
 
+  const handleRestoreChatContext = (context: ChatHistoryContext) => {
+    if (context.selectedModel) handleModelChange(context.selectedModel);
+    if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
+    if (context.stacMode) handleStacModeChange(context.stacMode);
+    setAppState(prev => ({
+      ...prev,
+      selectedDataset: context.selectedDataset
+        ? { ...context.selectedDataset, description: context.selectedDataset.description || '' }
+        : null,
+      chatMode: true,
+      initialQuery: undefined,
+    }));
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <GlobalStyles />
@@ -193,6 +208,7 @@ function App() {
               selectedModel={selectedModel}
               reasoningEffort={reasoningEffort}
               chatHistoryEnabled={features.chatHistory}
+              onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
             />

@@ -1,4 +1,9 @@
-# Contributing to Planetary Explorer
+---
+title: Contributing to Planetary Explorer
+description: Development, testing, and pull request guidance for Planetary Explorer contributors
+---
+
+## Contributing to Planetary Explorer
 
 Thank you for your interest in contributing to Planetary Explorer! This document provides guidelines and information for contributors.
 
@@ -87,7 +92,7 @@ npm test
 - **Type Hints**: Use type annotations for all function parameters and return values.
 - **Docstrings**: Google-style docstrings for all public functions and classes.
 - **Error Handling**: Comprehensive error handling with structured logging.
-- **Dependencies**: Pin minimum versions in the per-service `requirements.txt`. The Semantic Kernel runtime has been retired in favor of `sk_shim.py` — do not reintroduce it.
+- **Dependencies**: Pin minimum versions in the per-service `requirements.txt`. Keep `agent-framework-core` and its providers on the same release line.
 
 **Example**:
 ```python
@@ -228,7 +233,7 @@ For new features, please provide:
 - **Azure AI Documentation**: https://docs.microsoft.com/en-us/azure/ai/
 - **STAC Specification**: https://stacspec.org/
 - **Microsoft Planetary Computer**: https://planetarycomputer.microsoft.com/
-- **Semantic Kernel Documentation**: https://learn.microsoft.com/en-us/semantic-kernel/
+- **Microsoft Agent Framework documentation**: <https://learn.microsoft.com/agent-framework/overview/>
 - **Azure Functions Python Guide**: https://docs.microsoft.com/en-us/azure/azure-functions/functions-reference-python
 
 ##  Support

@@ -133,6 +133,86 @@ def configure_public_mode(api_name: str, web_name: str, resource_group: str) -> 
             "none",
         ]
     )
+    api_auth = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].env[?name=='DISABLE_AUTH'].value | [0]",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_trust_header = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].env[?name=='TRUST_EASYAUTH_HEADER'].value | [0]",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_platform_auth = run_az(
+        [
+            "containerapp",
+            "auth",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.platform.enabled",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_external = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.configuration.ingress.external",
+            "--output",
+            "tsv",
+        ]
+    )
+    web_auth = run_az(
+        [
+            "webapp",
+            "auth",
+            "show",
+            "--name",
+            web_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "enabled",
+            "--output",
+            "tsv",
+        ]
+    )
+    if (
+        api_auth != "true"
+        or api_trust_header != "false"
+        or api_platform_auth == "true"
+        or api_external != "true"
+        or web_auth != "false"
+    ):
+        raise RuntimeError("Public authentication mode verification failed.")
 
 
 def configure_entra_mode(
@@ -242,6 +322,63 @@ def configure_entra_mode(
             "tsv",
         ]
     )
+    api_trust_header = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].env[?name=='TRUST_EASYAUTH_HEADER'].value | [0]",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_tenant_id = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].env[?name=='AZURE_AD_TENANT_ID'].value | [0]",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_client_id = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].env[?name=='AZURE_AD_CLIENT_ID'].value | [0]",
+            "--output",
+            "tsv",
+        ]
+    )
+    api_platform_auth = run_az(
+        [
+            "containerapp",
+            "auth",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.platform.enabled",
+            "--output",
+            "tsv",
+        ]
+    )
     web_auth = run_az(
         [
             "webapp",
@@ -257,7 +394,14 @@ def configure_entra_mode(
             "tsv",
         ]
     )
-    if api_auth != "false" or web_auth != "true":
+    if (
+        api_auth != "false"
+        or api_trust_header != "false"
+        or api_tenant_id != tenant_id
+        or api_client_id != client_id
+        or api_platform_auth == "true"
+        or web_auth != "true"
+    ):
         raise RuntimeError("Microsoft Entra authentication verification failed.")
     run_az(
         [
@@ -274,6 +418,22 @@ def configure_entra_mode(
             "none",
         ]
     )
+    api_external = run_az(
+        [
+            "containerapp",
+            "show",
+            "--name",
+            api_name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.configuration.ingress.external",
+            "--output",
+            "tsv",
+        ]
+    )
+    if api_external != "true":
+        raise RuntimeError("API external ingress verification failed.")
 
 
 def main() -> int:

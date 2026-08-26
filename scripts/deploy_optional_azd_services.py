@@ -79,25 +79,56 @@ def deploy_geofm(mcp_name: str, worker_name: str, resource_group: str) -> None:
         raise RuntimeError("GeoFM worker is not configured for scale-to-zero.")
 
 
+def deploy_web_search_mcp(name: str, resource_group: str) -> None:
+    """Deploy and verify the optional Azure Web Search MCP service."""
+    run_command(["azd", "deploy", "web-search-mcp", "--no-prompt"])
+    image = run_command(
+        [
+            "az",
+            "containerapp",
+            "show",
+            "--name",
+            name,
+            "--resource-group",
+            resource_group,
+            "--query",
+            "properties.template.containers[0].image",
+            "--output",
+            "tsv",
+        ]
+    )
+    if "mcr.microsoft.com/dotnet/samples" in image:
+        raise RuntimeError("Web Search MCP still uses its bootstrap image.")
+
+
 def main() -> int:
     """Deploy configured optional services and skip disabled services."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     mcp_name = os.getenv("AZURE_GEOFM_MCP_CONTAINER_APP_NAME", "").strip()
     worker_name = os.getenv("AZURE_GEOFM_WORKER_CONTAINER_APP_NAME", "").strip()
+    web_search_name = os.getenv(
+        "AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME", ""
+    ).strip()
     resource_group = os.getenv("AZURE_RESOURCE_GROUP", "").strip()
-    if not mcp_name and not worker_name:
-        logger.info("GeoFM is not provisioned; skipping optional service deployment.")
+    if not mcp_name and not worker_name and not web_search_name:
+        logger.info("No optional services are provisioned; skipping deployment.")
         return EXIT_SUCCESS
-    if not mcp_name or not worker_name or not resource_group:
+    if not resource_group:
+        logger.error("AZURE_RESOURCE_GROUP is required for optional deployments.")
+        return EXIT_FAILURE
+    if bool(mcp_name) != bool(worker_name):
         logger.error("GeoFM outputs are incomplete; refusing partial deployment.")
         return EXIT_FAILURE
 
     try:
-        deploy_geofm(mcp_name, worker_name, resource_group)
+        if web_search_name:
+            deploy_web_search_mcp(web_search_name, resource_group)
+        if mcp_name and worker_name:
+            deploy_geofm(mcp_name, worker_name, resource_group)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         logger.error("Optional GeoFM deployment failed: %s", exc)
         return EXIT_FAILURE
-    logger.info("GeoFM control plane and worker deployed successfully.")
+    logger.info("Optional azd services deployed successfully.")
     return EXIT_SUCCESS
 
 

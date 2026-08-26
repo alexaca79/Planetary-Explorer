@@ -15,7 +15,9 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 MAX_DOCUMENT_BYTES = 1_750_000
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_EXPORT_BYTES = 100 * 1024 * 1024
 MAX_ATTACHMENTS = 20
+MAX_COSMOS_WRITE_ATTEMPTS = 4
 MAX_MESSAGES = 200
 MAX_MESSAGE_CONTENT_CHARS = 100_000
 MAX_TITLE_CHARS = 96
@@ -81,6 +83,10 @@ class ChatHistoryNotFoundError(ChatHistoryError):
 
 class ChatHistoryValidationError(ChatHistoryError):
     """Raised when a session cannot be safely persisted."""
+
+
+class ChatHistoryConflictError(ChatHistoryError):
+    """Raised when an older client snapshot would replace newer history."""
 
 
 def utc_now_iso() -> str:
@@ -188,6 +194,27 @@ def normalize_session_document(
     validate_session_id(session_id)
     if not isinstance(payload, dict):
         raise ChatHistoryValidationError("Session payload must be a JSON object.")
+    if (existing or {}).get("deleting") is True:
+        raise ChatHistoryConflictError(
+            "Chat session deletion is in progress; retry after it completes."
+        )
+
+    existing_revision = int((existing or {}).get("clientRevision") or 0)
+    requested_revision = payload.get("clientRevision")
+    if requested_revision is None:
+        client_revision = existing_revision + 1
+    elif (
+        isinstance(requested_revision, bool)
+        or not isinstance(requested_revision, int)
+        or requested_revision < 1
+    ):
+        raise ChatHistoryValidationError("clientRevision must be a positive integer.")
+    else:
+        client_revision = requested_revision
+    if existing is not None and client_revision <= existing_revision:
+        raise ChatHistoryConflictError(
+            "A newer chat snapshot is already saved; reload the session before retrying."
+        )
 
     messages = [
         normalized
@@ -211,7 +238,8 @@ def normalize_session_document(
         "id": session_id,
         "sessionId": session_id,
         "ownerId": owner_id,
-        "schemaVersion": 1,
+        "schemaVersion": 2,
+        "clientRevision": client_revision,
         "title": title or _derive_title(messages),
         "createdAt": (existing or {}).get("createdAt") or now,
         "updatedAt": now,
@@ -271,7 +299,21 @@ class ChatHistoryRepository(Protocol):
         payload: dict[str, Any],
     ) -> dict[str, Any]: ...
 
-    async def delete_session(self, owner_id: str, session_id: str) -> dict[str, Any]: ...
+    async def delete_session(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def mark_deleting(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]: ...
 
     async def add_attachment(
         self,
@@ -303,6 +345,8 @@ class ArtifactStore(Protocol):
     async def download(self, attachment: dict[str, Any]) -> bytes: ...
 
     async def delete(self, attachment: dict[str, Any]) -> None: ...
+
+    async def touch(self, attachment: dict[str, Any]) -> None: ...
 
 
 class InMemoryChatHistoryRepository:
@@ -339,13 +383,44 @@ class InMemoryChatHistoryRepository:
             payload,
             existing=existing,
         )
+        document["_etag"] = str(int((existing or {}).get("_etag") or 0) + 1)
         self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(document)
 
-    async def delete_session(self, owner_id: str, session_id: str) -> dict[str, Any]:
+    async def delete_session(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
+        if expected_etag is not None and document.get("_etag") != expected_etag:
+            raise ChatHistoryConflictError(
+                "Chat session changed during deletion; retry the request."
+            )
         del self._documents[(owner_id, session_id)]
         return document
+
+    async def mark_deleting(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
+        document = await self.get_session(owner_id, session_id)
+        if document.get("deleting") is True:
+            return document
+        if expected_etag is not None and document.get("_etag") != expected_etag:
+            raise ChatHistoryConflictError(
+                "Chat session changed during deletion; retry the request."
+            )
+        document["deleting"] = True
+        document["updatedAt"] = utc_now_iso()
+        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
+        self._documents[(owner_id, session_id)] = document
+        return copy.deepcopy(document)
 
     async def add_attachment(
         self,
@@ -354,6 +429,8 @@ class InMemoryChatHistoryRepository:
         attachment: dict[str, Any],
     ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
+        if document.get("deleting") is True:
+            raise ChatHistoryConflictError("Chat session deletion is in progress.")
         attachments = [
             item for item in document.get("attachments", [])
             if item.get("id") != attachment.get("id")
@@ -364,6 +441,7 @@ class InMemoryChatHistoryRepository:
             )
         document["attachments"] = attachments + [copy.deepcopy(attachment)]
         document["updatedAt"] = utc_now_iso()
+        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
         self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(document)
 
@@ -374,6 +452,8 @@ class InMemoryChatHistoryRepository:
         attachment_id: str,
     ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
+        if document.get("deleting") is True:
+            raise ChatHistoryConflictError("Chat session deletion is in progress.")
         attachments = document.get("attachments", [])
         removed = next(
             (item for item in attachments if item.get("id") == attachment_id),
@@ -385,12 +465,17 @@ class InMemoryChatHistoryRepository:
             item for item in attachments if item.get("id") != attachment_id
         ]
         document["updatedAt"] = utc_now_iso()
+        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
         self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(removed)
 
 
 def _is_not_found_error(error: Exception) -> bool:
     return getattr(error, "status_code", None) == 404
+
+
+def _is_status_error(error: Exception, status_code: int) -> bool:
+    return getattr(error, "status_code", None) == status_code
 
 
 class CosmosChatHistoryRepository:
@@ -459,24 +544,105 @@ class CosmosChatHistoryRepository:
         session_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        try:
-            existing = await self.get_session(owner_id, session_id)
-        except ChatHistoryNotFoundError:
-            existing = None
-        document = normalize_session_document(
-            owner_id,
-            session_id,
-            payload,
-            existing=existing,
-        )
         container = await self._get_container()
-        return await container.upsert_item(document)
+        from azure.core import MatchConditions
 
-    async def delete_session(self, owner_id: str, session_id: str) -> dict[str, Any]:
-        document = await self.get_session(owner_id, session_id)
+        for _attempt in range(MAX_COSMOS_WRITE_ATTEMPTS):
+            try:
+                existing = await self.get_session(owner_id, session_id)
+            except ChatHistoryNotFoundError:
+                document = normalize_session_document(
+                    owner_id,
+                    session_id,
+                    payload,
+                )
+                try:
+                    return await container.create_item(document)
+                except Exception as exc:
+                    if _is_status_error(exc, 409):
+                        continue
+                    raise
+
+            document = normalize_session_document(
+                owner_id,
+                session_id,
+                payload,
+                existing=existing,
+            )
+            try:
+                return await container.replace_item(
+                    item=session_id,
+                    body=document,
+                    etag=existing.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            except Exception as exc:
+                if _is_status_error(exc, 412):
+                    continue
+                raise
+        raise ChatHistoryError("Chat session changed repeatedly; retry the save.")
+
+    async def delete_session(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
+        document = None
+        if expected_etag is None:
+            document = await self.get_session(owner_id, session_id)
+            expected_etag = document.get("_etag")
         container = await self._get_container()
-        await container.delete_item(item=session_id, partition_key=owner_id)
-        return document
+        from azure.core import MatchConditions
+
+        try:
+            await container.delete_item(
+                item=session_id,
+                partition_key=owner_id,
+                etag=expected_etag,
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except Exception as exc:
+            if _is_status_error(exc, 412):
+                raise ChatHistoryConflictError(
+                    "Chat session changed during deletion; retry the request."
+                ) from exc
+            raise
+        return document or {"id": session_id, "sessionId": session_id}
+
+    async def mark_deleting(
+        self,
+        owner_id: str,
+        session_id: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
+        container = await self._get_container()
+        from azure.core import MatchConditions
+
+        document = await self.get_session(owner_id, session_id)
+        if document.get("deleting") is True:
+            return document
+        if expected_etag is not None and document.get("_etag") != expected_etag:
+            raise ChatHistoryConflictError(
+                "Chat session changed during deletion; retry the request."
+            )
+        document["deleting"] = True
+        document["updatedAt"] = utc_now_iso()
+        try:
+            return await container.replace_item(
+                item=session_id,
+                body=document,
+                etag=document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except Exception as exc:
+            if _is_status_error(exc, 412):
+                raise ChatHistoryConflictError(
+                    "Chat session changed during deletion; retry the request."
+                ) from exc
+            raise
 
     async def add_attachment(
         self,
@@ -484,19 +650,35 @@ class CosmosChatHistoryRepository:
         session_id: str,
         attachment: dict[str, Any],
     ) -> dict[str, Any]:
-        document = await self.get_session(owner_id, session_id)
-        attachments = [
-            item for item in document.get("attachments", [])
-            if item.get("id") != attachment.get("id")
-        ]
-        if len(attachments) >= MAX_ATTACHMENTS:
-            raise ChatHistoryValidationError(
-                f"A session can contain at most {MAX_ATTACHMENTS} files."
-            )
-        document["attachments"] = attachments + [copy.deepcopy(attachment)]
-        document["updatedAt"] = utc_now_iso()
         container = await self._get_container()
-        return await container.upsert_item(document)
+        from azure.core import MatchConditions
+
+        for _attempt in range(MAX_COSMOS_WRITE_ATTEMPTS):
+            document = await self.get_session(owner_id, session_id)
+            if document.get("deleting") is True:
+                raise ChatHistoryConflictError("Chat session deletion is in progress.")
+            attachments = [
+                item for item in document.get("attachments", [])
+                if item.get("id") != attachment.get("id")
+            ]
+            if len(attachments) >= MAX_ATTACHMENTS:
+                raise ChatHistoryValidationError(
+                    f"A session can contain at most {MAX_ATTACHMENTS} files."
+                )
+            document["attachments"] = attachments + [copy.deepcopy(attachment)]
+            document["updatedAt"] = utc_now_iso()
+            try:
+                return await container.replace_item(
+                    item=session_id,
+                    body=document,
+                    etag=document.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            except Exception as exc:
+                if _is_status_error(exc, 412):
+                    continue
+                raise
+        raise ChatHistoryError("Chat session changed repeatedly; retry the upload.")
 
     async def remove_attachment(
         self,
@@ -504,21 +686,37 @@ class CosmosChatHistoryRepository:
         session_id: str,
         attachment_id: str,
     ) -> dict[str, Any]:
-        document = await self.get_session(owner_id, session_id)
-        attachments = document.get("attachments", [])
-        removed = next(
-            (item for item in attachments if item.get("id") == attachment_id),
-            None,
-        )
-        if removed is None:
-            raise ChatHistoryNotFoundError("Attachment not found.")
-        document["attachments"] = [
-            item for item in attachments if item.get("id") != attachment_id
-        ]
-        document["updatedAt"] = utc_now_iso()
         container = await self._get_container()
-        await container.upsert_item(document)
-        return copy.deepcopy(removed)
+        from azure.core import MatchConditions
+
+        for _attempt in range(MAX_COSMOS_WRITE_ATTEMPTS):
+            document = await self.get_session(owner_id, session_id)
+            if document.get("deleting") is True:
+                raise ChatHistoryConflictError("Chat session deletion is in progress.")
+            attachments = document.get("attachments", [])
+            removed = next(
+                (item for item in attachments if item.get("id") == attachment_id),
+                None,
+            )
+            if removed is None:
+                raise ChatHistoryNotFoundError("Attachment not found.")
+            document["attachments"] = [
+                item for item in attachments if item.get("id") != attachment_id
+            ]
+            document["updatedAt"] = utc_now_iso()
+            try:
+                await container.replace_item(
+                    item=session_id,
+                    body=document,
+                    etag=document.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+                return copy.deepcopy(removed)
+            except Exception as exc:
+                if _is_status_error(exc, 412):
+                    continue
+                raise
+        raise ChatHistoryError("Chat session changed repeatedly; retry the deletion.")
 
 
 def _safe_filename(filename: str) -> str:
@@ -587,6 +785,10 @@ class InMemoryArtifactStore:
 
     async def delete(self, attachment: dict[str, Any]) -> None:
         self._files.pop(str(attachment.get("blobName") or ""), None)
+
+    async def touch(self, attachment: dict[str, Any]) -> None:
+        if str(attachment.get("blobName") or "") not in self._files:
+            raise ChatHistoryNotFoundError("Attachment content not found.")
 
 
 class BlobArtifactStore:
@@ -670,6 +872,16 @@ class BlobArtifactStore:
             if not _is_not_found_error(exc):
                 raise
 
+    async def touch(self, attachment: dict[str, Any]) -> None:
+        container = await self._get_container()
+        blob = container.get_blob_client(attachment["blobName"])
+        try:
+            await blob.set_blob_metadata(metadata={})
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                raise ChatHistoryNotFoundError("Attachment content not found.") from exc
+            raise ChatHistoryError("Attachment retention could not be refreshed.") from exc
+
 
 _history_repository: ChatHistoryRepository | None = None
 _artifact_store: ArtifactStore | None = None
@@ -683,7 +895,13 @@ def get_chat_history_repository() -> ChatHistoryRepository:
 
     endpoint = os.environ.get("COSMOS_CHAT_ENDPOINT", "").strip()
     mode = os.environ.get("CHAT_HISTORY_STORE", "").strip().lower()
-    if endpoint:
+    if mode not in {"cosmos", "memory", "disabled"}:
+        raise ChatHistoryError(
+            "CHAT_HISTORY_STORE must be cosmos, memory, or disabled."
+        )
+    if mode == "disabled":
+        raise ChatHistoryError("Chat history is disabled in this deployment.")
+    if mode == "cosmos" and endpoint:
         _history_repository = CosmosChatHistoryRepository(
             endpoint,
             os.environ.get("COSMOS_CHAT_DATABASE", "planetary-explorer"),
@@ -691,8 +909,6 @@ def get_chat_history_repository() -> ChatHistoryRepository:
         )
     elif mode == "cosmos":
         raise ChatHistoryError("COSMOS_CHAT_ENDPOINT is required for Cosmos history.")
-    elif mode == "disabled":
-        raise ChatHistoryError("Chat history is disabled in this deployment.")
     else:
         _history_repository = InMemoryChatHistoryRepository()
     return _history_repository
@@ -706,7 +922,13 @@ def get_artifact_store() -> ArtifactStore:
 
     endpoint = os.environ.get("CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
     mode = os.environ.get("CHAT_ARTIFACT_STORE", "").strip().lower()
-    if endpoint:
+    if mode not in {"blob", "memory", "disabled"}:
+        raise ChatHistoryError(
+            "CHAT_ARTIFACT_STORE must be blob, memory, or disabled."
+        )
+    if mode == "disabled":
+        raise ChatHistoryError("Chat artifacts are disabled in this deployment.")
+    if mode == "blob" and endpoint:
         _artifact_store = BlobArtifactStore(
             endpoint,
             os.environ.get("CHAT_ARTIFACT_CONTAINER", "chat-artifacts"),
@@ -715,8 +937,6 @@ def get_artifact_store() -> ArtifactStore:
         raise ChatHistoryError(
             "CHAT_ARTIFACT_BLOB_ENDPOINT is required for Blob artifacts."
         )
-    elif mode == "disabled":
-        raise ChatHistoryError("Chat artifacts are disabled in this deployment.")
     else:
         _artifact_store = InMemoryArtifactStore()
     return _artifact_store

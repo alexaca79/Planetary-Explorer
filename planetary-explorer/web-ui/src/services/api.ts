@@ -110,14 +110,30 @@ export interface ChatHistorySummary {
 
 export interface ChatHistorySession extends ChatHistorySummary {
   schemaVersion: number;
+  clientRevision: number;
   messages: ChatMessage[];
-  context: Record<string, any>;
+  context: ChatHistoryContext;
+}
+
+export interface ChatHistoryContext {
+  selectedModel?: string;
+  reasoningEffort?: string;
+  selectedModule?: string;
+  selectedDataset?: {
+    id: string;
+    title: string;
+    description?: string;
+  };
+  stacMode?: 'public' | 'pro';
+  pin?: { lat: number; lng: number };
+  map?: Partial<MapContext>;
 }
 
 export interface ChatHistorySnapshot {
   title?: string;
+  clientRevision?: number;
   messages: ChatMessage[];
-  context: Record<string, any>;
+  context: ChatHistoryContext;
 }
 
 export interface MapContext {

@@ -98,6 +98,13 @@ def _redact_sensitive_args(value: Any) -> Any:
     return value
 
 
+def redact_sensitive_value(value: Any) -> Any:
+    """Return a model- and trace-safe copy of a structured value."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return _redact_sensitive_args(value)
+
+
 @dataclass
 class TraceEntry:
     """One row in the per-turn trace buffer."""
@@ -247,6 +254,27 @@ class TracedMcpClient:
         )
 
     @classmethod
+    def from_web_search(
+        cls,
+        *,
+        turn_id: str | None = None,
+        confirm: _ConfirmHook = _broker_confirm,
+    ) -> "TracedMcpClient | None":
+        """Return a traced client when the web-search MCP server is enabled."""
+        from .registry import get_registry
+        from .remote_client import RemoteMcpClient
+
+        server = get_registry().get("web_search")
+        if server is None or not server.enabled:
+            return None
+        return cls(
+            server_id=server.server_id,
+            underlying=RemoteMcpClient(server.url, api_key=server.api_key),
+            turn_id=turn_id,
+            confirm=confirm,
+        )
+
+    @classmethod
     def for_agent_geospatial(
         cls,
         *,
@@ -282,7 +310,7 @@ class TracedMcpClient:
             turn_id=self.turn_id,
             server_id=self.server_id,
             tool=tool,
-            args=_redact_sensitive_args(args),
+            args=redact_sensitive_value(args),
             tier=tier,
             started_at=time.time(),
         )

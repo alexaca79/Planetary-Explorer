@@ -39,6 +39,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _serialize_tool_result_for_model(result: Any) -> str:
+    from mcp_runtime import redact_sensitive_value
+
+    return json.dumps(redact_sensitive_value(result), default=str)
+
+
 # ---------------------------------------------------------------------------
 # Lazy import of Azure SDK — keep dev environments without Azure usable.
 # ---------------------------------------------------------------------------
@@ -701,7 +707,7 @@ class AnalystAgent:
                         {
                             "type": "function_call_output",
                             "call_id": call.call_id,
-                            "output": json.dumps(result, default=str),
+                            "output": _serialize_tool_result_for_model(result),
                         }
                     )
 

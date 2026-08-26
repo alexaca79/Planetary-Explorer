@@ -45,6 +45,17 @@ def test_given_public_mode_when_configuring_then_api_and_web_auth_are_disabled(
         commands.append(arguments)
         if arguments[:2] == ["webapp", "show"]:
             return "app.example.net"
+        query = arguments[arguments.index("--query") + 1] if "--query" in arguments else ""
+        if "DISABLE_AUTH" in query:
+            return "true"
+        if "TRUST_EASYAUTH_HEADER" in query:
+            return "false"
+        if "properties.platform.enabled" in query:
+            return "false"
+        if "properties.configuration.ingress.external" in query:
+            return "true"
+        if arguments[:3] == ["webapp", "auth", "show"]:
+            return "false"
         return ""
 
     monkeypatch.setattr(MODULE, "run_az", fake_run_az)

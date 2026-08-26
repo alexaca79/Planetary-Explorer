@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiService, ChatHistorySession } from '../../services/api';
 import ChatHistoryDrawer from '../ChatHistoryDrawer';
 
-function renderDrawer(onLoad = vi.fn()) {
+function renderDrawer(onLoad = vi.fn(), busy = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -14,6 +14,7 @@ function renderDrawer(onLoad = vi.fn()) {
     <QueryClientProvider client={queryClient}>
       <ChatHistoryDrawer
         activeSessionId="session-2"
+        busy={busy}
         enabled
         open
         onClose={vi.fn()}
@@ -34,6 +35,7 @@ describe('ChatHistoryDrawer', () => {
     const session: ChatHistorySession = {
       sessionId: 'session-1',
       schemaVersion: 1,
+      clientRevision: 1,
       title: 'Seattle flood scan',
       createdAt: '2026-08-26T12:00:00Z',
       updatedAt: '2026-08-26T12:01:00Z',
@@ -62,6 +64,7 @@ describe('ChatHistoryDrawer', () => {
     const currentSession: ChatHistorySession = {
       sessionId: 'session-2',
       schemaVersion: 1,
+      clientRevision: 1,
       title: 'Current test',
       createdAt: '2026-08-26T12:00:00Z',
       updatedAt: '2026-08-26T12:01:00Z',
@@ -86,5 +89,33 @@ describe('ChatHistoryDrawer', () => {
 
     // Assert
     expect(await screen.findByRole('alert')).toHaveTextContent('Field required');
+  });
+
+  it('blocks session switching while chat work is pending', async () => {
+    // Arrange
+    const session: ChatHistorySession = {
+      sessionId: 'session-1',
+      schemaVersion: 1,
+      clientRevision: 1,
+      title: 'Pending test',
+      createdAt: '2026-08-26T12:00:00Z',
+      updatedAt: '2026-08-26T12:01:00Z',
+      messageCount: 1,
+      attachments: [],
+      messages: [{ role: 'user', content: 'Test', timestamp: new Date() }],
+      context: {},
+    };
+    vi.spyOn(apiService, 'listChatSessions').mockResolvedValue([session]);
+    const getSession = vi.spyOn(apiService, 'getChatSession');
+    renderDrawer(vi.fn(), true);
+
+    // Act
+    await screen.findByText('Pending test');
+    const openButton = screen.getByRole('button', { name: 'Open Pending test' });
+
+    // Assert
+    expect(openButton).toBeDisabled();
+    fireEvent.click(openButton);
+    expect(getSession).not.toHaveBeenCalled();
   });
 });

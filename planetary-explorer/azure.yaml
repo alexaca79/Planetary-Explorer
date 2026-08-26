@@ -49,6 +49,19 @@ services:
         kind: python
         run: ../../scripts/configure_api_postdeploy.py
 
+  web-search-mcp:
+    project: ./web-search-mcp
+    host: containerapp
+    language: docker
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
+    hooks:
+      postdeploy:
+        kind: python
+        run: ../../scripts/configure_api_postdeploy.py --profile web-search
+
   geofm:
     project: ./geofm-sidecar
     host: containerapp

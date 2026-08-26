@@ -53,9 +53,9 @@ async def terrain_analysis_agent(
     session_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-     Terrain Analysis Agent - Full SK Agent with DEM tools + GPT-5 Vision
+        Terrain Analysis Agent - Agent Service with DEM tools + GPT-5 Vision
     
-    Uses Semantic Kernel ChatCompletionAgent with tools for:
+        Uses Azure AI Agent Service with tools for:
     - Elevation analysis (min/max/mean from DEM)
     - Slope analysis (steepness, traversability)
     - Aspect analysis (direction, sun exposure)
@@ -95,7 +95,7 @@ async def terrain_analysis_agent(
         # Default query if none provided
         query = user_query or "Analyze the terrain at this location. What are the key features?"
         
-        # Call the SK agent with tools
+        # Call the agent with tools.
         result = await agent.analyze(
             session_id=session_id,
             user_message=query,

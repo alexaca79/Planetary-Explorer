@@ -5,7 +5,7 @@ This package contains agents for AI-powered analysis tasks:
 - EnhancedVisionAgent: Azure AI Agent Service agent with 13 vision tools for analyzing
   satellite imagery, answering contextual questions, and providing quantitative analysis.
 
-Refactored from Semantic Kernel to Azure AI Agent Service (AgentsClient + FunctionTool).
+Agents use Azure AI Agent Service with AgentsClient and FunctionTool.
 
 Tools available in EnhancedVisionAgent:
 1. analyze_screenshot - GPT-5 vision analysis of map screenshot

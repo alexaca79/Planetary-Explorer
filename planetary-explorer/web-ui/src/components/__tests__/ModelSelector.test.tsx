@@ -162,4 +162,31 @@ describe('ModelSelector', () => {
     expect(onReasoningEffortChange).toHaveBeenLastCalledWith('none');
     expect(localStorage.getItem('planetaryexplorer-reasoning-effort')).toBe('none');
   });
+
+  it('falls back when a restored model is no longer deployed', async () => {
+    // Arrange
+    const onModelChange = vi.fn();
+    const { rerender } = render(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="gpt-4o"
+        onModelChange={onModelChange}
+      />
+    );
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith('gpt-4o'));
+    onModelChange.mockClear();
+
+    // Act
+    rerender(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="retired-model"
+        onModelChange={onModelChange}
+      />
+    );
+
+    // Assert
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith('gpt-4o'));
+    expect(localStorage.getItem('planetaryexplorer-model')).toBe('gpt-4o');
+  });
 });
