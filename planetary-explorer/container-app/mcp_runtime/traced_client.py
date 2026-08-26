@@ -55,7 +55,7 @@ _TIER_PATTERNS: tuple[tuple[re.Pattern[str], PermissionTier], ...] = (
     (re.compile(r"^bulk_ingest_|^batch_ingest_"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^replace_"), PermissionTier.DESTRUCTIVE),
     (
-        re.compile(r"^geofm_(?:compare|embed|classify|segment|find_similar)"),
+        re.compile(r"^geofm_(?:compare|embed|classify|segment|find_similar|retry)"),
         PermissionTier.WRITE,
     ),
     (re.compile(r"^create_|^configure_|^ingest_"), PermissionTier.WRITE),
@@ -67,6 +67,35 @@ def classify_tool(tool: str) -> PermissionTier:
         if pat.search(tool):
             return tier
     return PermissionTier.READ
+
+
+def _sanitize_trace_text(value: str) -> str:
+    return re.sub(
+        r"(https?://[^\s?'\"<>]+)\?[^\s'\"<>]+",
+        r"\1?<redacted>",
+        value,
+    )
+
+
+def _redact_sensitive_args(value: Any) -> Any:
+    """Remove credentials from trace and confirmation payloads."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                "<redacted>"
+                if any(
+                    marker in key.casefold()
+                    for marker in ("api_key", "secret", "signature", "token")
+                )
+                else _redact_sensitive_args(child)
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_args(child) for child in value]
+    if isinstance(value, str):
+        return _sanitize_trace_text(value)
+    return value
 
 
 @dataclass
@@ -253,7 +282,7 @@ class TracedMcpClient:
             turn_id=self.turn_id,
             server_id=self.server_id,
             tool=tool,
-            args=args,
+            args=_redact_sensitive_args(args),
             tier=tier,
             started_at=time.time(),
         )
@@ -292,7 +321,7 @@ class TracedMcpClient:
                 )
         except Exception as exc:  # noqa: BLE001
             entry.ok = False
-            entry.error = f"{type(exc).__name__}: {exc}"
+            entry.error = _sanitize_trace_text(f"{type(exc).__name__}: {exc}")
             entry.finished_at = time.time()
             entry.latency_ms = int((entry.finished_at - entry.started_at) * 1000)
             await _trace_emit({"type": "tool_result", **entry.to_dict()})
@@ -305,6 +334,7 @@ class TracedMcpClient:
                 preview = str(result)
             except Exception:  # noqa: BLE001
                 preview = "<unprintable>"
+            preview = _sanitize_trace_text(preview)
             entry.response_summary = preview[:summary_max]
             await _trace_emit({"type": "tool_result", **entry.to_dict()})
             return result

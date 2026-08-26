@@ -466,3 +466,42 @@ async def test_given_encoded_analyst_failure_when_load_succeeded_then_load_is_pr
     assert result["action"] == "LOAD"
     assert result["stac_query"] == "modis-14A1-061 Ontario July 2026"
     assert result["structured"]["analysis_status"] == {"status": status}
+
+
+@pytest.mark.asyncio
+async def test_given_raised_analyst_failure_when_load_succeeded_then_load_is_preserved() -> None:
+    # Arrange
+    class SuccessfulLoad:
+        async def run(self, _decision, _request, _body):
+            return {
+                "action": "LOAD",
+                "answer": "Loading Ontario MODIS fire imagery.",
+                "stac_query": "modis-14A1-061 Ontario July 2026",
+                "structured": {"load_plan": {"action": "execute"}},
+            }
+
+    class RaisedAnalyze:
+        async def run(self, _decision, _request, _body):
+            raise RuntimeError("provider unavailable")
+
+    agent = LoadAndAnalyzeAgent(
+        load_agent=SuccessfulLoad(),
+        analyze_agent=RaisedAnalyze(),
+    )
+    decision = ActionDecision(
+        action="LOAD_AND_ANALYZE",
+        location="Ontario, Canada",
+        analysis_question="How severe were the fires?",
+    )
+
+    # Act
+    result = await agent.run(decision, _request(), {})
+
+    # Assert
+    assert result["action"] == "LOAD"
+    assert result["stac_query"] == "modis-14A1-061 Ontario July 2026"
+    assert result["structured"]["load_plan"] == {"action": "execute"}
+    assert result["structured"]["analysis_status"] == {
+        "status": "error",
+        "error_type": "RuntimeError",
+    }

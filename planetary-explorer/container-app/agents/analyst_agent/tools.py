@@ -11,10 +11,16 @@ All tools are async. Naming follows the catalog in REQ-ARCH-1.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import os
+import secrets
 import time
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from .session_context import get_session
 
@@ -24,6 +30,46 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _geofm_owner_proof(
+    action: str,
+    owner: str,
+    resource: Any,
+) -> Dict[str, Any]:
+    key = (os.getenv("GEOFM_OWNER_SIGNING_KEY") or "").encode("utf-8")
+    if len(key) < 32:
+        raise RuntimeError("GeoFM owner signing is not configured.")
+    expires_at = int(time.time()) + 120
+    nonce = secrets.token_hex(16)
+    payload = json.dumps(
+        [action, owner, _canonical_geofm_resource(resource), expires_at, nonce],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "owner_signature": hmac.new(key, payload, hashlib.sha256).hexdigest(),
+        "owner_signature_expires_at": expires_at,
+        "owner_signature_nonce": nonce,
+    }
+
+
+def _canonical_geofm_resource(value: Any, *, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {
+            child_key: _canonical_geofm_resource(child, key=child_key)
+            for child_key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_canonical_geofm_resource(child) for child in value]
+    if key == "run_id" and isinstance(value, str):
+        return str(UUID(value))
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return format(float(value), ".17g")
+    return value
 
 
 def _build_request(question_override: Optional[str] = None, hint: Optional[str] = None):
@@ -513,6 +559,15 @@ def _select_geofm_pair(
             second.get("collection") or second.get("collection_id")
         ):
             raise ValueError("GeoFM source items must come from the same HLS collection.")
+        first_datetime = _parse_stac_datetime(first)
+        second_datetime = _parse_stac_datetime(second)
+        missing_datetime = datetime.min.replace(tzinfo=UTC)
+        if first_datetime == missing_datetime or second_datetime == missing_datetime:
+            raise ValueError("Both GeoFM source items must include an acquisition datetime.")
+        if first_datetime == second_datetime:
+            raise ValueError("GeoFM source items must represent distinct acquisition times.")
+        if first_datetime > second_datetime:
+            return after_item_id, before_item_id
         return before_item_id, after_item_id
 
     collection_order = [
@@ -660,18 +715,31 @@ async def compare_with_geofm(
         }
     try:
         epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
+        requested_by = (
+            session.authenticated_user_id or f"session:{session.session_id}"
+        )
         request = {
             "geometry": _geofm_aoi(),
             "item_id_epoch_a": epoch_a,
             "item_id_epoch_b": epoch_b,
             "profile": "planaura_hls",
             "correlation_id": session.session_id,
-            "requested_by": session.authenticated_user_id or f"session:{session.session_id}",
+            "requested_by": requested_by,
             "threshold": threshold,
             "max_features": max_features,
         }
         out = _geofm_result(
-            await client.call("geofm_compare_epochs", {"request": request})
+            await client.call(
+                "geofm_compare_epochs",
+                {
+                    "request": request,
+                    **_geofm_owner_proof(
+                        "submit",
+                        requested_by,
+                        request,
+                    ),
+                },
+            )
         )
     except PermissionError:
         out = {"success": False, "error": "GeoFM submission was not approved."}
@@ -690,13 +758,20 @@ async def get_geofm_run(run_id: str) -> Dict[str, Any]:
     if client is None:
         return {"success": False, "error": "GeoFM is not enabled."}
     try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
         out = _geofm_result(
             await client.call(
                 "geofm_get_run",
                 {
                     "run_id": run_id,
-                    "requested_by": get_session().authenticated_user_id
-                    or f"session:{get_session().session_id}",
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "get",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
                 },
             )
         )
@@ -715,13 +790,20 @@ async def cancel_geofm_run(run_id: str) -> Dict[str, Any]:
     if client is None:
         return {"success": False, "error": "GeoFM is not enabled."}
     try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
         out = _geofm_result(
             await client.call(
                 "geofm_cancel_run",
                 {
                     "run_id": run_id,
-                    "requested_by": get_session().authenticated_user_id
-                    or f"session:{get_session().session_id}",
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "cancel",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
                 },
             )
         )
@@ -731,6 +813,40 @@ async def cancel_geofm_run(run_id: str) -> Dict[str, Any]:
         logger.exception("cancel_geofm_run failed")
         out = {"success": False, "error": str(error)}
     _record_evidence("cancel_geofm_run", out)
+    return out
+
+
+async def retry_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Start another durable attempt for a failed GeoFM run after approval."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
+        out = _geofm_result(
+            await client.call(
+                "geofm_retry_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "retry",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM retry was not approved."}
+    except Exception as error:
+        logger.exception("retry_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("retry_geofm_run", out)
     return out
 
 
@@ -788,6 +904,7 @@ def create_analyst_functions():
         list_geofm_models,
         compare_with_geofm,
         get_geofm_run,
+        retry_geofm_run,
         cancel_geofm_run,
         ask_user_to_clarify,
     }

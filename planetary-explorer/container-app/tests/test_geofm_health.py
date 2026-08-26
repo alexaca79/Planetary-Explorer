@@ -14,6 +14,7 @@ class _FakeClient:
         "geofm_compare_epochs",
         "geofm_get_run",
         "geofm_list_models",
+        "geofm_retry_run",
     )
     closed = False
 
@@ -60,11 +61,12 @@ async def test_given_connected_geofm_when_probed_then_models_and_tools_are_repor
         "connected": True,
         "endpoint_host": "geofm.example",
         "status": "connected",
-        "tool_count": 3,
+        "tool_count": 4,
         "tools": [
             "geofm_compare_epochs",
             "geofm_get_run",
             "geofm_list_models",
+            "geofm_retry_run",
         ],
         "models": [
             {

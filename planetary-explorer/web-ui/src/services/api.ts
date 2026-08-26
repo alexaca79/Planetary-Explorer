@@ -448,7 +448,7 @@ class ApiService {
       const requestData: any = {
         query: message,
         ...(selectedModel && { model: selectedModel }),
-        ...(reasoningEffort && { reasoning_effort: reasoningEffort }),
+        ...(selectedModel && reasoningEffort && { reasoning_effort: reasoningEffort }),
         ...(geointModule && { geoint_module: geointModule }),
         preferences: {
           interface_type: 'planetary_explorer',

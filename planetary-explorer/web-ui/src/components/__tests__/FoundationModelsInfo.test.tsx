@@ -22,8 +22,8 @@ describe('FoundationModelsInfo', () => {
             enabled: true,
             connected: true,
             endpoint_host: 'geofm.example',
-            tool_count: 4,
-            tools: ['geofm_list_models', 'geofm_compare_epochs'],
+            tool_count: 5,
+            tools: ['geofm_list_models', 'geofm_compare_epochs', 'geofm_retry_run'],
             models: [{
               profile: 'planaura_hls',
               model_id: 'NRCan/Planaura-1.0',
@@ -51,6 +51,7 @@ describe('FoundationModelsInfo', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('NRCan/Planaura-1.0');
     expect(screen.getByRole('dialog')).toHaveTextContent('Connected');
     expect(screen.getByRole('dialog')).toHaveTextContent('Epoch comparison');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Run retry');
     expect(screen.getByRole('dialog')).toHaveTextContent('hls2-s30, hls2-l30');
   });
 
@@ -116,7 +117,7 @@ describe('FoundationModelsInfo', () => {
             enabled: true,
             connected: true,
             endpoint_host: 'geofm.example',
-            tool_count: 4,
+            tool_count: 5,
             tools: [],
             models: [],
           },

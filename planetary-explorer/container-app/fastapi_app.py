@@ -350,10 +350,26 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Planetary Explorer API", version="1.0.0")
 
 # Configure CORS origins from environment variable
-cors_origins_str = os.environ.get("CORS_ORIGINS", "*")
-cors_is_wildcard = cors_origins_str == "*"
+cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
+cors_origin_tokens = [
+    origin.strip()
+    for origin in cors_origins_str.split(",")
+    if origin.strip()
+]
+cors_is_wildcard = "*" in cors_origin_tokens
+public_demo_mode = os.environ.get("DISABLE_AUTH", "false").casefold() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if cors_is_wildcard and (not public_demo_mode or len(cors_origin_tokens) != 1):
+    raise RuntimeError(
+        "CORS_ORIGINS must list explicit origins unless DISABLE_AUTH=true "
+        "and the only configured origin is '*'."
+    )
 cors_origins = (
-    [origin.strip() for origin in cors_origins_str.split(",")]
+    cors_origin_tokens
     if not cors_is_wildcard
     else []
 )

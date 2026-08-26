@@ -7,14 +7,15 @@ ms.topic: overview
 ## Capability
 
 Planetary Explorer can submit bi-temporal HLS imagery to the PlanAura
-geospatial foundation model. The AnalystAgent exposes four tools:
+geospatial foundation model. The AnalystAgent exposes five tools:
 
 * `list_geofm_models`
 * `compare_with_geofm`
 * `get_geofm_run`
+* `retry_geofm_run`
 * `cancel_geofm_run`
 
-Submission and cancellation use the existing MCP confirmation flow. Model work
+Submission, retry, and cancellation use the existing MCP confirmation flow. Model work
 continues after the browser or agent turn disconnects.
 Standard chat uses the `/api/query/stream` endpoint so the approval card and
 tool trace remain visible while the agent turn is paused.
@@ -87,8 +88,9 @@ The Bicep path is disabled by default. Before setting `deployGeoFm=true`:
 3. Confirm Container Apps T4 quota for the subscription.
 4. Confirm that Azure Container Registry remote builds can reach GitHub and
    Hugging Face. The two `azd deploy` commands build and push the images.
-5. Set `geoFmMcpApiKey` to a random value of at least 32 characters. An enabled
-   deployment rejects an empty key.
+5. Set `geoFmMcpApiKey` and the distinct `geoFmOwnerSigningKey` to random values
+   of at least 32 characters. The first authenticates MCP transport; the second
+   binds submit, get, and cancel operations to an authenticated owner.
 6. Set `deployGeoFm=true` and `geoFmAllowConditional=false`, then run the
    deployment commands below.
 7. Verify `/health` and `geofm_list_models` before allowing inference.
@@ -105,6 +107,7 @@ environment with `deployGeoFm=true`, publish the optional services explicitly:
 ```powershell
 azd env set DEPLOY_GEOFM true
 azd env set-secret GEOFM_MCP_API_KEY
+azd env set-secret GEOFM_OWNER_SIGNING_KEY
 azd up
 azd deploy geofm
 azd deploy geofm-worker
@@ -116,8 +119,13 @@ parameters such as `geoFmAllowConditional`.
 
 The infrastructure uses a private MCP endpoint, a user-assigned managed
 identity for each service, and a shared key between the backend and MCP
-control plane. Blob roles are scoped to the `geofm` container. The control
-plane receives queue-send access, while the worker receives queue-processing
-access on `geofm-jobs`. Both identities receive AcrPull. When private endpoints
-are enabled, Blob and Queue DNS zones are linked to the Container Apps virtual
-network.
+control plane. Blob data roles are scoped to the `geofm` container; the control
+identity also receives Storage Blob Delegator at account scope so polling can
+return five-minute read-only evidence links. The control plane receives
+queue-send access, while the worker receives queue-processing
+access on `geofm-jobs` and `geofm-poison`. Malformed, terminally failed, and
+retry-exhausted messages are copied to the poison queue before the source is
+acknowledged; failed quarantine leaves the original message unacknowledged. Both
+identities receive AcrPull. When
+private endpoints are enabled, Blob and Queue DNS zones are linked to the
+Container Apps virtual network.

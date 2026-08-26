@@ -30,10 +30,22 @@ infra:
   path: planetary-explorer/infra
   module: main
 
+hooks:
+  preprovision:
+    kind: python
+    run: ./scripts/resolve_deployment_targets.py --write-azd-env
+  postup:
+    - kind: python
+      run: ./scripts/deploy_optional_azd_services.py
+    - kind: python
+      run: ./scripts/configure_auth_postdeploy.py
+
 workflows:
   up:
     steps:
       - azd: provision
+      - azd: package web
+      - azd: package api
       - azd: deploy web
       - azd: deploy api
       # GeoFM is opt-in because deployGeoFm defaults to false and provisions
@@ -46,11 +58,20 @@ services:
     dist: dist
     host: appservice
     language: js
+    resourceName: ${AZURE_WEB_APP_NAME}
+    env:
+      VITE_API_BASE_URL: ${AZURE_CONTAINER_APP_URL}
+      VITE_AZURE_MAPS_SUBSCRIPTION_KEY: ${AZURE_MAPS_SUBSCRIPTION_KEY}
 
   api:
     project: ./planetary-explorer/container-app
     host: containerapp
     language: python
+    resourceName: ${AZURE_CONTAINER_APP_NAME}
+    hooks:
+      postdeploy:
+        kind: python
+        run: ../../scripts/configure_api_postdeploy.py
 
   geofm:
     project: ./planetary-explorer/geofm-sidecar
@@ -60,6 +81,10 @@ services:
       path: ./Dockerfile
       context: .
       remoteBuild: true
+    hooks:
+      postdeploy:
+        kind: python
+        run: ../../scripts/configure_api_postdeploy.py --profile geofm
 
   geofm-worker:
     project: ./planetary-explorer/geofm-sidecar

@@ -40,4 +40,24 @@ describe('ApiService model selection', () => {
       { signal: undefined },
     );
   });
+
+  it('omits model controls until deployment discovery validates a model', async () => {
+    // Act
+    await apiService.sendChatMessage(
+      'Open the saved query',
+      undefined,
+      'session-1',
+      [],
+      undefined,
+      false,
+      undefined,
+      undefined,
+      'high',
+    );
+
+    // Assert
+    const request = post.mock.calls[0][1];
+    expect(request).not.toHaveProperty('model');
+    expect(request).not.toHaveProperty('reasoning_effort');
+  });
 });

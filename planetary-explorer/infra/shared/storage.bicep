@@ -63,6 +63,11 @@ resource geoFmQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023
   name: 'geofm-jobs'
 }
 
+resource geoFmPoisonQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = if (deployGeoFmResources) {
+  parent: queueService
+  name: 'geofm-poison'
+}
+
 output name string = storageAccount.name
 output id string = storageAccount.id
 output primaryEndpoints object = storageAccount.properties.primaryEndpoints
@@ -70,3 +75,4 @@ output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
 output queueEndpoint string = storageAccount.properties.primaryEndpoints.queue
 output geoFmContainerName string = deployGeoFmResources ? geoFmContainer.name : ''
 output geoFmQueueName string = deployGeoFmResources ? geoFmQueue.name : ''
+output geoFmPoisonQueueName string = deployGeoFmResources ? geoFmPoisonQueue.name : ''

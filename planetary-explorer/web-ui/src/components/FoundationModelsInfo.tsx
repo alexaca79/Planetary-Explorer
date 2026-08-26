@@ -44,6 +44,7 @@ const formatTool = (tool: string): string => {
     geofm_list_models: 'Model registry',
     geofm_compare_epochs: 'Epoch comparison',
     geofm_get_run: 'Run monitoring',
+    geofm_retry_run: 'Run retry',
     geofm_cancel_run: 'Run cancellation',
   };
   return names[tool] || tool.replace(/^geofm_/, '').split('_').join(' ');

@@ -648,7 +648,7 @@ $env:MPC_PRO = 'true'; $env:FABRIC = 'true'; $env:PRIVATE = 'true'
 # Or via flags
 .\deploy-infrastructure.ps1 -EnableMpcPro -EnableFabric -EnablePrivateEndpoints
 
-# Pin a region (skips preflight)
+# Pin a region (required services and quota are still validated)
 .\deploy-infrastructure.ps1 -Location eastus2
 ```
 

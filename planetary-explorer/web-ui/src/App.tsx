@@ -48,9 +48,10 @@ function App() {
   });
 
   const [geointMode, setGeointMode] = useState<boolean>(false);
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    return localStorage.getItem('planetaryexplorer-model') || '';
-  });
+  // ModelSelector reconciles the saved preference against live health before
+  // publishing it here. Until then, requests omit model and let the API choose
+  // its configured default.
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
     return localStorage.getItem('planetaryexplorer-reasoning-effort') || 'none';
   });

@@ -514,6 +514,7 @@ def test_tool_catalog_has_all_required_tools():
         "list_geofm_models",
         "compare_with_geofm",
         "get_geofm_run",
+            "retry_geofm_run",
         "cancel_geofm_run",
         "ask_user_to_clarify",
     }

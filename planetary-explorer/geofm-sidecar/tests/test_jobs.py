@@ -158,6 +158,97 @@ def test_given_dispatch_failure_when_resubmitting_then_same_queued_run_is_redriv
     assert dispatcher.run_ids == [recovered.run_id]
 
 
+def test_given_failed_run_when_resubmitting_then_terminal_record_is_unchanged() -> None:
+    # Arrange
+    dispatcher = RecordingDispatcher()
+    service = RunService(
+        InMemoryRunRepository(),
+        dispatcher,
+        inventory_lookup=lambda item_id: _observation(
+            item_id,
+            2023 if item_id == "epoch-a" else 2024,
+        ),
+        allow_conditional_models=True,
+    )
+    record, _ = service.submit(_request())
+    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=35)
+    service.transition(
+        record.run_id,
+        RunStatus.FAILED,
+        error="temporary source outage",
+    )
+    dispatcher.run_ids.clear()
+
+    failed = service.get(record.run_id)
+
+    # Act
+    resubmitted, created = service.submit(_request())
+
+    # Assert
+    assert created is False
+    assert resubmitted == failed
+    assert resubmitted.status is RunStatus.FAILED
+    assert dispatcher.run_ids == []
+
+
+def test_given_failed_owned_run_when_retrying_then_new_attempt_is_dispatched() -> None:
+    # Arrange
+    dispatcher = RecordingDispatcher()
+    service = RunService(
+        InMemoryRunRepository(),
+        dispatcher,
+        inventory_lookup=lambda item_id: _observation(
+            item_id,
+            2023 if item_id == "epoch-a" else 2024,
+        ),
+        allow_conditional_models=True,
+    )
+    record, _ = service.submit(_request())
+    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=35)
+    service.transition(record.run_id, RunStatus.FAILED, error="temporary outage")
+    dispatcher.run_ids.clear()
+
+    # Act
+    retried = service.retry_for_owner(record.run_id, "session-1")
+
+    # Assert
+    assert retried.run_id == record.run_id
+    assert retried.status is RunStatus.QUEUED
+    assert retried.attempt == 2
+    assert retried.progress_pct == 0
+    assert retried.error is None
+    assert dispatcher.run_ids == [record.run_id]
+
+
+def test_given_retry_dispatch_failure_when_retrying_again_then_same_attempt_is_redriven() -> None:
+    # Arrange
+    dispatcher = RecordingDispatcher()
+    service = RunService(
+        InMemoryRunRepository(),
+        dispatcher,
+        inventory_lookup=lambda item_id: _observation(
+            item_id,
+            2023 if item_id == "epoch-a" else 2024,
+        ),
+        allow_conditional_models=True,
+    )
+    record, _ = service.submit(_request())
+    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=35)
+    service.transition(record.run_id, RunStatus.FAILED, error="temporary outage")
+    retry_dispatcher = FailOnceDispatcher()
+    service._dispatcher = retry_dispatcher
+
+    # Act
+    with pytest.raises(RunError, match="queued but queue dispatch failed"):
+        service.retry_for_owner(record.run_id, "session-1")
+    recovered = service.retry_for_owner(record.run_id, "session-1")
+
+    # Assert
+    assert recovered.status is RunStatus.QUEUED
+    assert recovered.attempt == 2
+    assert retry_dispatcher.run_ids == [record.run_id]
+
+
 def test_given_running_run_when_progress_updates_then_same_state_is_allowed() -> None:
     # Arrange
     service = RunService(

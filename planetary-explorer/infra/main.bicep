@@ -5,6 +5,24 @@ targetScope = 'subscription'
 @description('Name of the environment that will be used to name resources')
 param environmentName string
 
+@description('Exact API Container App name. Empty preserves the legacy token-based name.')
+param apiContainerAppName string = ''
+
+@description('Provision or reconcile the API Container App infrastructure.')
+param deployApiContainer bool = true
+
+@description('HTTPS URL of an adopted API Container App when its infrastructure is not reconciled.')
+param existingApiUrl string = ''
+
+@description('Provision the frontend App Service targeted by azd deploy web.')
+param deployFrontend bool = false
+
+@description('Exact frontend Web App name. Empty derives a globally unique stable name.')
+param frontendWebAppName string = ''
+
+@description('Exact frontend App Service plan name. Empty derives a stable resource-group name.')
+param frontendAppServicePlanName string = ''
+
 @minLength(1)
 @description('Primary location for all resources')
 param location string
@@ -30,6 +48,9 @@ param openAiApiKey string = ''
 @description('Enable Microsoft Entra (Azure AD) authentication')
 param enableAuthentication bool = false
 
+@description('Explicitly expose protected API routes without authentication for development or demos.')
+param publicDemoMode bool = false
+
 @description('Microsoft Entra Client ID (Application ID)')
 param microsoftEntraClientId string = ''
 
@@ -47,6 +68,9 @@ param cloudEnvironment string = 'Commercial'
 
 @description('Deploy Azure AI Foundry (OpenAI) with GPT-4 model')
 param deployAIFoundry bool = true
+
+@description('Name of the Microsoft Foundry Agent Service project.')
+param agentProjectName string = 'planetary-explorer-agents'
 
 @description('Deploy GPT-5 model (requires GlobalStandard quota — set false if unavailable)')
 param deployGpt5 bool = false
@@ -176,6 +200,10 @@ param geoFmMcpExternalIngress bool = false
 @description('Shared API key for backend-to-GeoFM MCP calls. Required with at least 32 characters when deployGeoFm=true.')
 param geoFmMcpApiKey string = ''
 
+@secure()
+@description('Distinct HMAC key binding GeoFM run operations to their authenticated owner.')
+param geoFmOwnerSigningKey string = ''
+
 @description('Dynamic collection selector mode. off | shadow | v2. When v2, the natural-language -> STAC collection id mapping uses the live CollectionIndex + constrained-LLM pick pipeline (collection_selector.py) instead of the legacy LoadAgent prompt catalog. Passed to web.bicep as COLLECTION_SELECTOR.')
 @allowed([ 'off', 'shadow', 'v2' ])
 param collectionSelectorMode string = 'v2'
@@ -212,6 +240,14 @@ param forecastAgentEnabled bool = true
 
 var abbrs = loadJsonContent('./abbreviations.json')
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+var resolvedApiContainerAppName = empty(apiContainerAppName) ? '${abbrs.appContainerApps}web-${resourceToken}' : apiContainerAppName
+var resolvedFrontendWebAppName = empty(frontendWebAppName) ? 'app-planetaryexplorer-${resourceToken}' : frontendWebAppName
+var resolvedFrontendAppServicePlanName = empty(frontendAppServicePlanName) ? 'asp-${resourceToken}' : frontendAppServicePlanName
+var resolvedFrontendUrl = empty(frontendUrl) ? 'https://${resolvedFrontendWebAppName}.azurewebsites.net' : frontendUrl
+var apiBootstrapImage = 'mcr.microsoft.com/k8se/quickstart:latest'
+var isApiBootstrapImage = containerImage == apiBootstrapImage
+var resolvedApiImage = contains(containerImage, '/') ? containerImage : '${registry.outputs.loginServer}/${containerImage}'
+var shouldDeployApiContainer = deployApiContainer && !empty(containerImage)
 var tags = {
   'azd-env-name': environmentName
   'azd-app-name': 'planetary-explorer'
@@ -353,6 +389,7 @@ module aiFoundry './shared/ai-foundry.bicep' = if (deployAIFoundry) {
     deployAgentService: true
     hubName: '${abbrs.machineLearningServicesWorkspaces}hub-${resourceToken}'
     projectName: '${abbrs.machineLearningServicesWorkspaces}project-${resourceToken}'
+    agentProjectName: agentProjectName
     storageAccountId: storage.?outputs.?id ?? ''
     keyVaultId: keyVault.?outputs.?id ?? ''
     applicationInsightsId: monitoring.outputs.applicationInsightsId
@@ -489,7 +526,7 @@ module peAiHub './shared/private-endpoint.bicep' = if (enablePrivateEndpoints &&
 // PE operations on the Hub only. The Hub PE covers the project as well.
 
 // Reference the deployed AI Foundry to get the key (only when deploying web with AI Foundry)
-resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAIFoundry && !empty(containerImage)) {
+resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAIFoundry && shouldDeployApiContainer) {
   name: '${abbrs.cognitiveServicesAccounts}foundry-${resourceToken}'
   scope: rg
 }
@@ -511,23 +548,39 @@ module geoFm './app/geofm.bicep' = if (deployGeoFm && deployGeoFmServices) {
     isConditionalModelAllowed: geoFmAllowConditional
     mcpExternalIngress: geoFmMcpExternalIngress
     mcpApiKey: geoFmMcpApiKey
+    ownerSigningKey: geoFmOwnerSigningKey
+  }
+}
+
+module frontend './app/frontend.bicep' = if (deployFrontend) {
+  name: 'frontend'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    appServicePlanName: resolvedFrontendAppServicePlanName
+    webAppName: resolvedFrontendWebAppName
+    enablePrivateEndpoints: enablePrivateEndpoints
+    vnetSubnetId: enablePrivateEndpoints ? (networking.?outputs.?appServiceSubnetId ?? '') : ''
   }
 }
 
 
 // Only deploy web container app if containerImage is provided
 // The backend job in CI/CD handles container deployment separately
-module web './app/web.bicep' = if (!empty(containerImage)) {
+module web './app/web.bicep' = if (shouldDeployApiContainer) {
   name: 'web'
   scope: rg
   params: {
-    name: '${abbrs.appContainerApps}web-${resourceToken}'
+    name: resolvedApiContainerAppName
     location: location
     tags: tags
     containerAppsEnvironmentName: appsEnv.outputs.name
     containerRegistryName: registry.outputs.name
-    imageName: '${registry.outputs.loginServer}/${containerImage}'
-    frontendUrl: frontendUrl
+    imageName: resolvedApiImage
+    targetPort: isApiBootstrapImage ? 80 : 8080
+    enableHealthProbes: !isApiBootstrapImage
+    frontendUrl: resolvedFrontendUrl
     // AI Foundry / Azure OpenAI: prefer managed-identity (DefaultAzureCredential
     // in the container falls through to MI when AZURE_OPENAI_API_KEY is empty).
     // We do NOT call listKeys() on the Foundry account because many managed
@@ -542,6 +595,9 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     // Azure Maps subscription key for geocoding
     azureMapsSubscriptionKey: maps.outputs.primaryKey
     enableAuthentication: enableAuthentication
+    publicDemoMode: publicDemoMode
+    microsoftEntraClientId: microsoftEntraClientId
+    microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
     // Cloud environment
     cloudEnvironment: cloudEnvironment
@@ -560,6 +616,7 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     geoFmMcpUrl: (deployGeoFm && deployGeoFmServices) ? (geoFm.?outputs.?mcpUri ?? '') : ''
     enableGeoFm: deployGeoFm && deployGeoFmServices
     geoFmMcpApiKey: geoFmMcpApiKey
+    geoFmOwnerSigningKey: geoFmOwnerSigningKey
     // Feature flags surfaced to the UI via /api/config. These are
     // independent of the deploy* flags so an operator can disable a
     // feature's UI without tearing down its infrastructure.
@@ -585,7 +642,7 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
 // Forecast Agent provider URLs + KV-User role assignment for the API
 // container. Wraps RG-scope resources in a module so they deploy from
 // this subscription-scope template.
-module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry && !empty(containerImage)) {
+module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry && shouldDeployApiContainer) {
   name: 'forecast-secrets'
   scope: rg
   params: {
@@ -604,7 +661,7 @@ module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry &
 // on the AI Foundry account so DefaultAzureCredential in the container can call
 // the OpenAI inference endpoint. This is required when disableLocalAuth=true is
 // enforced (managed sandbox / regulated subscriptions).
-module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && !empty(containerImage)) {
+module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && shouldDeployApiContainer) {
   name: 'web-foundry-access'
   scope: rg
   params: {
@@ -614,21 +671,21 @@ module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && !
 }
 
 // Azure Bot Service for Teams integration (requires App Registration)
-module botService './shared/bot-service.bicep' = if (deployBotService && !empty(microsoftBotAppId) && !empty(containerImage)) {
+module botService './shared/bot-service.bicep' = if (deployBotService && !empty(microsoftBotAppId) && (shouldDeployApiContainer || !empty(existingApiUrl))) {
   name: 'bot-service'
   scope: rg
   params: {
     name: 'bot-${resourceToken}'
     tags: tags
     microsoftAppId: microsoftBotAppId
-    messagingEndpoint: '${web.?outputs.?uri ?? ''}/api/messages'
+    messagingEndpoint: '${shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl}/api/messages'
     tenantId: tenant().tenantId
   }
 }
 
 // MCP server (opt-in via deployMcpServer). Deployed AFTER web so it can be
 // pointed at the freshly provisioned backend FQDN.
-module mcp './app/mcp.bicep' = if (deployMcpServer && !empty(containerImage)) {
+module mcp './app/mcp.bicep' = if (deployMcpServer && (shouldDeployApiContainer || !empty(existingApiUrl))) {
   name: 'mcp'
   scope: rg
   params: {
@@ -638,7 +695,7 @@ module mcp './app/mcp.bicep' = if (deployMcpServer && !empty(containerImage)) {
     containerAppsEnvironmentName: appsEnv.outputs.name
     containerRegistryName: registry.outputs.name
     imageName: mcpImageName
-    planetaryExplorerApiUrl: web.?outputs.?uri ?? ''
+    planetaryExplorerApiUrl: shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
     mcpApiKey: mcpApiKey
   }
 }
@@ -691,11 +748,15 @@ var fabricEffectiveCapacityId = enableFabric
   : ''
 
 output AZURE_LOCATION string = location
+output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registry.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = registry.outputs.name
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.outputs.name
-output AZURE_CONTAINER_APP_NAME string = web.?outputs.?name ?? ''
-output AZURE_CONTAINER_APP_URL string = web.?outputs.?uri ?? ''
+output AZURE_CONTAINER_APP_NAME string = shouldDeployApiContainer ? (web.?outputs.?name ?? '') : apiContainerAppName
+output AZURE_CONTAINER_APP_URL string = shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
+output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName
+output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl ?? '') : resolvedFrontendUrl
+output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName
 // AI Foundry outputs
 output AZURE_AI_FOUNDRY_NAME string = aiFoundry.?outputs.?name ?? ''
 output AZURE_AI_FOUNDRY_ENDPOINT string = aiFoundry.?outputs.?endpoint ?? ''

@@ -7,6 +7,23 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.mark.asyncio
+async def test_given_supported_openai_sdk_when_created_then_responses_api_exists() -> None:
+    # Arrange
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://example.invalid/openai/v1/",
+    )
+
+    # Act & Assert
+    try:
+        assert callable(client.responses.create)
+    finally:
+        await client.close()
+
+
 def test_given_unavailable_requested_model_when_resolving_then_request_is_rejected(
     monkeypatch,
 ) -> None:

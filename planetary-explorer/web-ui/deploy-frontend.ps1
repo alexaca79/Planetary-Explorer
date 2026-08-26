@@ -8,6 +8,12 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]$AppServiceName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$ContainerAppName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$ApiBaseUrl = "",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipBuild = $false,
@@ -69,11 +75,12 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
     # Try to find resource group with planetaryexplorer in the name
     $groups = az group list --query "[?contains(name, 'planetaryexplorer') || contains(name, 'planetary-explorer')].name" -o tsv 2>$null
     
-    if ($groups) {
-        $ResourceGroup = ($groups -split "`n")[0].Trim()
+    $groupMatches = @($groups -split "`n" | Where-Object { $_.Trim() })
+    if ($groupMatches.Count -eq 1) {
+        $ResourceGroup = $groupMatches[0].Trim()
         Write-Host "[OK] Found resource group: $ResourceGroup" -ForegroundColor Green
     } else {
-        Write-Host "[ERROR] Could not find Planetary Explorer resource group." -ForegroundColor Red
+        Write-Host "[ERROR] Expected exactly one Planetary Explorer resource group, found $($groupMatches.Count)." -ForegroundColor Red
         Write-Host "   Please specify -ResourceGroup parameter or create infrastructure first." -ForegroundColor Yellow
         exit 1
     }
@@ -85,15 +92,19 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
 if ([string]::IsNullOrEmpty($AppServiceName)) {
     Write-Host "   Looking for App Service in $ResourceGroup..." -ForegroundColor Gray
     
-    # Get all App Services in the resource group
-    $appServices = az webapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
-    
-    if ($appServices) {
-        $AppServiceName = ($appServices -split "`n")[0].Trim()
+    $appServices = @(az webapp list --resource-group $ResourceGroup `
+        --output json 2>$null | ConvertFrom-Json)
+    $frontendApps = @(
+        $appServices | Where-Object {
+            $_.tags.'azd-service-name' -eq 'web'
+        }
+    )
+    if ($frontendApps.Count -eq 1) {
+        $AppServiceName = $frontendApps[0].name
         Write-Host "[OK] Found App Service: $AppServiceName" -ForegroundColor Green
     } else {
-        Write-Host "[ERROR] Could not find App Service in resource group '$ResourceGroup'." -ForegroundColor Red
-        Write-Host "   Please specify -AppServiceName parameter or deploy infrastructure first." -ForegroundColor Yellow
+        Write-Host "[ERROR] Expected exactly one App Service tagged azd-service-name=web, found $($frontendApps.Count)." -ForegroundColor Red
+        Write-Host "   Please specify -AppServiceName explicitly." -ForegroundColor Yellow
         exit 1
     }
 } else {
@@ -111,6 +122,60 @@ try {
     Write-Host "   Please verify the resource exists or update the parameters." -ForegroundColor Yellow
     exit 1
 }
+
+if ([string]::IsNullOrEmpty($ApiBaseUrl)) {
+    if ([string]::IsNullOrEmpty($ContainerAppName)) {
+        $canonicalApiName = if ($ResourceGroup.StartsWith('rg-')) {
+            "ca-$($ResourceGroup.Substring(3))-api"
+        } else {
+            ''
+        }
+        if ($canonicalApiName) {
+            az containerapp show --resource-group $ResourceGroup --name $canonicalApiName `
+                --output none 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $ContainerAppName = $canonicalApiName
+            }
+        }
+        if (-not $ContainerAppName) {
+            $containerApps = @(az containerapp list --resource-group $ResourceGroup `
+                --output json 2>$null | ConvertFrom-Json)
+            $apiApps = @(
+                $containerApps | Where-Object {
+                    $_.tags.'azd-service-name' -in @('api', 'web') -or
+                    $_.name -like 'ca-web-*'
+                }
+            )
+            if ($apiApps.Count -eq 1) {
+                $ContainerAppName = $apiApps[0].name
+            }
+        }
+    }
+    if (-not $ContainerAppName) {
+        Write-Host "[ERROR] Could not resolve the exact API Container App for the frontend build." -ForegroundColor Red
+        Write-Host "   Pass -ContainerAppName or -ApiBaseUrl explicitly." -ForegroundColor Yellow
+        exit 1
+    }
+    $apiHost = az containerapp show --name $ContainerAppName `
+        --resource-group $ResourceGroup `
+        --query properties.configuration.ingress.fqdn -o tsv 2>$null
+    if (-not $apiHost) {
+        Write-Host "[ERROR] API Container App '$ContainerAppName' has no ingress FQDN." -ForegroundColor Red
+        exit 1
+    }
+    $ApiBaseUrl = "https://$($apiHost.Trim())"
+}
+
+$parsedApiBaseUrl = $null
+if (
+    -not [Uri]::TryCreate($ApiBaseUrl, [UriKind]::Absolute, [ref]$parsedApiBaseUrl) -or
+    $parsedApiBaseUrl.Scheme -ne 'https' -or
+    $parsedApiBaseUrl.PathAndQuery -ne '/'
+) {
+    Write-Host "[ERROR] ApiBaseUrl must be an absolute HTTPS origin." -ForegroundColor Red
+    exit 1
+}
+Write-Host "[OK] Frontend API origin: $ApiBaseUrl" -ForegroundColor Green
 
 if (-not $SkipBuild) {
     # Install dependencies
@@ -139,6 +204,8 @@ if (-not $SkipBuild) {
     Write-Host "This may take 2-3 minutes..." -ForegroundColor Yellow
     Write-Host ""
     try {
+        $previousApiBaseUrl = $env:VITE_API_BASE_URL
+        $env:VITE_API_BASE_URL = $ApiBaseUrl
         npm run build
         if ($LASTEXITCODE -ne 0) {
             throw "npm run build failed"
@@ -149,6 +216,8 @@ if (-not $SkipBuild) {
         Write-Host "[ERROR] Build failed: $_" -ForegroundColor Red
         Pop-Location
         exit 1
+    } finally {
+        $env:VITE_API_BASE_URL = $previousApiBaseUrl
     }
     Pop-Location
 

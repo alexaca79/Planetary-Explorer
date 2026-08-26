@@ -8,6 +8,9 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]$ContainerAppName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AppServiceName = "",
     
     [Parameter(Mandatory=$false)]
     [string]$Registry = "",
@@ -71,11 +74,12 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
     # Try to find resource group with planetaryexplorer in the name
     $groups = az group list --query "[?contains(name, 'planetaryexplorer') || contains(name, 'planetary-explorer')].name" -o tsv 2>$null
     
-    if ($groups) {
-        $ResourceGroup = ($groups -split "`n")[0].Trim()
+    $groupMatches = @($groups -split "`n" | Where-Object { $_.Trim() })
+    if ($groupMatches.Count -eq 1) {
+        $ResourceGroup = $groupMatches[0].Trim()
         Write-Host "[OK] Found resource group: $ResourceGroup" -ForegroundColor Green
     } else {
-        Write-Host "[ERROR] Could not find Planetary Explorer resource group." -ForegroundColor Red
+        Write-Host "[ERROR] Expected exactly one Planetary Explorer resource group, found $($groupMatches.Count)." -ForegroundColor Red
         Write-Host "   Please specify -ResourceGroup parameter or create infrastructure first." -ForegroundColor Yellow
         exit 1
     }
@@ -87,21 +91,36 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
 if ([string]::IsNullOrEmpty($ContainerAppName)) {
     Write-Host "   Looking for Container App in $ResourceGroup..." -ForegroundColor Gray
     
-    $containerApps = az containerapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
-    
-    if ($containerApps) {
-        # Prefer the API container app if multiple exist
-        $appList = $containerApps -split "`n"
-        $apiApp = $appList | Where-Object { $_ -match "api" } | Select-Object -First 1
-        if ($apiApp) {
-            $ContainerAppName = $apiApp.Trim()
-        } else {
-            $ContainerAppName = $appList[0].Trim()
+    $canonicalApiName = if ($ResourceGroup.StartsWith('rg-')) {
+        "ca-$($ResourceGroup.Substring(3))-api"
+    } else {
+        ''
+    }
+    if ($canonicalApiName) {
+        az containerapp show --resource-group $ResourceGroup --name $canonicalApiName `
+            --output none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $ContainerAppName = $canonicalApiName
         }
-        Write-Host "[OK] Found Container App: $ContainerAppName" -ForegroundColor Green
+    }
+    if (-not $ContainerAppName) {
+        $containerApps = @(az containerapp list --resource-group $ResourceGroup `
+            --output json 2>$null | ConvertFrom-Json)
+        $matches = @(
+            $containerApps | Where-Object {
+                $_.tags.'azd-service-name' -in @('api', 'web') -or
+                $_.name -like 'ca-web-*'
+            }
+        )
+        if ($matches.Count -eq 1) {
+            $ContainerAppName = $matches[0].name
+        }
+    }
+    if ($ContainerAppName) {
+        Write-Host "[OK] Found API Container App: $ContainerAppName" -ForegroundColor Green
     } else {
         Write-Host "[ERROR] Could not find Container App in resource group '$ResourceGroup'." -ForegroundColor Red
-        Write-Host "   Please specify -ContainerAppName parameter or deploy infrastructure first." -ForegroundColor Yellow
+        Write-Host "   Pass -ContainerAppName or tag exactly one app with azd-service-name=api." -ForegroundColor Yellow
         exit 1
     }
 } else {
@@ -241,8 +260,10 @@ $currentEnv = @{}
 if ($currentEnvJson) {
     $envArray = $currentEnvJson | ConvertFrom-Json
     foreach ($env in $envArray) {
-        if ($env.value) {
+        if ($null -ne $env.value) {
             $currentEnv[$env.name] = $env.value
+        } elseif ($env.secretRef) {
+            $currentEnv[$env.name] = "secretref:$($env.secretRef)"
         }
     }
 }
@@ -263,28 +284,43 @@ try {
     # ======================================================================
     Write-Host "[Updating Container App with image AND environment variables (atomic)]" -ForegroundColor Cyan
     
-    # Get additional env vars to preserve
-    $port = if ($currentEnv["PORT"]) { $currentEnv["PORT"] } else { "8080" }
-    $stacUrl = if ($currentEnv["STAC_API_URL"]) { $currentEnv["STAC_API_URL"] } else { "https://planetarycomputer.microsoft.com/api/stac/v1" }
-    $corsOrigins = if ($currentEnv["CORS_ORIGINS"]) { $currentEnv["CORS_ORIGINS"] } else { "*" }
-    $appInsightsCs = if ($currentEnv["APPLICATION_INSIGHTS_CONNECTION_STRING"]) { $currentEnv["APPLICATION_INSIGHTS_CONNECTION_STRING"] } else { "" }
-    $azureMapsKey = if ($currentEnv["AZURE_MAPS_SUBSCRIPTION_KEY"]) { $currentEnv["AZURE_MAPS_SUBSCRIPTION_KEY"] } else { "" }
-    
-    # Build env vars array - only include non-empty values
-    $envVars = @(
-        "PORT=$port",
-        "STAC_API_URL=$stacUrl",
-        "CORS_ORIGINS=$corsOrigins",
-        "AZURE_OPENAI_ENDPOINT=$azureOpenAiEndpoint",
-        "USE_MANAGED_IDENTITY=$useManagedIdentity"
+    $currentEnv["PORT"] = if ($currentEnv["PORT"]) { $currentEnv["PORT"] } else { "8080" }
+    $currentEnv["STAC_API_URL"] = if ($currentEnv["STAC_API_URL"]) { $currentEnv["STAC_API_URL"] } else { "https://planetarycomputer.microsoft.com/api/stac/v1" }
+    $corsOrigins = $currentEnv["CORS_ORIGINS"]
+    $corsTokens = @(
+        $corsOrigins -split ',' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
     )
-    
-    if ($appInsightsCs) {
-        $envVars += "APPLICATION_INSIGHTS_CONNECTION_STRING=$appInsightsCs"
+    if (-not $corsOrigins -or $corsTokens -contains '*') {
+        if (-not $AppServiceName) {
+            $appServices = @(az webapp list --resource-group $ResourceGroup `
+                --output json 2>$null | ConvertFrom-Json)
+            $frontendApps = @(
+                $appServices | Where-Object {
+                    $_.tags.'azd-service-name' -eq 'web'
+                }
+            )
+            if ($frontendApps.Count -ne 1) {
+                throw "CORS_ORIGINS requires an exact frontend, but $($frontendApps.Count) Web Apps are tagged azd-service-name=web. Pass -AppServiceName."
+            }
+            $AppServiceName = $frontendApps[0].name
+        }
+        $webHost = az webapp show --resource-group $ResourceGroup `
+            --name $AppServiceName --query defaultHostName -o tsv 2>$null
+        if (-not $webHost) {
+            throw "CORS_ORIGINS is unsafe and frontend Web App '$AppServiceName' was not found."
+        }
+        $corsOrigins = "https://$($webHost.Trim()),http://localhost:5173"
     }
-    if ($azureMapsKey) {
-        $envVars += "AZURE_MAPS_SUBSCRIPTION_KEY=$azureMapsKey"
-    }
+    $currentEnv["CORS_ORIGINS"] = $corsOrigins
+    $currentEnv["AZURE_OPENAI_ENDPOINT"] = $azureOpenAiEndpoint
+    $currentEnv["USE_MANAGED_IDENTITY"] = $useManagedIdentity
+    $envVars = @(
+        $currentEnv.GetEnumerator() |
+            Sort-Object -Property Name |
+            ForEach-Object { "$($_.Key)=$($_.Value)" }
+    )
     
     # Single atomic update: image + all env vars together
     az containerapp update `
@@ -298,6 +334,17 @@ try {
         throw "Container App update failed"
     }
 
+    Write-Host "[Setting API ingress target port to 8080]" -ForegroundColor Cyan
+    az containerapp ingress update `
+        --name $ContainerAppName `
+        --resource-group $ResourceGroup `
+        --target-port 8080 `
+        --output none
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Container App ingress update failed"
+    }
+
     Write-Host "[Enabling sticky sessions for conversation continuity]" -ForegroundColor Cyan
     az containerapp ingress sticky-sessions set `
         --name $ContainerAppName `
@@ -307,6 +354,13 @@ try {
 
     if ($LASTEXITCODE -ne 0) {
         throw "Container App sticky-session configuration failed"
+    }
+
+    $postDeployScript = Join-Path $RepoRoot 'scripts/configure_api_postdeploy.py'
+    python $postDeployScript --profile api --name $ContainerAppName `
+        --resource-group $ResourceGroup
+    if ($LASTEXITCODE -ne 0) {
+        throw "Container App health-probe configuration failed"
     }
     
     Write-Host "[OK] Image and environment variables updated atomically" -ForegroundColor Green

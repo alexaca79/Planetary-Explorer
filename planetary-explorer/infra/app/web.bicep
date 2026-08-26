@@ -5,7 +5,13 @@ param tags object = {}
 param containerAppsEnvironmentName string
 param containerRegistryName string
 param imageName string = ''
-param frontendUrl string = '' // Frontend Web App URL for CORS
+@description('Container ingress and application listening port.')
+param targetPort int = 8080
+@description('Enable API-specific liveness and readiness probes.')
+param enableHealthProbes bool = true
+@description('Exact HTTPS frontend origin allowed by credentialed CORS.')
+@minLength(1)
+param frontendUrl string
 
 @secure()
 param azureOpenAiApiKey string = ''
@@ -46,6 +52,12 @@ param microsoftBotAppPassword string = ''
 // only for parameter-file compatibility; they currently only gate a secret entry, not an
 // authConfig resource.
 param enableAuthentication bool = false
+@description('Explicitly expose protected API routes without authentication for development or demos.')
+param publicDemoMode bool = false
+@description('Microsoft Entra tenant ID used by in-process bearer-token validation.')
+param microsoftEntraTenantId string = ''
+@description('Microsoft Entra application client ID used as the API token audience.')
+param microsoftEntraClientId string = ''
 @secure()
 param microsoftEntraClientSecret string = ''
 
@@ -70,6 +82,10 @@ param enableGeoFm bool = false
 @secure()
 @description('Shared API key for backend-to-GeoFM MCP calls. Empty disables key authentication.')
 param geoFmMcpApiKey string = ''
+
+@secure()
+@description('HMAC key used to sign authenticated GeoFM run-owner operations.')
+param geoFmOwnerSigningKey string = ''
 
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
@@ -133,7 +149,7 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' e
 resource app 'Microsoft.App/containerApps@2023-05-01' = {
   name: name
   location: location
-  tags: union(tags, { 'azd-service-name': 'web' })
+  tags: union(tags, { 'azd-service-name': 'api' })
   identity: {
     type: 'SystemAssigned'
   }
@@ -142,7 +158,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 8080
+        targetPort: targetPort
         allowInsecure: false
         stickySessions: {
           affinity: 'sticky'
@@ -190,6 +206,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
           name: 'geofm-mcp-api-key'
           value: geoFmMcpApiKey
         }
+      ] : [], !empty(geoFmOwnerSigningKey) ? [
+        {
+          name: 'geofm-owner-signing-key'
+          value: geoFmOwnerSigningKey
+        }
       ] : [],
       // Forecast Agent provider URLs sourced from Key Vault via system MI.
       // The vault must already hold these secrets and grant Key Vault
@@ -227,6 +248,22 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: '8080'
             }
             {
+              name: 'DISABLE_AUTH'
+              value: publicDemoMode && !enableAuthentication ? 'true' : 'false'
+            }
+            {
+              name: 'TRUST_EASYAUTH_HEADER'
+              value: 'false'
+            }
+            {
+              name: 'AZURE_AD_TENANT_ID'
+              value: microsoftEntraTenantId
+            }
+            {
+              name: 'AZURE_AD_CLIENT_ID'
+              value: microsoftEntraClientId
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
             }
@@ -260,7 +297,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'CORS_ORIGINS'
-              value: !empty(frontendUrl) ? frontendUrl : '*'
+              value: frontendUrl
             }
             {
               // MPC Pro MCP sidecar URL (internal Container Apps FQDN). Empty
@@ -377,6 +414,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'GEOFM_MCP_API_KEY'
               secretRef: 'geofm-mcp-api-key'
             }
+          ] : [], !empty(geoFmOwnerSigningKey) ? [
+            {
+              name: 'GEOFM_OWNER_SIGNING_KEY'
+              secretRef: 'geofm-owner-signing-key'
+            }
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the
           // secrets[] entries above; secretRef name must match secret name).
@@ -402,11 +444,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          probes: [
+          probes: enableHealthProbes ? [
             {
               type: 'Liveness'
               httpGet: {
-                path: '/health'
+                path: '/api/health'
                 port: 8080
               }
               initialDelaySeconds: 30
@@ -417,7 +459,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/health'
+                path: '/api/health'
                 port: 8080
               }
               initialDelaySeconds: 10
@@ -425,7 +467,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               timeoutSeconds: 3
               failureThreshold: 3
             }
-          ]
+          ] : []
         }
       ]
       scale: {

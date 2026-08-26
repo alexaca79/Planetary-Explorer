@@ -657,7 +657,15 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
                 started,
                 {"status": "error", "error_type": "CancelledError"},
             )
-        analyze_result = analysis_task.result()
+        try:
+            analyze_result = analysis_task.result()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("AnalyzeAgent raised after LOAD completed")
+            return self._preserve_load_result(
+                load_result,
+                started,
+                {"status": "error", "error_type": type(exc).__name__},
+            )
 
         analyst_status = (
             (analyze_result.get("structured") or {}).get("analyst_status") or {}

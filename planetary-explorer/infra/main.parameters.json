@@ -12,10 +12,34 @@
       "value": "Commercial"
     },
     "containerImage": {
-      "value": ""
+      "value": "${SERVICE_API_IMAGE_NAME=mcr.microsoft.com/k8se/quickstart:latest}"
+    },
+    "apiContainerAppName": {
+      "value": "${API_CONTAINER_APP_NAME=}"
+    },
+    "deployApiContainer": {
+      "value": "${DEPLOY_API_CONTAINER=true}"
+    },
+    "existingApiUrl": {
+      "value": "${API_CONTAINER_APP_URL=}"
+    },
+    "frontendWebAppName": {
+      "value": "${AZURE_WEB_APP_NAME=}"
+    },
+    "frontendAppServicePlanName": {
+      "value": "${AZURE_APP_SERVICE_PLAN_NAME=}"
+    },
+    "frontendUrl": {
+      "value": "${FRONTEND_URL=}"
+    },
+    "deployFrontend": {
+      "value": "${DEPLOY_FRONTEND=true}"
     },
     "deployAIFoundry": {
       "value": true
+    },
+    "agentProjectName": {
+      "value": "${AGENT_PROJECT_NAME=planetary-explorer-agents}"
     },
     "deployGpt5": {
       "value": false
@@ -35,17 +59,23 @@
     "geoFmMcpApiKey": {
       "value": "${GEOFM_MCP_API_KEY=}"
     },
+    "geoFmOwnerSigningKey": {
+      "value": "${GEOFM_OWNER_SIGNING_KEY=}"
+    },
     "deployBotService": {
       "value": false
     },
     "enableAuthentication": {
-      "value": false
+      "value": "${ENABLE_AUTHENTICATION=false}"
+    },
+    "publicDemoMode": {
+      "value": "${PUBLIC_DEMO_MODE=false}"
     },
     "microsoftEntraClientId": {
-      "value": ""
+      "value": "${MICROSOFT_ENTRA_CLIENT_ID=}"
     },
     "microsoftEntraTenantId": {
-      "value": ""
+      "value": "${MICROSOFT_ENTRA_TENANT_ID=}"
     },
     "microsoftEntraClientSecret": {
       "value": ""

@@ -38,7 +38,7 @@ ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
         RunStatus.FAILED,
     },
     RunStatus.COMPLETE: set(),
-    RunStatus.FAILED: set(),
+    RunStatus.FAILED: {RunStatus.QUEUED},
     RunStatus.CANCELLED: set(),
 }
 
@@ -422,6 +422,36 @@ class RunService:
         record = self.get(run_id)
         if not hmac.compare_digest(record.request.requested_by, requested_by):
             raise RunNotFound(f"Run '{run_id}' was not found.")
+        return record
+
+    def retry_for_owner(self, run_id: UUID, requested_by: str) -> RunRecord:
+        """Reset one failed owned run and dispatch a new durable attempt."""
+        record = self.get_for_owner(run_id, requested_by)
+        if record.status is RunStatus.FAILED:
+            expected_version = record.version
+            record.status = RunStatus.QUEUED
+            record.progress_pct = 0
+            record.error = None
+            record.artifacts = []
+            record.statistics = {}
+            record.features = []
+            record.attempt += 1
+            record.version = expected_version + 1
+            record.updated_at = datetime.now(UTC)
+            try:
+                self._repository.save(record, expected_version=expected_version)
+            except RunError:
+                raise
+            except Exception as exc:
+                raise RunRepositoryError(
+                    f"Retry state for run '{run_id}' could not be saved."
+                ) from exc
+        elif record.status is not RunStatus.QUEUED:
+            raise RunError(f"Only failed run '{run_id}' can be retried.")
+        try:
+            self._dispatcher.dispatch(record)
+        except Exception as exc:
+            raise RunError("Retry is queued but queue dispatch failed.") from exc
         return record
 
     def transition(

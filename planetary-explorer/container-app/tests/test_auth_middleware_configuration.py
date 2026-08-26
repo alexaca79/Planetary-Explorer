@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -14,6 +17,46 @@ import jwt
 import pytest
 
 import auth_middleware
+
+
+def test_given_secure_wildcard_cors_when_importing_api_then_startup_fails() -> None:
+    # Arrange
+    environment = os.environ.copy()
+    environment["CORS_ORIGINS"] = "*"
+    environment["DISABLE_AUTH"] = "false"
+
+    # Act
+    result = subprocess.run(
+        [sys.executable, "-c", "import fastapi_app"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    # Assert
+    assert result.returncode != 0
+    assert "CORS_ORIGINS must list explicit origins" in result.stderr
+
+
+def test_given_mixed_wildcard_cors_in_public_mode_when_importing_api_then_startup_fails() -> None:
+    # Arrange
+    environment = os.environ.copy()
+    environment["CORS_ORIGINS"] = "*,https://expected.example"
+    environment["DISABLE_AUTH"] = "true"
+
+    # Act
+    result = subprocess.run(
+        [sys.executable, "-c", "import fastapi_app"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    # Assert
+    assert result.returncode != 0
+    assert "only configured origin is '*'" in result.stderr
 
 
 def _build_client() -> TestClient:

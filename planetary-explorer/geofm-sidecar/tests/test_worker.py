@@ -1,6 +1,7 @@
 """Model-free geospatial reduction tests for the PlanAura worker."""
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -14,6 +15,7 @@ from geofm_service.jobs import PreprocessingRecipe
 from geofm_service.policy import PLAN_AURA_HLS
 from geofm_service.stac import StacItemSummary
 from geofm_service.worker import (
+    RetriableWorkerError,
     WorkerError,
     _upload_artifact,
     build_evidence_manifest,
@@ -38,6 +40,17 @@ AOI = {
         ]
     ],
 }
+
+
+class _PoisonQueue:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.messages: list[dict] = []
+
+    def send_message(self, content: str) -> None:
+        if self.fail:
+            raise OSError("poison queue unavailable")
+        self.messages.append(json.loads(content))
 
 
 def test_given_hls_quality_flags_when_masking_then_contaminated_pixels_are_rejected() -> None:
@@ -319,16 +332,55 @@ def test_given_malformed_message_when_consuming_then_message_is_deleted() -> Non
             self.deleted = True
 
     queue = Queue()
+    poison_queue = _PoisonQueue()
 
     # Act
-    consumed = consume_one_message(queue, service=None, container=None)
+    consumed = consume_one_message(
+        queue,
+        service=None,
+        container=None,
+        poison_queue=poison_queue,
+    )
 
     # Assert
     assert consumed is True
     assert queue.deleted is True
+    assert poison_queue.messages[0]["run_id"] is None
+    assert len(poison_queue.messages[0]["message_sha256"]) == 64
 
 
-def test_given_storage_outage_when_retry_limit_reached_then_message_is_retained(
+def test_given_malformed_message_when_quarantine_fails_then_message_is_retained() -> None:
+    # Arrange
+    class Message:
+        content = "not-json"
+        dequeue_count = 1
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    queue = Queue()
+
+    # Act
+    consumed = consume_one_message(
+        queue,
+        service=None,
+        container=None,
+        poison_queue=_PoisonQueue(fail=True),
+    )
+
+    # Assert
+    assert consumed is True
+    assert queue.deleted is False
+
+
+def test_given_storage_outage_when_retry_limit_reached_then_message_is_deleted(
     monkeypatch,
 ) -> None:
     # Arrange
@@ -352,12 +404,19 @@ def test_given_storage_outage_when_retry_limit_reached_then_message_is_retained(
 
     monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
     queue = Queue()
+    poison_queue = _PoisonQueue()
 
     # Act
-    consume_one_message(queue, FailingService(), container=None)
+    consume_one_message(
+        queue,
+        FailingService(),
+        container=None,
+        poison_queue=poison_queue,
+    )
 
     # Assert
-    assert queue.deleted is False
+    assert queue.deleted is True
+    assert poison_queue.messages[0]["run_id"].endswith("0001")
 
 
 @pytest.mark.parametrize("processing_error", [KeyError("field"), ValueError("shape")])
@@ -396,9 +455,15 @@ def test_given_parse_like_processing_failure_when_consuming_then_run_is_failed_b
         MagicMock(side_effect=processing_error),
     )
     queue = Queue()
+    poison_queue = _PoisonQueue()
 
     # Act
-    consume_one_message(queue, service, container="container")
+    consume_one_message(
+        queue,
+        service,
+        container="container",
+        poison_queue=poison_queue,
+    )
 
     # Assert
     service.transition.assert_called_once_with(
@@ -407,6 +472,7 @@ def test_given_parse_like_processing_failure_when_consuming_then_run_is_failed_b
         error=sanitize_error(processing_error),
     )
     assert queue.deleted is True
+    assert poison_queue.messages[0]["error"] == sanitize_error(processing_error)
 
 
 def test_given_redelivered_running_run_when_consuming_then_processing_restarts(
@@ -473,15 +539,22 @@ def test_given_missing_run_when_retry_limit_reached_then_message_is_deleted(
 
     monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
     queue = Queue()
+    poison_queue = _PoisonQueue()
 
     # Act
-    consume_one_message(queue, MissingRunService(), container=None)
+    consume_one_message(
+        queue,
+        MissingRunService(),
+        container=None,
+        poison_queue=poison_queue,
+    )
 
     # Assert
     assert queue.deleted is True
+    assert poison_queue.messages[0]["dequeue_count"] == 5
 
 
-def test_given_repository_integrity_error_when_retry_limit_reached_then_message_is_retained(
+def test_given_repository_integrity_error_when_retry_limit_reached_then_message_is_deleted(
     monkeypatch,
 ) -> None:
     # Arrange
@@ -507,15 +580,25 @@ def test_given_repository_integrity_error_when_retry_limit_reached_then_message_
 
     monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
     queue = Queue()
+    poison_queue = _PoisonQueue()
 
     # Act
-    consume_one_message(queue, InvalidRepositoryService(), container=None)
+    consume_one_message(
+        queue,
+        InvalidRepositoryService(),
+        container=None,
+        poison_queue=poison_queue,
+    )
 
     # Assert
-    assert queue.deleted is False
+    assert queue.deleted is True
+    assert "ETag" in poison_queue.messages[0]["error"]
 
 
-@pytest.mark.parametrize("processing_error_name", ["repository", "conflict"])
+@pytest.mark.parametrize(
+    "processing_error_name",
+    ["repository", "conflict", "transient"],
+)
 def test_given_retriable_processing_failure_when_consuming_then_message_is_retained(
     monkeypatch,
     processing_error_name: str,
@@ -540,11 +623,12 @@ def test_given_retriable_processing_failure_when_consuming_then_message_is_retai
         def delete_message(self, _message) -> None:
             self.deleted = True
 
-    error = (
-        RunRepositoryError("storage unavailable")
-        if processing_error_name == "repository"
-        else RunConflict("run changed concurrently")
-    )
+    errors = {
+        "repository": RunRepositoryError("storage unavailable"),
+        "conflict": RunConflict("run changed concurrently"),
+        "transient": RetriableWorkerError("source imagery unavailable"),
+    }
+    error = errors[processing_error_name]
     record = MagicMock()
     record.status = RunStatus.RUNNING
     service = MagicMock()
@@ -558,6 +642,198 @@ def test_given_retriable_processing_failure_when_consuming_then_message_is_retai
     # Assert
     service.transition.assert_not_called()
     assert queue.deleted is False
+
+
+def test_given_transient_failure_at_retry_limit_when_consuming_then_run_is_failed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from unittest.mock import MagicMock
+
+    import geofm_service.worker as worker_module
+    from geofm_service.contracts import RunStatus
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    record = MagicMock()
+    record.status = RunStatus.RUNNING
+    record.run_id = UUID("00000000-0000-0000-0000-000000000001")
+    service = MagicMock()
+    service.get.return_value = record
+    error = RetriableWorkerError("source imagery unavailable")
+    monkeypatch.setattr(worker_module, "process_run", MagicMock(side_effect=error))
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+    poison_queue = _PoisonQueue()
+
+    # Act
+    consume_one_message(
+        queue,
+        service,
+        container="container",
+        poison_queue=poison_queue,
+    )
+
+    # Assert
+    service.transition.assert_called_once_with(
+        record.run_id,
+        RunStatus.FAILED,
+        error=sanitize_error(error),
+    )
+    assert queue.deleted is True
+    assert poison_queue.messages[0]["error"] == sanitize_error(error)
+
+
+def test_given_terminal_write_failure_at_retry_limit_when_quarantined_then_original_is_deleted(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from unittest.mock import MagicMock
+
+    import geofm_service.worker as worker_module
+    from geofm_service.contracts import RunStatus
+    from geofm_service.jobs import RunRepositoryError
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    record = MagicMock()
+    record.status = RunStatus.RUNNING
+    record.run_id = UUID("00000000-0000-0000-0000-000000000001")
+    service = MagicMock()
+    service.get.return_value = record
+    service.transition.side_effect = RunRepositoryError("storage unavailable")
+    error = RetriableWorkerError("source imagery unavailable")
+    monkeypatch.setattr(worker_module, "process_run", MagicMock(side_effect=error))
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+    poison_queue = _PoisonQueue()
+
+    # Act
+    consume_one_message(
+        queue,
+        service,
+        container="container",
+        poison_queue=poison_queue,
+    )
+
+    # Assert
+    assert queue.deleted is True
+    assert poison_queue.messages[0]["error"] == "source imagery unavailable"
+
+
+def test_given_quarantine_failure_at_retry_limit_then_original_is_retained(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from geofm_service.jobs import RunRepositoryError
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    class FailingService:
+        def get(self, _run_id):
+            raise RunRepositoryError("storage unavailable")
+
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+
+    # Act
+    consume_one_message(
+        queue,
+        FailingService(),
+        container=None,
+        poison_queue=_PoisonQueue(fail=True),
+    )
+
+    # Assert
+    assert queue.deleted is False
+
+
+def test_given_generic_failure_and_terminal_write_failure_at_limit_then_message_is_quarantined(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from unittest.mock import MagicMock
+
+    import geofm_service.worker as worker_module
+    from geofm_service.contracts import RunStatus
+    from geofm_service.jobs import RunRepositoryError
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 5
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    record = MagicMock()
+    record.status = RunStatus.RUNNING
+    record.run_id = UUID("00000000-0000-0000-0000-000000000001")
+    service = MagicMock()
+    service.get.return_value = record
+    service.transition.side_effect = RunRepositoryError("storage unavailable")
+    monkeypatch.setattr(
+        worker_module,
+        "process_run",
+        MagicMock(side_effect=ValueError("invalid model output")),
+    )
+    monkeypatch.setenv("GEOFM_MAX_DEQUEUE_COUNT", "5")
+    queue = Queue()
+    poison_queue = _PoisonQueue()
+
+    # Act
+    consume_one_message(
+        queue,
+        service,
+        container="container",
+        poison_queue=poison_queue,
+    )
+
+    # Assert
+    assert queue.deleted is True
+    assert poison_queue.messages[0]["error"] == "invalid model output"
 
 
 def test_given_artifact_upload_outage_when_uploading_then_retryable_error_is_raised(

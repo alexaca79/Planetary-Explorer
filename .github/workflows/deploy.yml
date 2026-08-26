@@ -6,6 +6,7 @@ on:
     paths:
       - 'planetary-explorer/infra/**'
       - 'planetary-explorer/container-app/**'
+      - 'planetary-explorer/geofm-sidecar/**'
       - 'planetary-explorer/web-ui/**'
       - 'scripts/**'
       - '.github/workflows/deploy.yml'
@@ -113,7 +114,7 @@ permissions:
 
 # Prevent concurrent deployments from racing and causing DeploymentActive conflicts
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ vars.RESOURCE_GROUP || 'rg-planetaryexplorer' }}
   cancel-in-progress: false
 
 # Single-environment deployment. All pushes / manual runs target the same
@@ -128,6 +129,10 @@ env:
   RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP || 'rg-planetaryexplorer' }}
   PROJECT_NAME:   ${{ vars.PROJECT_NAME   || 'planetaryexplorer' }}
   LOCATION:       ${{ vars.LOCATION       || 'eastus2' }}
+  API_CONTAINER_APP_NAME: ${{ vars.API_CONTAINER_APP_NAME || '' }}
+  WEB_APP_NAME:   ${{ vars.WEB_APP_NAME   || '' }}
+  APP_SERVICE_PLAN_NAME: ${{ vars.APP_SERVICE_PLAN_NAME || '' }}
+  AGENT_PROJECT_NAME: ${{ vars.AGENT_PROJECT_NAME || 'planetary-explorer-agents' }}
 
 jobs:
   # Detect which components changed
@@ -145,6 +150,7 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      geofm: ${{ steps.filter.outputs.geofm }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -170,6 +176,7 @@ jobs:
             echo "infra=true" >> $GITHUB_OUTPUT
             echo "backend=true" >> $GITHUB_OUTPUT
             echo "frontend=true" >> $GITHUB_OUTPUT
+            echo "geofm=true" >> $GITHUB_OUTPUT
             echo " Force deploy all components"
             exit 0
           fi
@@ -182,6 +189,7 @@ jobs:
             echo "infra=true" >> $GITHUB_OUTPUT
             echo "backend=true" >> $GITHUB_OUTPUT
             echo "frontend=true" >> $GITHUB_OUTPUT
+            echo "geofm=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -192,12 +200,21 @@ jobs:
           INFRA_CHANGED=false
           BACKEND_CHANGED=false
           FRONTEND_CHANGED=false
+          GEOFM_CHANGED=false
           
           if echo "$CHANGED_FILES" | grep -q "^planetary-explorer/infra/"; then
             INFRA_CHANGED=true
           fi
+
+          if echo "$CHANGED_FILES" | grep -q "^scripts/resolve_deployment_targets\.py$"; then
+            INFRA_CHANGED=true
+          fi
           
           if echo "$CHANGED_FILES" | grep -q "^planetary-explorer/container-app/"; then
+            BACKEND_CHANGED=true
+          fi
+
+          if echo "$CHANGED_FILES" | grep -Eq "^scripts/(deploy-backend\.sh|configure_api_postdeploy\.py|enable-agent-service\.ps1)$"; then
             BACKEND_CHANGED=true
           fi
           
@@ -205,22 +222,118 @@ jobs:
             FRONTEND_CHANGED=true
           fi
 
+          if echo "$CHANGED_FILES" | grep -Eq "^planetary-explorer/geofm-sidecar/|^planetary-explorer/infra/app/geofm\.bicep$|^planetary-explorer/infra/shared/storage\.bicep$|^scripts/configure_api_postdeploy\.py$"; then
+            GEOFM_CHANGED=true
+          fi
+
           # If workflow file changed, deploy all
           if echo "$CHANGED_FILES" | grep -q "^.github/workflows/deploy.yml"; then
             INFRA_CHANGED=true
             BACKEND_CHANGED=true
             FRONTEND_CHANGED=true
+            GEOFM_CHANGED=true
           fi
           
           echo "infra=$INFRA_CHANGED" >> $GITHUB_OUTPUT
           echo "backend=$BACKEND_CHANGED" >> $GITHUB_OUTPUT
           echo "frontend=$FRONTEND_CHANGED" >> $GITHUB_OUTPUT
+          echo "geofm=$GEOFM_CHANGED" >> $GITHUB_OUTPUT
           
           echo ""
           echo " Components to deploy:"
           echo "  Infrastructure: $INFRA_CHANGED"
           echo "  Backend: $BACKEND_CHANGED"
           echo "  Frontend: $FRONTEND_CHANGED"
+          echo "  GeoFM: $GEOFM_CHANGED"
+
+  deploy-geofm:
+    name: Deploy GeoFM Control Plane and Worker
+    needs: detect-changes
+    if: needs.detect-changes.outputs.geofm == 'true' && vars.GEOFM_RESOURCE_GROUP != ''
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Azure Login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build, deploy, and verify GeoFM images
+        env:
+          GEOFM_RESOURCE_GROUP: ${{ vars.GEOFM_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t ACR_NAMES < <(az acr list --resource-group "$GEOFM_RESOURCE_GROUP" --query "[].name" -o tsv)
+          mapfile -t MCP_APPS < <(az containerapp list --resource-group "$GEOFM_RESOURCE_GROUP" --query "[?tags.\"azd-service-name\"=='geofm'].name" -o tsv)
+          mapfile -t WORKER_APPS < <(az containerapp list --resource-group "$GEOFM_RESOURCE_GROUP" --query "[?tags.\"azd-service-name\"=='geofm-worker'].name" -o tsv)
+          if [ "${#ACR_NAMES[@]}" -ne 1 ] || [ "${#MCP_APPS[@]}" -ne 1 ] || [ "${#WORKER_APPS[@]}" -ne 1 ]; then
+            echo "ERROR: GeoFM release requires exactly one ACR, control app, and worker app." >&2
+            exit 1
+          fi
+
+          ACR_NAME="${ACR_NAMES[0]}"
+          MCP_APP="${MCP_APPS[0]}"
+          WORKER_APP="${WORKER_APPS[0]}"
+          ACR_SERVER=$(az acr show --name "$ACR_NAME" --resource-group "$GEOFM_RESOURCE_GROUP" --query loginServer -o tsv)
+          IMAGE_TAG="${GITHUB_SHA::12}"
+          BUILD_ACR_NAME="$ACR_NAME"
+          BUILD_ACR_SERVER="$ACR_SERVER"
+          AGENT_POOL=$(az acr agentpool list --registry "$ACR_NAME" --query "[?count > \`0\`].name | [0]" -o tsv 2>/dev/null || true)
+          if [ -n "$AGENT_POOL" ]; then
+            BUILD_ARGS=(--registry "$ACR_NAME" --agent-pool "$AGENT_POOL" --timeout 3600)
+          else
+            mapfile -t BUILD_ACR_NAMES < <(az acr list --resource-group "${{ env.RESOURCE_GROUP }}" --query "[].name" -o tsv)
+            if [ "${#BUILD_ACR_NAMES[@]}" -ne 1 ]; then
+              echo "ERROR: GeoFM fallback requires exactly one build ACR in ${{ env.RESOURCE_GROUP }}." >&2
+              exit 1
+            fi
+            BUILD_ACR_NAME="${BUILD_ACR_NAMES[0]}"
+            BUILD_ACR_SERVER=$(az acr show --name "$BUILD_ACR_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" --query loginServer -o tsv)
+            BUILD_ARGS=(--registry "$BUILD_ACR_NAME" --timeout 3600)
+            echo "Secure ACR has no active agent pool; building in $BUILD_ACR_NAME before server-side import."
+          fi
+
+          az acr build "${BUILD_ARGS[@]}" \
+            --image "planetary-explorer-geofm-mcp:$IMAGE_TAG" \
+            --file planetary-explorer/geofm-sidecar/Dockerfile \
+            planetary-explorer/geofm-sidecar
+          az acr build "${BUILD_ARGS[@]}" \
+            --image "planetary-explorer-geofm-worker:$IMAGE_TAG" \
+            --file planetary-explorer/geofm-sidecar/Dockerfile.worker \
+            planetary-explorer/geofm-sidecar
+
+          if [ "$BUILD_ACR_NAME" != "$ACR_NAME" ]; then
+            BUILD_ACR_ID=$(az acr show --name "$BUILD_ACR_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" --query id -o tsv)
+            for REPOSITORY in planetary-explorer-geofm-mcp planetary-explorer-geofm-worker; do
+              az acr import \
+                --name "$ACR_NAME" \
+                --resource-group "$GEOFM_RESOURCE_GROUP" \
+                --registry "$BUILD_ACR_ID" \
+                --source "$REPOSITORY:$IMAGE_TAG" \
+                --image "$REPOSITORY:$IMAGE_TAG" \
+                --force
+            done
+          fi
+
+          az containerapp update --name "$WORKER_APP" --resource-group "$GEOFM_RESOURCE_GROUP" \
+            --image "$ACR_SERVER/planetary-explorer-geofm-worker:$IMAGE_TAG" --output none
+          az containerapp update --name "$MCP_APP" --resource-group "$GEOFM_RESOURCE_GROUP" \
+            --image "$ACR_SERVER/planetary-explorer-geofm-mcp:$IMAGE_TAG" --output none
+          python scripts/configure_api_postdeploy.py --profile geofm \
+            --name "$MCP_APP" --resource-group "$GEOFM_RESOURCE_GROUP"
+
+          DEPLOYED_WORKER_IMAGE=$(az containerapp show --name "$WORKER_APP" --resource-group "$GEOFM_RESOURCE_GROUP" --query properties.template.containers[0].image -o tsv)
+          WORKER_MIN_REPLICAS=$(az containerapp show --name "$WORKER_APP" --resource-group "$GEOFM_RESOURCE_GROUP" --query properties.template.scale.minReplicas -o tsv)
+          if [ "$DEPLOYED_WORKER_IMAGE" != "$ACR_SERVER/planetary-explorer-geofm-worker:$IMAGE_TAG" ] || [ "$WORKER_MIN_REPLICAS" != "0" ]; then
+            echo "ERROR: GeoFM worker image or scale-to-zero verification failed." >&2
+            exit 1
+          fi
 
   # Deploy Infrastructure (only if infra files changed)
   deploy-infrastructure:
@@ -244,34 +357,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Purge Soft-Deleted Resources
-        run: |
-          echo "Checking for soft-deleted Key Vaults and AI Services accounts..."
-          
-          # Purge any soft-deleted Key Vault whose name starts with our naming pattern
-          DELETED_KV=$(az keyvault list-deleted --query "[?starts_with(name, 'kv-')].name" -o tsv 2>/dev/null || true)
-          if [ -n "$DELETED_KV" ]; then
-            for kv in $DELETED_KV; do
-              echo "  Purging soft-deleted Key Vault: $kv"
-              az keyvault purge --name "$kv" --location "${{ env.LOCATION }}" --no-wait 2>/dev/null || true
-            done
-          else
-            echo "  No soft-deleted Key Vaults found"
-          fi
-          
-          # Purge any soft-deleted Cognitive Services account whose name starts with our naming pattern
-          DELETED_COG=$(az cognitiveservices account list-deleted --query "[?starts_with(name, 'cog-foundry-')].{name:name, rg:resourceGroup, loc:location}" -o json 2>/dev/null || echo "[]")
-          if [ "$DELETED_COG" != "[]" ]; then
-            echo "$DELETED_COG" | jq -r '.[] | "\(.name) \(.rg) \(.loc)"' | while read -r cog_name cog_rg cog_loc; do
-              echo "  Purging soft-deleted AI Services: $cog_name"
-              az cognitiveservices account purge --location "$cog_loc" --resource-group "$cog_rg" --name "$cog_name" 2>/dev/null || true
-            done
-          else
-            echo "  No soft-deleted AI Services accounts found"
-          fi
-          
-          echo "Soft-delete purge check complete"
 
       # Resolve MPC Pro enablement BEFORE the bicep deploy so the
       # sidecar image can be built into ACR first (if ACR already
@@ -340,9 +425,57 @@ jobs:
           cd planetary-explorer
           
           DEPLOYMENT_NAME="${{ env.PROJECT_NAME }}-$(date +%Y%m%d-%H%M%S)"
-          # Private endpoints are OFF by default; enabled if user explicitly checks enable_private_endpoints
-          if [ "${{ github.event.inputs.enable_private_endpoints }}" == "true" ]; then
-            ENABLE_PE="true"
+          if [[ ${#PROJECT_NAME} -gt 24 || ! "$PROJECT_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "ERROR: PROJECT_NAME must be at most 24 lowercase alphanumeric/hyphen characters with no leading, trailing, or repeated hyphen." >&2
+            exit 1
+          fi
+          REQUESTED_WEB_NAME="${{ github.event.inputs.web_app_name }}"
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${WEB_APP_NAME}"
+          fi
+          RESOLVER_ARGS=(
+            ../scripts/resolve_deployment_targets.py
+            --resource-group "$RESOURCE_GROUP"
+            --environment-name "$PROJECT_NAME"
+          )
+          if [ -n "$API_CONTAINER_APP_NAME" ]; then
+            RESOLVER_ARGS+=(--api-name "$API_CONTAINER_APP_NAME")
+          fi
+          if [ -n "$REQUESTED_WEB_NAME" ]; then
+            RESOLVER_ARGS+=(--web-name "$REQUESTED_WEB_NAME")
+            if [ -n "$APP_SERVICE_PLAN_NAME" ]; then
+              RESOLVER_ARGS+=(--plan-name "$APP_SERVICE_PLAN_NAME")
+            elif ! az webapp show --resource-group "$RESOURCE_GROUP" --name "$REQUESTED_WEB_NAME" --output none 2>/dev/null; then
+              RESOLVER_ARGS+=(--plan-name "asp-${PROJECT_NAME}")
+            fi
+          fi
+          TARGETS=$(python "${RESOLVER_ARGS[@]}")
+          RESOLVED_API_NAME=$(jq -r '.api_container_app_name' <<< "$TARGETS")
+          WA_NAME=$(jq -r '.frontend_web_app_name' <<< "$TARGETS")
+          RESOLVED_PLAN_NAME=$(jq -r '.frontend_app_service_plan_name' <<< "$TARGETS")
+          if [ -z "$RESOLVED_API_NAME" ]; then
+            RESOLVED_API_NAME="ca-${PROJECT_NAME}-api"
+          fi
+          if [ -z "$WA_NAME" ]; then
+            UNIQUE_SUFFIX=$(echo -n "${RESOURCE_GROUP}-${{ github.repository }}" | md5sum | cut -c1-8)
+            WA_NAME="app-${PROJECT_NAME}-${UNIQUE_SUFFIX}"
+            RESOLVED_PLAN_NAME="asp-${PROJECT_NAME}"
+          fi
+          if [[ ${#WA_NAME} -gt 60 || ! "$WA_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "ERROR: Web App name '$WA_NAME' is not a valid Azure Web App name." >&2
+            exit 1
+          fi
+          # Manual runs are explicit. Push runs preserve the deployed network posture.
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            ENABLE_PE="${{ github.event.inputs.enable_private_endpoints }}"
+          elif [ "$(az group exists --name "${RESOURCE_GROUP}" -o tsv)" == "true" ]; then
+            PRIVATE_ACR_COUNT=$(az acr list --resource-group "${RESOURCE_GROUP}" \
+              --query "length([?publicNetworkAccess=='Disabled' || networkRuleSet.defaultAction=='Deny'])" -o tsv)
+            if [ "$PRIVATE_ACR_COUNT" -gt 0 ]; then
+              ENABLE_PE="true"
+            else
+              ENABLE_PE="false"
+            fi
           else
             ENABLE_PE="false"
           fi
@@ -505,6 +638,11 @@ jobs:
             if [ -n "$MAI_WEATHER_ENDPOINT_URL" ]; then
               EXTRA_PARAMS+=(--parameters maiWeatherEndpointUrl="$MAI_WEATHER_ENDPOINT_URL")
             fi
+            EXTRA_PARAMS+=(--parameters apiContainerAppName="$RESOLVED_API_NAME")
+            EXTRA_PARAMS+=(--parameters frontendUrl="https://${WA_NAME}.azurewebsites.net")
+            EXTRA_PARAMS+=(--parameters frontendWebAppName="$WA_NAME")
+            EXTRA_PARAMS+=(--parameters frontendAppServicePlanName="$RESOLVED_PLAN_NAME")
+            EXTRA_PARAMS+=(--parameters agentProjectName="$AGENT_PROJECT_NAME")
 
             # Use main.parameters.json as the baseline so values like
             # mpcProStacUrl and enableMpcPro persist across deploys. Without
@@ -523,7 +661,14 @@ jobs:
               --parameters deployEmbeddingModel=$DEPLOY_EMBEDDING_MODEL \
               --parameters deployGeoFm=false \
               --parameters deployGeoFmServices=false \
+              --parameters deployApiContainer=false \
+              --parameters existingApiUrl="" \
+              --parameters deployFrontend=false \
               --parameters containerImage="" \
+              --parameters enableAuthentication=false \
+              --parameters publicDemoMode=false \
+              --parameters microsoftEntraClientId="" \
+              --parameters microsoftEntraTenantId="" \
               --parameters enablePrivateEndpoints=$ENABLE_PE \
               "${EXTRA_PARAMS[@]}" \
               --name "${DEPLOYMENT_NAME}-attempt${ATTEMPT}" \
@@ -564,16 +709,38 @@ jobs:
           echo "container_registry_name=$ACR_NAME" >> $GITHUB_OUTPUT
           echo "  Container Registry: $ACR_NAME"
           
-          # Discover Container App
-          # Filter to the API container app (ca-${PROJECT_NAME}-api*); the RG
-          # may also host other container apps (e.g. sidecars) that would
-          # otherwise be picked alphabetically first by [0].name.
-          CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')] | [0].name" -o tsv)
+          REQUESTED_WEB_NAME="${{ github.event.inputs.web_app_name }}"
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${WEB_APP_NAME}"
+          fi
+          RESOLVER_ARGS=(
+            scripts/resolve_deployment_targets.py
+            --resource-group "${{ env.RESOURCE_GROUP }}"
+            --environment-name "${{ env.PROJECT_NAME }}"
+          )
+          if [ -n "$API_CONTAINER_APP_NAME" ]; then
+            RESOLVER_ARGS+=(--api-name "$API_CONTAINER_APP_NAME")
+          fi
+          if [ -n "$REQUESTED_WEB_NAME" ]; then
+            RESOLVER_ARGS+=(--web-name "$REQUESTED_WEB_NAME")
+            if [ -n "$APP_SERVICE_PLAN_NAME" ]; then
+              RESOLVER_ARGS+=(--plan-name "$APP_SERVICE_PLAN_NAME")
+            elif ! az webapp show --resource-group "${{ env.RESOURCE_GROUP }}" --name "$REQUESTED_WEB_NAME" --output none 2>/dev/null; then
+              RESOLVER_ARGS+=(--plan-name "asp-${{ env.PROJECT_NAME }}")
+            fi
+          fi
+          TARGETS=$(python "${RESOLVER_ARGS[@]}")
+          CA_NAME=$(jq -r '.api_container_app_name' <<< "$TARGETS")
+          WA_NAME=$(jq -r '.frontend_web_app_name' <<< "$TARGETS")
+          if [ -z "$CA_NAME" ]; then
+            CA_NAME="ca-${{ env.PROJECT_NAME }}-api"
+          fi
           echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
           echo "  Container App: $CA_NAME"
-          
-          # Discover Web App
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          if [ -z "$WA_NAME" ]; then
+            UNIQUE_SUFFIX=$(echo -n "${{ env.RESOURCE_GROUP }}-${{ github.repository }}" | md5sum | cut -c1-8)
+            WA_NAME="app-${{ env.PROJECT_NAME }}-${UNIQUE_SUFFIX}"
+          fi
           echo "web_app_name=$WA_NAME" >> $GITHUB_OUTPUT
           echo "  Web App: $WA_NAME"
           
@@ -596,8 +763,11 @@ jobs:
     environment: dev
     outputs:
       container_app_url: ${{ steps.deploy.outputs.container_app_url }}
-      container_app_name: ${{ steps.discover.outputs.container_app_name }}
+      container_app_name: ${{ steps.deploy.outputs.container_app_name }}
       container_registry_name: ${{ steps.discover.outputs.container_registry_name }}
+      private_endpoints_enabled: ${{ steps.discover.outputs.private_endpoints_enabled }}
+      web_app_name: ${{ steps.discover.outputs.web_app_name }}
+      web_app_url: ${{ steps.discover.outputs.web_app_url }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -613,6 +783,10 @@ jobs:
         id: discover
         run: |
           echo "Discovering resource names..."
+          if [[ ${#PROJECT_NAME} -gt 24 || ! "$PROJECT_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "ERROR: PROJECT_NAME is not valid for the canonical API Container App name." >&2
+            exit 1
+          fi
           
           # Discover Container Registry
           ACR_NAME=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
@@ -623,6 +797,15 @@ jobs:
           fi
           echo "container_registry_name=$ACR_NAME" >> $GITHUB_OUTPUT
           echo "  Container Registry: $ACR_NAME"
+          ACR_PNA=$(az acr show --name "$ACR_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query publicNetworkAccess -o tsv)
+          ACR_DEFAULT_ACTION=$(az acr show --name "$ACR_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query networkRuleSet.defaultAction -o tsv)
+          if [ "$ACR_PNA" == "Disabled" ] || [ "$ACR_DEFAULT_ACTION" == "Deny" ]; then
+            PRIVATE_ENDPOINTS_ENABLED="true"
+          else
+            PRIVATE_ENDPOINTS_ENABLED="false"
+          fi
+          echo "private_endpoints_enabled=$PRIVATE_ENDPOINTS_ENABLED" >> $GITHUB_OUTPUT
+          echo "  Private endpoint mode: $PRIVATE_ENDPOINTS_ENABLED"
           
           # Discover Container App Environment
           CAE_NAME=$(az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
@@ -634,71 +817,60 @@ jobs:
           echo "container_app_env_name=$CAE_NAME" >> $GITHUB_OUTPUT
           echo "  Container App Environment: $CAE_NAME"
           
-          # Discover Container App (may not exist yet on first deploy)
-          # Filter to the API container app; the RG may also host other
-          # container apps (e.g. sidecars) that would otherwise be picked
-          # alphabetically first by [0].name.
-          CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')] | [0].name" -o tsv)
+          REQUESTED_API_NAME="${{ needs.deploy-infrastructure.outputs.container_app_name }}"
+          if [ -z "$REQUESTED_API_NAME" ]; then
+            REQUESTED_API_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          REQUESTED_WEB_NAME="${{ needs.deploy-infrastructure.outputs.web_app_name }}"
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${{ github.event.inputs.web_app_name }}"
+          fi
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${WEB_APP_NAME}"
+          fi
+          RESOLVER_ARGS=(
+            scripts/resolve_deployment_targets.py
+            --resource-group "${{ env.RESOURCE_GROUP }}"
+            --environment-name "${{ env.PROJECT_NAME }}"
+          )
+          if [ -n "$REQUESTED_API_NAME" ]; then
+            RESOLVER_ARGS+=(--api-name "$REQUESTED_API_NAME")
+          fi
+          if [ -n "$REQUESTED_WEB_NAME" ]; then
+            RESOLVER_ARGS+=(--web-name "$REQUESTED_WEB_NAME")
+            if [ -n "$APP_SERVICE_PLAN_NAME" ]; then
+              RESOLVER_ARGS+=(--plan-name "$APP_SERVICE_PLAN_NAME")
+            elif ! az webapp show --resource-group "${{ env.RESOURCE_GROUP }}" --name "$REQUESTED_WEB_NAME" --output none 2>/dev/null; then
+              RESOLVER_ARGS+=(--plan-name "asp-${{ env.PROJECT_NAME }}")
+            fi
+          fi
+          TARGETS=$(python "${RESOLVER_ARGS[@]}")
+          CA_NAME=$(jq -r '.api_container_app_name' <<< "$TARGETS")
+          WA_NAME=$(jq -r '.frontend_web_app_name' <<< "$TARGETS")
           if [ -z "$CA_NAME" ]; then
+            CA_NAME="ca-${{ env.PROJECT_NAME }}-api"
+          fi
+          if ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
             echo "  INFO: No Container App found - will create one"
             echo "container_app_exists=false" >> $GITHUB_OUTPUT
+            echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
           else
             echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
             echo "container_app_exists=true" >> $GITHUB_OUTPUT
             echo "  Container App: $CA_NAME"
           fi
 
-      - name: Ensure public network access (test mode)
-        if: ${{ github.event.inputs.enable_private_endpoints != 'true' }}
-        run: |
-          # This branch deploys in fully-public mode for functional testing.
-          # Bicep defaults all resources to publicNetworkAccess=Enabled when
-          # enablePrivateEndpoints=false, but deployed state can drift (a
-          # prior private-endpoint run, a manual portal change, a policy).
-          # Reset every relevant resource to public so the build and the
-          # running app can both reach what they need. All commands are
-          # idempotent -- no-ops when the resource is already public.
-          set +e  # don't fail the job if a single resource doesn't exist
-          RG="${{ env.RESOURCE_GROUP }}"
-          echo "â”€â”€ Resetting network access to public in $RG â”€â”€â”€â”€â”€â”€â”€â”€â”€"
-
-          # 1. ACR -- the build's blocker. Trust ACR Tasks + default Allow.
-          for ACR in $(az acr list -g "$RG" --query "[].name" -o tsv); do
-            echo "  ACR $ACR -> Allow + trusted services"
-            az acr update --name "$ACR" --allow-trusted-services true >/dev/null
-            az acr update --name "$ACR" --default-action Allow >/dev/null
-          done
-
-          # 2. Storage accounts.
-          for SA in $(az storage account list -g "$RG" --query "[].name" -o tsv); do
-            echo "  Storage $SA -> Enabled + Allow"
-            az storage account update -n "$SA" -g "$RG" \
-              --public-network-access Enabled --default-action Allow >/dev/null
-          done
-
-          # 3. Key Vault.
-          for KV in $(az keyvault list -g "$RG" --query "[].name" -o tsv); do
-            echo "  KeyVault $KV -> Enabled"
-            az keyvault update -n "$KV" -g "$RG" \
-              --public-network-access Enabled --default-action Allow >/dev/null
-          done
-
-          # 4. Cognitive Services / AI Foundry.
-          for CS in $(az cognitiveservices account list -g "$RG" --query "[].name" -o tsv); do
-            echo "  CognitiveServices $CS -> Enabled"
-            az cognitiveservices account update -n "$CS" -g "$RG" \
-              --custom-domain "$CS" \
-              --api-properties publicNetworkAccess=Enabled >/dev/null 2>&1 || \
-            az resource update --resource-group "$RG" --name "$CS" \
-              --resource-type "Microsoft.CognitiveServices/accounts" \
-              --set properties.publicNetworkAccess=Enabled \
-                    properties.networkAcls.defaultAction=Allow >/dev/null 2>&1 || true
-          done
-
-          # Brief settle so the data-plane firewall picks up the changes
-          # before az acr build / kv get-secret hit the registry.
-          sleep 15
-          echo "â”€â”€ Public-mode remediation complete â”€â”€â”€â”€â”€â”€â”€â”€â”€"
+          if [ -z "$WA_NAME" ]; then
+            UNIQUE_SUFFIX=$(echo -n "${{ env.RESOURCE_GROUP }}-${{ github.repository }}" | md5sum | cut -c1-8)
+            WA_NAME="app-${{ env.PROJECT_NAME }}-${UNIQUE_SUFFIX}"
+          fi
+          if [[ ${#WA_NAME} -gt 60 || ! "$WA_NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "ERROR: Web App name '$WA_NAME' is not valid." >&2
+            exit 1
+          fi
+          echo "web_app_name=$WA_NAME" >> $GITHUB_OUTPUT
+          echo "web_app_url=https://${WA_NAME}.azurewebsites.net" >> $GITHUB_OUTPUT
+          echo "  Frontend origin: https://${WA_NAME}.azurewebsites.net"
 
       - name: Build and Deploy Backend
         id: deploy
@@ -709,7 +881,9 @@ jobs:
           CAE_NAME: ${{ steps.discover.outputs.container_app_env_name }}
           CA_EXISTS: ${{ steps.discover.outputs.container_app_exists }}
           CA_NAME: ${{ steps.discover.outputs.container_app_name }}
-          ENABLE_PRIVATE_ENDPOINTS: ${{ github.event.inputs.enable_private_endpoints }}
+          WEB_APP_NAME: ${{ steps.discover.outputs.web_app_name }}
+          CORS_ORIGINS: ${{ steps.discover.outputs.web_app_url }},http://localhost:5173
+          ENABLE_PRIVATE_ENDPOINTS: ${{ steps.discover.outputs.private_endpoints_enabled }}
         run: bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"
 
   # Deploy Frontend (if frontend files changed, runs after backend)
@@ -750,34 +924,54 @@ jobs:
         run: |
           echo "Discovering resource names..."
           
-          # Discover Container App
-          # Filter to the API container app; the RG may also host other
-          # container apps (e.g. sidecars) that would otherwise be picked
-          # alphabetically first by [0].name.
-          CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')] | [0].name" -o tsv)
-          if [ -z "$CA_NAME" ]; then
+          REQUESTED_API_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-infrastructure.outputs.container_app_name }}"
+          if [ -z "$REQUESTED_API_NAME" ]; then
+            REQUESTED_API_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          REQUESTED_WEB_NAME="${{ needs.deploy-backend.outputs.web_app_name || needs.deploy-infrastructure.outputs.web_app_name }}"
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${{ github.event.inputs.web_app_name }}"
+          fi
+          if [ -z "$REQUESTED_WEB_NAME" ]; then
+            REQUESTED_WEB_NAME="${WEB_APP_NAME}"
+          fi
+          RESOLVER_ARGS=(
+            scripts/resolve_deployment_targets.py
+            --resource-group "${{ env.RESOURCE_GROUP }}"
+            --environment-name "${{ env.PROJECT_NAME }}"
+          )
+          if [ -n "$REQUESTED_API_NAME" ]; then
+            RESOLVER_ARGS+=(--api-name "$REQUESTED_API_NAME")
+          fi
+          if [ -n "$REQUESTED_WEB_NAME" ]; then
+            RESOLVER_ARGS+=(--web-name "$REQUESTED_WEB_NAME")
+            if [ -n "$APP_SERVICE_PLAN_NAME" ]; then
+              RESOLVER_ARGS+=(--plan-name "$APP_SERVICE_PLAN_NAME")
+            elif ! az webapp show --resource-group "${{ env.RESOURCE_GROUP }}" --name "$REQUESTED_WEB_NAME" --output none 2>/dev/null; then
+              RESOLVER_ARGS+=(--plan-name "asp-${{ env.PROJECT_NAME }}")
+            fi
+          fi
+          TARGETS=$(python "${RESOLVER_ARGS[@]}")
+          CA_NAME=$(jq -r '.api_container_app_name' <<< "$TARGETS")
+          WA_NAME=$(jq -r '.frontend_web_app_name' <<< "$TARGETS")
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
             echo "ERROR: No Container App found in ${{ env.RESOURCE_GROUP }}"
             exit 1
           fi
           echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
           echo "  Container App: $CA_NAME"
           
-          # Discover or create Web App
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
           if [ -z "$WA_NAME" ]; then
-            echo "  INFO: No Web App found - will create one"
-            echo "web_app_exists=false" >> $GITHUB_OUTPUT
-            # Use user-provided name or generate a unique default
-            WA_NAME="${{ github.event.inputs.web_app_name }}"
-            if [ -z "$WA_NAME" ]; then
-              # Generate unique name using resource group hash to avoid global conflicts
-              UNIQUE_SUFFIX=$(echo -n "${{ env.RESOURCE_GROUP }}-${{ github.repository }}" | md5sum | cut -c1-8)
-              WA_NAME="app-${{ env.PROJECT_NAME }}-${UNIQUE_SUFFIX}"
-              echo "  Generated unique Web App name: $WA_NAME"
-            fi
-          else
+            UNIQUE_SUFFIX=$(echo -n "${{ env.RESOURCE_GROUP }}-${{ github.repository }}" | md5sum | cut -c1-8)
+            WA_NAME="app-${{ env.PROJECT_NAME }}-${UNIQUE_SUFFIX}"
+          fi
+          if az webapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$WA_NAME" --output none 2>/dev/null; then
             echo "web_app_exists=true" >> $GITHUB_OUTPUT
             echo "  Web App: $WA_NAME"
+          else
+            echo "  INFO: No Web App found - will create one"
+            echo "web_app_exists=false" >> $GITHUB_OUTPUT
+            echo "  Generated Web App name: $WA_NAME"
           fi
           echo "web_app_name=$WA_NAME" >> $GITHUB_OUTPUT
 
@@ -819,11 +1013,20 @@ jobs:
           
           WA_NAME="${{ steps.discover.outputs.web_app_name }}"
           WA_EXISTS="${{ steps.discover.outputs.web_app_exists }}"
-          # Private endpoints are OFF by default; enabled if user explicitly checks enable_private_endpoints
-          if [ "${{ github.event.inputs.enable_private_endpoints }}" == "true" ]; then
-            ENABLE_PE="true"
-          else
-            ENABLE_PE="false"
+          ENABLE_PE="${{ needs.deploy-backend.outputs.private_endpoints_enabled }}"
+          if [ -z "$ENABLE_PE" ]; then
+            mapfile -t ACR_NAMES < <(az acr list --resource-group "${{ env.RESOURCE_GROUP }}" --query "[].name" -o tsv)
+            if [ "${#ACR_NAMES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one Container Registry, found ${#ACR_NAMES[@]}." >&2
+              exit 1
+            fi
+            ACR_PNA=$(az acr show --name "${ACR_NAMES[0]}" --resource-group "${{ env.RESOURCE_GROUP }}" --query publicNetworkAccess -o tsv)
+            ACR_DEFAULT_ACTION=$(az acr show --name "${ACR_NAMES[0]}" --resource-group "${{ env.RESOURCE_GROUP }}" --query networkRuleSet.defaultAction -o tsv)
+            if [ "$ACR_PNA" == "Disabled" ] || [ "$ACR_DEFAULT_ACTION" == "Deny" ]; then
+              ENABLE_PE="true"
+            else
+              ENABLE_PE="false"
+            fi
           fi
           
           # Determine SKU: S1 required for VNet integration, F1 otherwise
@@ -889,6 +1092,17 @@ jobs:
               fi
             fi
           fi
+
+          WEB_APP_ID=$(az webapp show \
+            --name "$WA_NAME" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query id \
+            --output tsv)
+          az tag update \
+            --resource-id "$WEB_APP_ID" \
+            --operation Merge \
+            --tags azd-service-name=web "azd-env-name=${{ env.PROJECT_NAME }}" \
+            --output none
           
           # Add VNet integration if private endpoints are enabled
           if [ "$ENABLE_PE" == "true" ]; then
@@ -984,32 +1198,42 @@ jobs:
           set -euo pipefail
 
           API_VERSION="2025-04-01-preview"
-          PROJECT_NAME="planetary-explorer-agents"
+          PROJECT_NAME="$AGENT_PROJECT_NAME"
 
           # -- Discover resources --
           SUBSCRIPTION_ID=$(az account show --query id -o tsv)
           echo "Subscription: $SUBSCRIPTION_ID"
 
-          ACCOUNT_NAME=$(az cognitiveservices account list \
+          mapfile -t ACCOUNT_NAMES < <(az cognitiveservices account list \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "[?kind=='AIServices'].name | [0]" -o tsv)
-          if [ -z "$ACCOUNT_NAME" ]; then
-            echo "ERROR: No AIServices account found in ${{ env.RESOURCE_GROUP }}"
+            --query "[?kind=='AIServices'].name" -o tsv)
+          if [ "${#ACCOUNT_NAMES[@]}" -ne 1 ]; then
+            echo "ERROR: Expected exactly one AIServices account, found ${#ACCOUNT_NAMES[@]} in ${{ env.RESOURCE_GROUP }}"
             echo "Agent Service cannot be enabled without AI Foundry."
             exit 1
           fi
+          ACCOUNT_NAME="${ACCOUNT_NAMES[0]}"
           echo "AI Foundry account: $ACCOUNT_NAME"
-
-          CA_NAME=$(az containerapp list \
+          ACCOUNT_LOCATION=$(az cognitiveservices account show \
+            --name "$ACCOUNT_NAME" \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "[0].name" -o tsv)
+            --query location -o tsv)
+
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
           if [ -z "$CA_NAME" ]; then
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name "$CA_NAME" \
+            --output none 2>/dev/null; then
             echo "ERROR: No Container App found in ${{ env.RESOURCE_GROUP }}"
             exit 1
           fi
           echo "Container App: $CA_NAME"
 
           BASE_URL="https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT_NAME"
+          SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT_NAME"
 
           # -- Helper: wait for provisioning --
           wait_for_provisioning() {
@@ -1030,6 +1254,38 @@ jobs:
             return 1
           }
 
+          ensure_role_assignment() {
+            local principal_id="$1"
+            local role_name="$2"
+            local assignment_id
+            assignment_id=$(az role assignment list \
+              --assignee-object-id "$principal_id" \
+              --role "$role_name" \
+              --scope "$SCOPE" \
+              --include-inherited \
+              --fill-principal-name false \
+              --query "[0].id" -o tsv)
+            if [ -z "$assignment_id" ]; then
+              az role assignment create \
+                --assignee-object-id "$principal_id" \
+                --assignee-principal-type ServicePrincipal \
+                --role "$role_name" \
+                --scope "$SCOPE" \
+                --output none
+              assignment_id=$(az role assignment list \
+                --assignee-object-id "$principal_id" \
+                --role "$role_name" \
+                --scope "$SCOPE" \
+                --include-inherited \
+                --fill-principal-name false \
+                --query "[0].id" -o tsv)
+            fi
+            if [ -z "$assignment_id" ]; then
+              echo "ERROR: Required role '$role_name' was not assigned to '$principal_id'." >&2
+              return 1
+            fi
+          }
+
           # -- Step 1: Enable allowProjectManagement --
           echo ""
           echo "=== Step 1: Enable allowProjectManagement ==="
@@ -1041,38 +1297,11 @@ jobs:
             echo "::warning::Account did not reach terminal state in 15min; attempting patch anyway."
           }
           
-          # Detect current publicNetworkAccess state so we don't undo PE lockdown
-          CURRENT_PNA=$(az cognitiveservices account show \
-            --name "$ACCOUNT_NAME" --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "properties.publicNetworkAccess" -o tsv 2>/dev/null || echo "Enabled")
-          echo "  Current publicNetworkAccess: $CURRENT_PNA"
-          
-          if [ "$CURRENT_PNA" == "Disabled" ]; then
-            NETWORK_ACTION="Deny"
-          else
-            NETWORK_ACTION="Allow"
-          fi
-          
-          BODY=$(cat <<EOF
-          {
-            "location": "${{ env.LOCATION }}",
-            "kind": "AIServices",
-            "sku": { "name": "S0" },
-            "identity": { "type": "SystemAssigned" },
-            "properties": {
-              "allowProjectManagement": true,
-              "customSubDomainName": "$ACCOUNT_NAME",
-              "publicNetworkAccess": "$CURRENT_PNA",
-              "disableLocalAuth": true,
-              "networkAcls": { "defaultAction": "$NETWORK_ACTION" }
-            }
-          }
-          EOF
-          )
-          az rest --method put \
-            --url "${BASE_URL}?api-version=${API_VERSION}" \
-            --body "$BODY" \
-            --query "properties.allowProjectManagement" -o tsv 2>&1 || true
+          az resource update \
+            --ids "$SCOPE" \
+            --api-version "$API_VERSION" \
+            --set properties.allowProjectManagement=true properties.disableLocalAuth=true \
+            --output none
           wait_for_provisioning "$BASE_URL"
           echo "  allowProjectManagement enabled"
 
@@ -1082,7 +1311,7 @@ jobs:
           PROJECT_URL="${BASE_URL}/projects/${PROJECT_NAME}"
           PROJECT_BODY=$(cat <<EOF
           {
-            "location": "${{ env.LOCATION }}",
+            "location": "$ACCOUNT_LOCATION",
             "identity": { "type": "SystemAssigned" },
             "properties": {
               "description": "Planetary Explorer GEOINT Agent Project",
@@ -1099,6 +1328,11 @@ jobs:
           if [ "$result" != "Succeeded" ]; then
             wait_for_provisioning "$PROJECT_URL"
           fi
+
+          PROJECT_PRINCIPAL_ID=$(az rest --method get \
+            --url "${PROJECT_URL}?api-version=${API_VERSION}" \
+            --query identity.principalId -o tsv)
+          ensure_role_assignment "$PROJECT_PRINCIPAL_ID" "Foundry User"
 
           # -- Step 3: Create account-level capability host --
           echo ""
@@ -1130,16 +1364,9 @@ jobs:
             --query "identity.principalId" -o tsv)
           echo "  MI Principal ID: $PRINCIPAL_ID"
 
-          SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT_NAME"
-
-          for ROLE in "Azure AI User" "Cognitive Services OpenAI Contributor"; do
+          for ROLE in "Foundry User" "Cognitive Services OpenAI Contributor"; do
             echo "  Assigning: $ROLE"
-            az role assignment create \
-              --assignee-object-id "$PRINCIPAL_ID" \
-              --assignee-principal-type ServicePrincipal \
-              --role "$ROLE" \
-              --scope "$SCOPE" \
-              -o none 2>/dev/null || echo "  (already assigned or insufficient permissions)"
+            ensure_role_assignment "$PRINCIPAL_ID" "$ROLE"
           done
 
           # -- Step 6: Update AZURE_AI_PROJECT_ENDPOINT env var --
@@ -1150,7 +1377,15 @@ jobs:
           az containerapp update \
             -n "$CA_NAME" -g ${{ env.RESOURCE_GROUP }} \
             --set-env-vars "AZURE_AI_PROJECT_ENDPOINT=$ENDPOINT" \
-            -o none 2>/dev/null || true
+            -o none
+          CONFIGURED_ENDPOINT=$(az containerapp show \
+            -n "$CA_NAME" -g ${{ env.RESOURCE_GROUP }} \
+            --query "properties.template.containers[0].env[?name=='AZURE_AI_PROJECT_ENDPOINT'].value | [0]" \
+            -o tsv)
+          if [ "$CONFIGURED_ENDPOINT" != "$ENDPOINT" ]; then
+            echo "ERROR: Agent Service endpoint verification failed." >&2
+            exit 1
+          fi
 
           echo ""
           echo "Agent Service enabled successfully"
@@ -1190,7 +1425,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
     outputs:
-      auth_configured: ${{ steps.auth.outputs.auth_configured }}
+      auth_configured: ${{ steps.auth.outputs.auth_configured || steps.preserve.outputs.auth_configured }}
     steps:
       - name: Check auth prerequisites
         id: check
@@ -1201,7 +1436,10 @@ jobs:
             HAS_CLIENT_ID="true"
           fi
 
-          if [ "$DISABLE_AUTH" == "true" ]; then
+          if [ "${{ github.event_name }}" == "push" ] && [ "$HAS_CLIENT_ID" != "true" ]; then
+            echo "mode=preserve" >> $GITHUB_OUTPUT
+            echo "Push deployment will preserve and verify the existing authentication mode"
+          elif [ "$DISABLE_AUTH" == "true" ]; then
             echo "mode=skip" >> $GITHUB_OUTPUT
             echo "Auth explicitly disabled - app will be publicly accessible"
           elif [ "$HAS_CLIENT_ID" == "true" ]; then
@@ -1219,30 +1457,69 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Preserve Existing Authentication Mode
+        id: preserve
+        if: steps.check.outputs.mode == 'preserve'
+        run: |
+          set -euo pipefail
+
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name || needs.deploy-backend.outputs.web_app_name }}"
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
+          if [ -z "$WA_NAME" ]; then
+            WA_NAME="${WEB_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ]; then
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$WA_NAME" ] || ! az webapp show --resource-group "${{ env.RESOURCE_GROUP }}" --name "$WA_NAME" --output none 2>/dev/null; then
+            echo "ERROR: Existing frontend authentication target was not resolved." >&2
+            exit 1
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group "${{ env.RESOURCE_GROUP }}" --name "$CA_NAME" --output none 2>/dev/null; then
+            echo "ERROR: Existing API authentication target was not resolved." >&2
+            exit 1
+          fi
+
+          API_DISABLE_AUTH=$(az containerapp show --name "$CA_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" --query "properties.template.containers[0].env[?name=='DISABLE_AUTH'].value | [0]" -o tsv)
+          WEB_AUTH_ENABLED=$(az webapp auth show --name "$WA_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" --query enabled -o tsv)
+          if [ "$API_DISABLE_AUTH" == "true" ] && [ "$WEB_AUTH_ENABLED" == "false" ]; then
+            echo "auth_configured=false" >> $GITHUB_OUTPUT
+            echo "Preserved explicit public authentication mode"
+          elif [ "$API_DISABLE_AUTH" == "false" ] && [ "$WEB_AUTH_ENABLED" == "true" ]; then
+            echo "auth_configured=true" >> $GITHUB_OUTPUT
+            echo "Preserved Microsoft Entra authentication mode"
+          else
+            az containerapp ingress update --name "$CA_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" --type internal --output none
+            echo "ERROR: Existing authentication state is incomplete or inconsistent; API ingress was set to internal." >&2
+            exit 1
+          fi
+
       - name: Configure Public Authentication Mode
         if: steps.check.outputs.mode == 'skip'
         run: |
           set -euo pipefail
 
-          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name }}"
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name || needs.deploy-backend.outputs.web_app_name }}"
           CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
 
           if [ -z "$WA_NAME" ]; then
-            mapfile -t WA_MATCHES < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'app-${{ env.PROJECT_NAME }}-')].name" -o tsv)
-            if [ "${#WA_MATCHES[@]}" -ne 1 ]; then
-              echo "ERROR: Expected exactly one frontend Web App, found ${#WA_MATCHES[@]}" >&2
+            WA_NAME="${WEB_APP_NAME}"
+          fi
+          if [ -z "$WA_NAME" ]; then
+            mapfile -t TAGGED_WEB_APPS < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?tags.\"azd-service-name\"=='web'].name" -o tsv)
+            if [ "${#TAGGED_WEB_APPS[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one frontend Web App tagged azd-service-name=web, found ${#TAGGED_WEB_APPS[@]}" >&2
               exit 1
             fi
-            WA_NAME="${WA_MATCHES[0]}"
+            WA_NAME="${TAGGED_WEB_APPS[0]}"
           fi
 
           if [ -z "$CA_NAME" ]; then
-            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
-            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
-              echo "ERROR: Expected exactly one API Container App, found ${#CA_MATCHES[@]}" >&2
-              exit 1
-            fi
-            CA_NAME="${CA_MATCHES[0]}"
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
+            echo "ERROR: API Container App '$CA_NAME' was not found." >&2
+            exit 1
           fi
 
           if [ -z "$WA_NAME" ] || [ -z "$CA_NAME" ]; then
@@ -1307,12 +1584,11 @@ jobs:
 
           CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
           if [ -z "$CA_NAME" ]; then
-            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
-            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
-              echo "ERROR: AUTH_CLIENT_ID is missing and the API resource could not be resolved uniquely." >&2
-              exit 1
-            fi
-            CA_NAME="${CA_MATCHES[0]}"
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
+            echo "ERROR: AUTH_CLIENT_ID is missing and API '$CA_NAME' was not found." >&2
+            exit 1
           fi
 
           az containerapp ingress update \
@@ -1335,16 +1611,19 @@ jobs:
           set -euo pipefail
 
           # -- Discover Web App --
-          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name }}"
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name || needs.deploy-backend.outputs.web_app_name }}"
           CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
 
           if [ -z "$WA_NAME" ]; then
-            mapfile -t WA_MATCHES < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'app-${{ env.PROJECT_NAME }}-')].name" -o tsv)
-            if [ "${#WA_MATCHES[@]}" -ne 1 ]; then
-              echo "ERROR: Expected exactly one frontend Web App, found ${#WA_MATCHES[@]}" >&2
+            WA_NAME="${WEB_APP_NAME}"
+          fi
+          if [ -z "$WA_NAME" ]; then
+            mapfile -t TAGGED_WEB_APPS < <(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?tags.\"azd-service-name\"=='web'].name" -o tsv)
+            if [ "${#TAGGED_WEB_APPS[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one frontend Web App tagged azd-service-name=web, found ${#TAGGED_WEB_APPS[@]}" >&2
               exit 1
             fi
-            WA_NAME="${WA_MATCHES[0]}"
+            WA_NAME="${TAGGED_WEB_APPS[0]}"
           fi
 
           if [ -z "$WA_NAME" ]; then
@@ -1374,12 +1653,11 @@ jobs:
           echo ""
           echo "=== Configuring Backend Container App ==="
           if [ -z "$CA_NAME" ]; then
-            mapfile -t CA_MATCHES < <(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?starts_with(name, 'ca-${{ env.PROJECT_NAME }}-api')].name" -o tsv)
-            if [ "${#CA_MATCHES[@]}" -ne 1 ]; then
-              echo "ERROR: Expected exactly one API Container App, found ${#CA_MATCHES[@]}" >&2
-              exit 1
-            fi
-            CA_NAME="${CA_MATCHES[0]}"
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
+            echo "ERROR: API Container App '$CA_NAME' was not found." >&2
+            exit 1
           fi
 
           if [ -z "$CA_NAME" ]; then
@@ -1633,9 +1911,18 @@ jobs:
           echo "## Endpoints" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Discover actual resource names and URLs
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
-          CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
+          # Resolve the exact deployment identities used by earlier jobs.
+          WA_NAME="${{ needs.deploy-frontend.outputs.web_app_name || needs.deploy-backend.outputs.web_app_name }}"
+          if [ -z "$WA_NAME" ]; then
+            WA_NAME="${WEB_APP_NAME}"
+          fi
+          CA_NAME="${{ needs.deploy-backend.outputs.container_app_name || needs.deploy-frontend.outputs.container_app_name }}"
+          if [ -z "$CA_NAME" ]; then
+            CA_NAME="${API_CONTAINER_APP_NAME}"
+          fi
+          if [ -z "$CA_NAME" ] || ! az containerapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$CA_NAME" --output none 2>/dev/null; then
+            CA_NAME=""
+          fi
           
           if [ -n "$WA_NAME" ]; then
             WEB_URL=$(az webapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$WA_NAME" --query "defaultHostName" -o tsv)

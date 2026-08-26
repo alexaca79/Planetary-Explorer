@@ -65,7 +65,7 @@ resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
     // Both privatelink.cognitiveservices.azure.com AND privatelink.openai.azure.com
     // DNS zones must exist for the PE to work (OpenAI SDK uses the openai subdomain).
     publicNetworkAccess: enablePrivateEndpoints ? 'Disabled' : 'Enabled'
-    disableLocalAuth: false  // listKeys() in main.bicep needs local auth; managed-identity path is TODO
+    disableLocalAuth: true
     networkAcls: {
       defaultAction: enablePrivateEndpoints ? 'Deny' : 'Allow'
     }
@@ -333,6 +333,19 @@ resource agentProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-
   ]
 }
 
+resource agentProjectFoundryUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAgentService) {
+  name: guid(aiFoundry.id, agentProjectName, 'FoundryUser')
+  scope: aiFoundry
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+    )
+    principalId: agentProject.?identity.?principalId ?? ''
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Account-level capability host (enables Agent Service on the account)
 resource accountCapabilityHost 'Microsoft.CognitiveServices/accounts/capabilityHosts@2025-04-01-preview' = if (deployAgentService) {
   name: 'default'
@@ -342,6 +355,7 @@ resource accountCapabilityHost 'Microsoft.CognitiveServices/accounts/capabilityH
   }
   dependsOn: [
     agentProject
+    agentProjectFoundryUserRole
   ]
 }
 

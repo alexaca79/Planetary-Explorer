@@ -121,6 +121,7 @@ class RunRecord(BaseModel):
     run_id: UUID = Field(default_factory=uuid4)
     idempotency_key: str = Field(pattern=r"^[a-f0-9]{64}$")
     version: int = Field(default=0, ge=0)
+    attempt: int = Field(default=1, ge=1)
     status: RunStatus = RunStatus.QUEUED
     request: CompareEpochsRequest
     selected_model: dict[str, JsonValue]

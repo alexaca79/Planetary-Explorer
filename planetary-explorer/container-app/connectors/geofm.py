@@ -26,9 +26,8 @@ def is_enabled() -> bool:
     return enabled and bool((os.getenv("GEOFM_MCP_URL") or "").strip())
 
 
-@lru_cache(maxsize=1)
 def get_client() -> RemoteMcpClient:
-    """Return the process-wide GeoFM MCP client."""
+    """Return a task-local GeoFM MCP client for one analysis operation."""
     return RemoteMcpClient(
         os.getenv("GEOFM_MCP_URL", ""),
         api_key=os.getenv("GEOFM_MCP_API_KEY") or None,

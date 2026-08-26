@@ -42,6 +42,11 @@ param mcpExternalIngress bool = false
 @description('Shared API key required by the internal GeoFM MCP endpoint.')
 param mcpApiKey string
 
+@secure()
+@minLength(32)
+@description('HMAC key used to verify backend-signed GeoFM run ownership.')
+param ownerSigningKey string
+
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-10-02-preview' existing = {
   name: containerAppsEnvironmentName
 }
@@ -86,6 +91,11 @@ resource geoFmQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023
   name: 'geofm-jobs'
 }
 
+resource geoFmPoisonQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' existing = {
+  parent: queueService
+  name: 'geofm-poison'
+}
+
 resource controlAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(controlIdentity.id, containerRegistry.id, 'AcrPull')
   scope: containerRegistry
@@ -125,6 +135,19 @@ resource controlBlobDataRole 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+resource controlBlobDelegatorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(controlIdentity.id, storageAccount.id, 'StorageBlobDelegator')
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      'db58b8e5-c6ad-4a2a-8342-4190687cbf4a'
+    )
+    principalId: controlIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource workerBlobDataRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(workerIdentity.id, geoFmContainer.id, 'StorageBlobDataContributor')
   scope: geoFmContainer
@@ -151,9 +174,48 @@ resource controlQueueSenderRole 'Microsoft.Authorization/roleAssignments@2022-04
   }
 }
 
+resource controlQueueReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(controlIdentity.id, geoFmQueue.id, 'StorageQueueDataReader')
+  scope: geoFmQueue
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '19e7f393-937e-4f77-808e-94535e297925'
+    )
+    principalId: controlIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource controlPoisonQueueReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(controlIdentity.id, geoFmPoisonQueue.id, 'StorageQueueDataReader')
+  scope: geoFmPoisonQueue
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '19e7f393-937e-4f77-808e-94535e297925'
+    )
+    principalId: controlIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource workerQueueDataRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(workerIdentity.id, geoFmQueue.id, 'StorageQueueDataContributor')
   scope: geoFmQueue
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+    )
+    principalId: workerIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerPoisonQueueDataRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(workerIdentity.id, geoFmPoisonQueue.id, 'StorageQueueDataContributor')
+  scope: geoFmPoisonQueue
   properties: {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
@@ -177,7 +239,10 @@ resource mcpApp 'Microsoft.App/containerApps@2025-01-01' = {
   dependsOn: [
     controlAcrPullRole
     controlBlobDataRole
+    controlBlobDelegatorRole
     controlQueueSenderRole
+    controlQueueReaderRole
+    controlPoisonQueueReaderRole
   ]
   properties: {
     environmentId: containerAppsEnvironment.id
@@ -202,12 +267,20 @@ resource mcpApp 'Microsoft.App/containerApps@2025-01-01' = {
           identity: controlIdentity.id
         }
       ]
-      secrets: !empty(mcpApiKey) ? [
-        {
-          name: 'geofm-mcp-api-key'
-          value: mcpApiKey
-        }
-      ] : []
+      secrets: concat(
+        !empty(mcpApiKey) ? [
+          {
+            name: 'geofm-mcp-api-key'
+            value: mcpApiKey
+          }
+        ] : [],
+        !empty(ownerSigningKey) ? [
+          {
+            name: 'geofm-owner-signing-key'
+            value: ownerSigningKey
+          }
+        ] : []
+      )
     }
     template: {
       containers: [
@@ -256,28 +329,12 @@ resource mcpApp 'Microsoft.App/containerApps@2025-01-01' = {
               name: 'GEOFM_MCP_API_KEY'
               secretRef: 'geofm-mcp-api-key'
             }
+          ] : [], !empty(ownerSigningKey) ? [
+            {
+              name: 'GEOFM_OWNER_SIGNING_KEY'
+              secretRef: 'geofm-owner-signing-key'
+            }
           ] : [])
-          probes: [
-            {
-              type: 'Startup'
-              tcpSocket: {
-                port: 8080
-              }
-              initialDelaySeconds: 2
-              periodSeconds: 5
-              timeoutSeconds: 3
-              failureThreshold: 12
-            }
-            {
-              type: 'Liveness'
-              tcpSocket: {
-                port: 8080
-              }
-              periodSeconds: 30
-              timeoutSeconds: 3
-              failureThreshold: 3
-            }
-          ]
         }
       ]
       scale: {
@@ -302,6 +359,7 @@ resource workerApp 'Microsoft.App/containerApps@2025-01-01' = {
     workerAcrPullRole
     workerBlobDataRole
     workerQueueDataRole
+    workerPoisonQueueDataRole
   ]
   properties: {
     environmentId: containerAppsEnvironment.id
@@ -344,6 +402,10 @@ resource workerApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'GEOFM_QUEUE_NAME'
               value: 'geofm-jobs'
+            }
+            {
+              name: 'GEOFM_POISON_QUEUE_NAME'
+              value: 'geofm-poison'
             }
             {
               name: 'GEOFM_AUTOCAST_FLOAT16'

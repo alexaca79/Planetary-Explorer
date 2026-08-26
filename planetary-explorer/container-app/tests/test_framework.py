@@ -37,6 +37,7 @@ from mcp_runtime.trace_bus import emit as emit_trace
         ("configure_collection_mosaic_definitions", PermissionTier.WRITE),
         ("ingest_stac_item", PermissionTier.WRITE),
         ("geofm_compare_epochs", PermissionTier.WRITE),
+        ("geofm_retry_run", PermissionTier.WRITE),
         ("geofm_embed_aoi", PermissionTier.WRITE),
         ("geofm_cancel_run", PermissionTier.DESTRUCTIVE),
         ("geofm_get_run", PermissionTier.READ),
@@ -135,6 +136,75 @@ async def test_given_denied_write_when_traced_then_terminal_result_is_emitted():
 
 
 @pytest.mark.asyncio
+async def test_given_signed_tool_call_when_traced_then_signature_is_redacted():
+    # Arrange
+    events: list[dict] = []
+    fake = _FakeMpc()
+
+    async def listener(event):
+        events.append(event)
+
+    token = set_listener(listener)
+    client = TracedMcpClient(server_id="test", underlying=fake)
+
+    # Act
+    try:
+        await client.call(
+            "geofm_get_run",
+            {"run_id": "run-1", "owner_signature": "signed-secret"},
+        )
+    finally:
+        reset_listener(token)
+
+    # Assert
+    assert events[0]["args"]["owner_signature"] == "<redacted>"
+    assert client.buffer[0].args["owner_signature"] == "<redacted>"
+    assert fake.calls[0][1]["owner_signature"] == "signed-secret"
+
+
+@pytest.mark.asyncio
+async def test_given_signed_artifact_when_traced_then_sas_query_is_redacted():
+    # Arrange
+    class SignedArtifactClient:
+        async def call_raw(self, _tool, _args):
+            return {
+                "uri": "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+            }
+
+    client = TracedMcpClient(server_id="test", underlying=SignedArtifactClient())
+
+    # Act
+    await client.call("geofm_get_run", {"run_id": "run-1"})
+
+    # Assert
+    assert "sig=secret" not in (client.buffer[0].response_summary or "")
+    assert "?<redacted>" in (client.buffer[0].response_summary or "")
+
+
+@pytest.mark.asyncio
+async def test_given_sas_in_arguments_or_error_when_traced_then_query_is_redacted():
+    # Arrange
+    signed_url = "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+
+    class FailingClient:
+        async def call_raw(self, _tool, _args):
+            raise RuntimeError(f"download failed for {signed_url}")
+
+    client = TracedMcpClient(server_id="test", underlying=FailingClient())
+
+    # Act
+    with pytest.raises(RuntimeError):
+        await client.call("geofm_get_run", {"artifact_uri": signed_url})
+
+    # Assert
+    entry = client.buffer[0]
+    assert "sig=secret" not in str(entry.args)
+    assert "sig=secret" not in (entry.error or "")
+    assert "?<redacted>" in entry.args["artifact_uri"]
+    assert "?<redacted>" in (entry.error or "")
+
+
+@pytest.mark.asyncio
 async def test_traced_client_allows_write_when_confirm_approves():
     fake = _FakeMpc()
     approvals = []
@@ -167,16 +237,15 @@ def test_traced_client_builds_geofm_client_when_enabled(monkeypatch):
     # Arrange
     monkeypatch.setenv("GEOFM_ENABLED", "true")
     monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
-    from connectors.geofm import get_client
-
-    get_client.cache_clear()
-
     # Act
     client = TracedMcpClient.from_geofm(turn_id="turn-1")
+    second_client = TracedMcpClient.from_geofm(turn_id="turn-2")
 
     # Assert
     assert client is not None
+    assert second_client is not None
     assert client.server_id == "geofm"
+    assert client.underlying is not second_client.underlying
 
 
 def test_registry_discovers_geofm_only_when_enabled(monkeypatch):

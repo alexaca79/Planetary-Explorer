@@ -49,6 +49,10 @@ class WorkerError(RuntimeError):
     """Raised when a run cannot produce reproducible evidence."""
 
 
+class RetriableWorkerError(RuntimeError):
+    """Raised when an external dependency may recover on redelivery."""
+
+
 @dataclass(frozen=True)
 class PreparedInput:
     """Normalized model tensor and its fixed output grid."""
@@ -276,16 +280,34 @@ def process_run(
     recipe = PreprocessingRecipe.model_validate(record.preprocessing_recipe)
     catalog = get_catalog()
     request = record.request
-    item_a = catalog.get_item_summary(request.item_id_epoch_a)
-    item_b = catalog.get_item_summary(request.item_id_epoch_b)
-    asset_keys = (*recipe.band_assets, recipe.quality_asset)
-    assets_a = catalog.get_signed_assets(request.item_id_epoch_a, asset_keys)
-    assets_b = catalog.get_signed_assets(request.item_id_epoch_b, asset_keys)
-    prepared = prepare_input(assets_a, assets_b, request.geometry, recipe, descriptor)
+    try:
+        item_a = catalog.get_item_summary(request.item_id_epoch_a)
+        item_b = catalog.get_item_summary(request.item_id_epoch_b)
+        asset_keys = (*recipe.band_assets, recipe.quality_asset)
+        assets_a = catalog.get_signed_assets(request.item_id_epoch_a, asset_keys)
+        assets_b = catalog.get_signed_assets(request.item_id_epoch_b, asset_keys)
+        prepared = prepare_input(
+            assets_a,
+            assets_b,
+            request.geometry,
+            recipe,
+            descriptor,
+        )
+    except WorkerError:
+        raise
+    except Exception as exc:
+        raise RetriableWorkerError(
+            "Source imagery could not be prepared."
+        ) from exc
     if service.get(record.run_id).status is RunStatus.CANCELLED:
         return service.get(record.run_id)
     service.transition(record.run_id, RunStatus.RUNNING, progress_pct=35)
-    distance = (adapter or PlanAuraAdapter(descriptor)).infer(prepared.values)
+    try:
+        distance = (adapter or PlanAuraAdapter(descriptor)).infer(prepared.values)
+    except WorkerError:
+        raise
+    except Exception as exc:
+        raise RetriableWorkerError("PlanAura inference could not start.") from exc
     if distance.shape != prepared.aoi_mask.shape:
         raise WorkerError(
             f"Model output shape {distance.shape} does not match {prepared.aoi_mask.shape}."
@@ -450,16 +472,59 @@ def run_one_message() -> bool:
         queue_name=os.getenv("GEOFM_QUEUE_NAME", "geofm-jobs"),
         credential=credential,
     )
+    poison_queue = QueueClient(
+        account_url=queue_url,
+        queue_name=os.getenv("GEOFM_POISON_QUEUE_NAME", "geofm-poison"),
+        credential=credential,
+    )
     service = RunService(
         BlobRunRepository(container),
         NoopDispatcher(),
         inventory_lookup=get_catalog().get_asset_inventory,
         allow_conditional_models=True,
     )
-    return consume_one_message(queue, service, container)
+    return consume_one_message(queue, service, container, poison_queue=poison_queue)
 
 
-def consume_one_message(queue, service: RunService, container) -> bool:
+def _quarantine_message(
+    poison_queue,
+    message,
+    run_id: UUID | None,
+    error: Exception,
+    dequeue_count: int,
+) -> bool:
+    if poison_queue is None:
+        return False
+    try:
+        poison_queue.send_message(
+            json.dumps(
+                {
+                    "run_id": str(run_id) if run_id else None,
+                    "message_sha256": hashlib.sha256(
+                        str(message.content).encode("utf-8")
+                    ).hexdigest(),
+                    "dequeue_count": dequeue_count,
+                    "error": sanitize_error(error),
+                    "quarantined_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
+        return True
+    except Exception as quarantine_error:
+        logger.error(
+            "GeoFM worker could not quarantine an exhausted message: %s",
+            sanitize_error(quarantine_error),
+        )
+        return False
+
+
+def consume_one_message(
+    queue,
+    service: RunService,
+    container,
+    *,
+    poison_queue=None,
+) -> bool:
     """Process one queue message and acknowledge only after durable resolution."""
     message = next(
         iter(queue.receive_messages(messages_per_page=1, visibility_timeout=1800)),
@@ -477,10 +542,11 @@ def consume_one_message(queue, service: RunService, container) -> bool:
         run_id = UUID(payload["run_id"])
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         logger.error(
-            "GeoFM worker discarded an invalid queue message: %s",
+            "GeoFM worker received an invalid queue message: %s",
             sanitize_error(exc),
         )
-        queue.delete_message(message)
+        if _quarantine_message(poison_queue, message, None, exc, dequeue_count):
+            queue.delete_message(message)
         return True
 
     try:
@@ -489,12 +555,48 @@ def consume_one_message(queue, service: RunService, container) -> bool:
         # expired. Restart the idempotent run; version checks protect cancel.
         if record.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
             process_run(record, service, container)
-        should_delete = True
-    except (RunConflict, RunRepositoryError) as exc:
-        logger.warning(
-            "GeoFM worker retained a queued run after a retriable failure: %s",
-            sanitize_error(exc),
-        )
+            should_delete = True
+        elif record.status is RunStatus.FAILED:
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                RuntimeError(record.error or "Failed run awaiting quarantine."),
+                dequeue_count,
+            )
+        else:
+            should_delete = True
+    except (RunConflict, RunRepositoryError, RetriableWorkerError) as exc:
+        if dequeue_count < max_dequeue_count:
+            logger.warning(
+                "GeoFM worker retained a queued run after a retriable failure: %s",
+                sanitize_error(exc),
+            )
+        else:
+            logger.error(
+                "GeoFM worker exhausted %d attempts for a retriable failure: %s",
+                dequeue_count,
+                sanitize_error(exc),
+            )
+            if record and record.status not in TERMINAL_STATUSES:
+                try:
+                    service.transition(
+                        record.run_id,
+                        RunStatus.FAILED,
+                        error=sanitize_error(exc),
+                    )
+                except Exception as persistence_error:
+                    logger.error(
+                        "GeoFM worker could not persist exhausted retry state: %s",
+                        sanitize_error(persistence_error),
+                    )
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                exc,
+                dequeue_count,
+            )
     except Exception as exc:
         logger.error("GeoFM worker failed a queued run: %s", sanitize_error(exc))
         if record and record.status not in TERMINAL_STATUSES:
@@ -504,16 +606,44 @@ def consume_one_message(queue, service: RunService, container) -> bool:
                     RunStatus.FAILED,
                     error=sanitize_error(exc),
                 )
-                should_delete = True
             except Exception as persistence_error:
                 logger.error(
                     "GeoFM worker could not persist failure state: %s",
                     sanitize_error(persistence_error),
                 )
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                exc,
+                dequeue_count,
+            )
         elif isinstance(exc, RunNotFound) and dequeue_count >= max_dequeue_count:
-            should_delete = True
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                exc,
+                dequeue_count,
+            )
             logger.error(
-                "GeoFM worker discarded a missing-run message after %d attempts.",
+                "GeoFM worker quarantined a missing-run message after %d attempts.",
+                dequeue_count,
+            )
+        elif record is None and dequeue_count >= max_dequeue_count:
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                exc,
+                dequeue_count,
+            )
+        if not should_delete and dequeue_count >= max_dequeue_count:
+            should_delete = _quarantine_message(
+                poison_queue,
+                message,
+                run_id,
+                exc,
                 dequeue_count,
             )
     finally:

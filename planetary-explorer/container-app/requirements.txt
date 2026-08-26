@@ -68,9 +68,9 @@ numpy>=1.24.0,<2.0.0
 
 # Data processing - Pydantic v2 for compatibility
 pydantic>=2.5.0,<3.0.0
-# Pin openai to 1.x — pipeline/_aoai.py uses azure_ad_token_provider which is
-# rejected by AsyncAzureOpenAI's credential validation in openai 2.x.
-openai>=1.30.0,<2.0.0
+# Pin to Responses-capable openai 1.x. pipeline/_aoai.py uses
+# azure_ad_token_provider, which openai 2.x credential validation rejects.
+openai>=1.66.0,<2.0.0
 structlog>=23.2.0
 
 # Additional dependencies for SK 1.x and Azure Functions deployment

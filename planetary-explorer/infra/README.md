@@ -49,6 +49,8 @@ The script will:
 3. Run `az deployment sub validate` (catches region/SKU/quota errors before
    any resource is created).
 4. Provision the stack into `rg-planetaryexplorer`.
+5. When GeoFM is enabled, build and publish both GeoFM images and verify the
+  MCP revision plus worker scale-to-zero configuration.
 
 ### Override via environment variables (CI / one-click deploy friendly)
 
@@ -57,7 +59,7 @@ $env:MPC_PRO = 'true'      # surface MPC Pro toggle in the UI
 $env:PRIVATE = 'true'      # private endpoints + VNet
 $env:FABRIC  = 'true'      # provision Microsoft Fabric capacity
 $env:DEPLOY_GEOFM = 'true' # PlanAura control plane + serverless T4 worker
-$env:LOCATION = 'eastus2'  # pin a region, skip preflight
+$env:LOCATION = 'eastus2'  # pin a region; required services and quota are still validated
 .\deploy-infrastructure.ps1
 ```
 
