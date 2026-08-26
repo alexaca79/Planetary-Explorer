@@ -349,6 +349,10 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Planetary Explorer API", version="1.0.0")
 
+from chat_history_api import router as chat_history_router
+
+app.include_router(chat_history_router)
+
 # Configure CORS origins from environment variable
 cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
 cors_origin_tokens = [
@@ -2682,6 +2686,7 @@ async def get_config():
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
+            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
             # Forecast agent is "available" when at least one weather
             # provider endpoint is configured (real Foundry endpoint or
             # the CPU weather stub). With none of these set the
@@ -6217,6 +6222,15 @@ async def unified_query_processor(request: Request):
                 from agents import get_vision_agent  # EnhancedVisionAgent with 5 tools
                 vision_agent = get_vision_agent()
                 conversation_history = req_body.get('conversation_history', []) or req_body.get('messages', [])
+                vision_stac_mode = (
+                    "pro"
+                    if str(
+                        req_body.get("stac_mode")
+                        or os.getenv("DEFAULT_STAC_MODE")
+                        or "public"
+                    ).lower() == "pro"
+                    else "public"
+                )
                 
                 # STEP 1: Check if Router explicitly classified as STAC search
                 # If so, do NOT let keyword detector override — the user wants to LOAD data, not analyze it
@@ -6346,7 +6360,8 @@ async def unified_query_processor(request: Request):
                                         collections=collections_list,
                                         tile_urls=tile_urls,
                                         stac_items=stac_items_from_session,
-                                        conversation_history=conversation_history
+                                        conversation_history=conversation_history,
+                                        stac_mode=vision_stac_mode,
                                     )
                                 )
                                 # Don't await yet - let it run in parallel with STAC search
@@ -6369,7 +6384,8 @@ async def unified_query_processor(request: Request):
                                     collections=collections_list,
                                     tile_urls=tile_urls,
                                     stac_items=stac_items_from_session,
-                                    conversation_history=conversation_history
+                                    conversation_history=conversation_history,
+                                    stac_mode=vision_stac_mode,
                                 )
                                 
                                 # ================================================================
@@ -6457,7 +6473,8 @@ async def unified_query_processor(request: Request):
                                 imagery_base64=None,
                                 map_bounds=map_bounds or {},
                                 collections=collections_list,
-                                conversation_history=conversation_history
+                                conversation_history=conversation_history,
+                                stac_mode=vision_stac_mode,
                             )
                             
                             # [SEARCH] DEBUG: Log vision_result
@@ -8899,6 +8916,15 @@ async def geoint_vision_analysis(request: Request):
         # Parse request body
         request_data = await request.json()
         logger.info(f"[EYE] [{request_id}] Request keys: {list(request_data.keys())}")
+        request_stac_mode = (
+            "pro"
+            if str(
+                request_data.get("stac_mode")
+                or os.getenv("DEFAULT_STAC_MODE")
+                or "public"
+            ).lower() == "pro"
+            else "public"
+        )
         
         latitude = request_data.get("latitude")
         longitude = request_data.get("longitude")
@@ -9021,7 +9047,8 @@ async def geoint_vision_analysis(request: Request):
                     stac_items=stac_items_from_session,
                     tile_urls=tile_urls_for_agent,  # NEW: Pass tile URLs directly
                     conversation_history=[],
-                    analysis_type=analysis_type  # [TARGET] Pass hint from frontend
+                    analysis_type=analysis_type,  # [TARGET] Pass hint from frontend
+                    stac_mode=request_stac_mode,
                 ),
                 timeout=240.0
             )
@@ -9086,6 +9113,15 @@ async def geoint_vision_chat(request: Request):
         logger.info(f"[MSG] [{request_id}] VISION CHAT endpoint called")
         
         request_data = await request.json()
+        request_stac_mode = (
+            "pro"
+            if str(
+                request_data.get("stac_mode")
+                or os.getenv("DEFAULT_STAC_MODE")
+                or "public"
+            ).lower() == "pro"
+            else "public"
+        )
         session_id = request_data.get("session_id")
         message = request_data.get("message")
         latitude = request_data.get("latitude")
@@ -9171,7 +9207,8 @@ async def geoint_vision_chat(request: Request):
                 stac_items=final_stac_items,  # Use request data if available
                 tile_urls=tile_urls_for_agent,  # NEW: Pass tile URLs directly
                 conversation_history=[],
-                analysis_type=analysis_type  # [TARGET] Pass hint from frontend
+                analysis_type=analysis_type,  # [TARGET] Pass hint from frontend
+                stac_mode=request_stac_mode,
             ),
             timeout=120.0
         )

@@ -3,27 +3,33 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiService, Dataset } from '../services/api';
+import { apiService, ChatHistoryContext, Dataset } from '../services/api';
 import Sidebar from './Sidebar';
 import Chat from './Chat';
 import MapView from './MapView';
 import ResizablePanel from './ResizablePanel';
 import { AppState } from '../App';
+import { ChatHistoryMapRestore, restorableHistoryModule } from '../utils/mapHistory';
+import { normalizeRestoredChatContext } from '../utils/chatHistory';
 
 interface MainAppProps {
   appState: AppState;
   onDatasetSelect: (dataset: Dataset) => void;
   onReturnToLanding: () => void;
-  onRestartSession: () => void;
+  onRestartSession: (discardConfirmed?: boolean) => void;
   geointMode: boolean; // Deprecated - will be removed
   onGeointToggle: (enabled: boolean) => void; // Deprecated - will be removed
   selectedModel?: string;
   reasoningEffort?: string;
+  chatHistoryEnabled?: boolean;
+  onRestoreChatContext?: (context: ChatHistoryContext) => void;
+  proEnabled?: boolean;
   stacMode?: 'public' | 'pro';
   onStacModeChange?: (mode: 'public' | 'pro') => void;
+  onHistorySaveRiskChange?: (hasUnsavedSnapshot: boolean) => void;
 }
 
-const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnToLanding, onRestartSession, geointMode, onGeointToggle, selectedModel, reasoningEffort, stacMode, onStacModeChange }) => {
+const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnToLanding, onRestartSession, geointMode, onGeointToggle, selectedModel, reasoningEffort, chatHistoryEnabled, onRestoreChatContext, stacMode, onStacModeChange, onHistorySaveRiskChange, proEnabled = false }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [lastChatResponse, setLastChatResponse] = useState<any>(null);
   const [chatPanelWidth, setChatPanelWidth] = useState(420);
@@ -38,6 +44,9 @@ const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnTo
   const [awaitingComparisonQuery, setAwaitingComparisonQuery] = useState(false); // Flag to intercept next message
   const [terrainSession, setTerrainSession] = useState<{ sessionId: string | null; lat: number; lng: number } | null>(null); // Terrain session for multi-turn chat
   const [comparisonResult, setComparisonResult] = useState<any>(null); // Comparison analysis result (before/after data)
+  const [historyMapRestore, setHistoryMapRestore] = useState<ChatHistoryMapRestore | null>(null);
+  const [historyRestorePending, setHistoryRestorePending] = useState(false);
+  const [mapAnalysisInProgress, setMapAnalysisInProgress] = useState(false);
 
   // Handle comparison result from Chat component
   const handleComparisonResult = useCallback((result: any) => {
@@ -126,6 +135,36 @@ const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnTo
   const clearTerrainSession = useCallback(() => {
     console.log('[DEL] MainApp: Clearing terrain session');
     setTerrainSession(null);
+  }, []);
+
+  const handleRestoreChatContext = useCallback((context: ChatHistoryContext) => {
+    const normalizedContext = normalizeRestoredChatContext(context, proEnabled);
+    const restoredModule = restorableHistoryModule(normalizedContext.selectedModule);
+    const effectiveContext = {
+      ...normalizedContext,
+      selectedModule: restoredModule || undefined,
+    };
+    setHistoryRestorePending(true);
+    setSelectedModule(restoredModule);
+    onGeointToggle(Boolean(restoredModule));
+    setCurrentPin(normalizedContext.pin || normalizedContext.map?.vision_pin || null);
+    setMapContext(normalizedContext.map || null);
+    setMobilityAnalysisResult(null);
+    setMobilityPinCoords(null);
+    setComparisonResult(null);
+    setLastChatResponse(null);
+    setTerrainSession(null);
+    setSystemMessage(null);
+    setHistoryMapRestore({
+      token: Date.now(),
+      context: effectiveContext,
+    });
+    onRestoreChatContext?.(effectiveContext);
+    return effectiveContext;
+  }, [onGeointToggle, onRestoreChatContext, proEnabled]);
+
+  const handleHistoryRestoreSettled = useCallback(() => {
+    setHistoryRestorePending(false);
   }, []);
   
   // Clear ALL GEOINT sessions (called when starting a new STAC search)
@@ -410,6 +449,10 @@ const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnTo
           sidebarOpen={sidebarOpen}
           comparisonUserQuery={comparisonUserQuery}
           onTerrainSessionChange={handleTerrainSessionChange}
+          historyRestore={historyMapRestore}
+          onAnalysisStateChange={setMapAnalysisInProgress}
+          onHistoryRestoreSettled={handleHistoryRestoreSettled}
+          stacMode={stacMode}
         />
       </div>
 
@@ -442,6 +485,11 @@ const MainApp: React.FC<MainAppProps> = ({ appState, onDatasetSelect, onReturnTo
           onComparisonResult={handleComparisonResult}
           selectedModel={selectedModel}
           reasoningEffort={reasoningEffort}
+          chatHistoryEnabled={chatHistoryEnabled}
+          onRestoreContext={handleRestoreChatContext}
+          mapAnalysisPending={mapAnalysisInProgress}
+          historyRestorePending={historyRestorePending}
+          onHistorySaveRiskChange={onHistorySaveRiskChange}
           stacMode={stacMode}
         />
       </ResizablePanel>

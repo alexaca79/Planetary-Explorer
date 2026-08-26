@@ -2,13 +2,27 @@
 // Licensed under the MIT license.
 
 import React, { useState, useRef, useEffect } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { apiService, Dataset, ChatMessage, MapContext } from '../services/api';
+import { useMutation } from '@tanstack/react-query';
+import { History } from 'lucide-react';
+import { apiService, ChatHistoryContext, ChatHistorySnapshot, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
 import { enhanceMessageForMapVisualization, hasVisualizableData } from './PlanetaryExplorerMapIntegration';
 import vedaSearchService from '../services/vedaSearchService';
 import SourceChips from './SourceChips';
 import { TraceDrawer, ConfirmationCard, useToolTrace } from './trace';
 import type { PendingConfirm } from './trace';
+import ChatHistoryDrawer from './ChatHistoryDrawer';
+import {
+  boundedHistoryTileUrls,
+  chatHistoryFingerprint,
+  confirmFailedHistoryDiscard,
+  createChatHistoryMutationId,
+  hasFailedHistorySave,
+  historyUnmountAction,
+  isHistorySaveAtRisk,
+  persistedChatMessages,
+  reconcileAmbiguousHistorySave,
+  restoreChatMessages,
+} from '../utils/chatHistory';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -193,7 +207,7 @@ interface ChatProps {
   chatMode: boolean;
   initialQuery?: string;
   onResponseReceived?: (responseData: any) => void;
-  onRestartSession?: () => void;
+  onRestartSession?: (discardConfirmed?: boolean) => void;
   privateSearchTrigger?: any; // New prop to trigger private search
   currentPin?: { lat: number; lng: number } | null; // Pin location from map
   geointMode: boolean; // GEOINT analysis mode toggle (deprecated)
@@ -211,6 +225,11 @@ interface ChatProps {
   onComparisonResult?: (result: any) => void; // Callback for comparison analysis results (before/after data)
   selectedModel?: string; // Selected AI model (gpt-5)
   reasoningEffort?: string; // Selected GPT-5.6 reasoning effort
+  chatHistoryEnabled?: boolean; // Durable Cosmos-backed chat archive
+  onRestoreContext?: (context: ChatHistoryContext) => ChatHistoryContext | void;
+  mapAnalysisPending?: boolean;
+  historyRestorePending?: boolean;
+  onHistorySaveRiskChange?: (hasUnsavedSnapshot: boolean) => void;
   stacMode?: 'public' | 'pro'; // Public MPC vs MPC Pro (private GeoCatalog) for STAC routing
 }
 
@@ -237,6 +256,11 @@ const Chat: React.FC<ChatProps> = ({
   onComparisonResult,
   selectedModel,
   reasoningEffort,
+  chatHistoryEnabled = false,
+  onRestoreContext,
+  mapAnalysisPending = false,
+  historyRestorePending = false,
+  onHistorySaveRiskChange,
   stacMode,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -326,7 +350,26 @@ const Chat: React.FC<ChatProps> = ({
   const initialQueryRef = useRef(false);
   const [lastResponse, setLastResponse] = useState<string>('');
   // Add conversation ID to maintain context across messages
-  const [conversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [conversationId, setConversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySaveState, setHistorySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const lastSavedSnapshotRef = useRef('');
+  const lastServerRevisionRef = useRef(0);
+  const historyGenerationRef = useRef(0);
+  const historySaveInFlightRef = useRef(false);
+  const historyMountedRef = useRef(true);
+  const terminalHistoryFailureRef = useRef(false);
+  const historyRestoreWasPendingRef = useRef(false);
+  const historyRetryTimerRef = useRef<number | null>(null);
+  const pendingHistorySaveRef = useRef<{
+    sessionId: string;
+    snapshot: Omit<ChatHistorySnapshot, 'expectedRevision'>;
+    fingerprint: string;
+    generation: number;
+    attempts: number;
+  } | null>(null);
+  const retryHistorySaveRef = useRef<typeof pendingHistorySaveRef.current>(null);
+  const restoringDatasetIdRef = useRef<string | null>(null);
   
   //  Local vision session ID tracking (for first message -> follow-ups)
   const [localVisionSessionId, setLocalVisionSessionId] = useState<string | null>(null);
@@ -368,6 +411,13 @@ const Chat: React.FC<ChatProps> = ({
 
   // Add injection message when dataset is selected
   useEffect(() => {
+    if (
+      restoringDatasetIdRef.current &&
+      selectedDataset?.id === restoringDatasetIdRef.current
+    ) {
+      restoringDatasetIdRef.current = null;
+      return;
+    }
     if (selectedDataset && chatMode) {
       const injectionMessage: ChatMessage = {
         role: 'assistant',
@@ -774,7 +824,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Comparison agent response:', response);
@@ -851,7 +902,7 @@ const Chat: React.FC<ChatProps> = ({
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
               undefined, // signal
-              { latitude_b: pinB.lat, longitude_b: pinB.lng }
+              { latitude_b: pinB.lat, longitude_b: pinB.lng, stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Mobility agent response:', response);
@@ -891,7 +942,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query - the damage assessment question
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include loaded map imagery
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Building damage response:', response);
@@ -931,7 +983,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query - the climate question
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Extreme weather response:', response);
@@ -2482,6 +2535,295 @@ const Chat: React.FC<ChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const drainHistorySaves = async () => {
+    if (historySaveInFlightRef.current) return;
+    historySaveInFlightRef.current = true;
+    let retryScheduled = false;
+    let conflictBlocked = false;
+    try {
+      while (retryHistorySaveRef.current || pendingHistorySaveRef.current) {
+        const pending = retryHistorySaveRef.current || pendingHistorySaveRef.current!;
+        if (retryHistorySaveRef.current) retryHistorySaveRef.current = null;
+        else pendingHistorySaveRef.current = null;
+        if (pending.generation !== historyGenerationRef.current) continue;
+
+        const attemptedRevision = lastServerRevisionRef.current;
+        try {
+          const saved = await apiService.saveChatSession(pending.sessionId, {
+            ...pending.snapshot,
+            expectedRevision: attemptedRevision,
+          });
+          if (pending.generation !== historyGenerationRef.current) continue;
+          lastServerRevisionRef.current = saved.revision;
+          lastSavedSnapshotRef.current = pending.fingerprint;
+          terminalHistoryFailureRef.current = false;
+          if (historyMountedRef.current) {
+            setHistorySaveState(pendingHistorySaveRef.current ? 'saving' : 'saved');
+          }
+        } catch (error) {
+          if (pending.generation === historyGenerationRef.current) {
+            console.error(' Chat: Failed to save chat history:', error);
+            const status = (error as any)?.response?.status;
+            const attempts = pending.attempts + 1;
+            if (status !== 409 && attempts <= 3) {
+              retryHistorySaveRef.current = { ...pending, attempts };
+              if (historyMountedRef.current) setHistorySaveState('saving');
+              retryScheduled = true;
+              historyRetryTimerRef.current = window.setTimeout(() => {
+                historyRetryTimerRef.current = null;
+                void drainHistorySaves();
+              }, 1000 * attempts);
+            } else if (pendingHistorySaveRef.current) {
+              try {
+                const server = await apiService.getChatSession(pending.sessionId);
+                const resolution = reconcileAmbiguousHistorySave(
+                  server,
+                  pending.snapshot.mutationId,
+                  attemptedRevision,
+                );
+                if (resolution === 'committed') {
+                  lastServerRevisionRef.current = server.revision;
+                  lastSavedSnapshotRef.current = pending.fingerprint;
+                  terminalHistoryFailureRef.current = false;
+                  continue;
+                }
+                if (resolution === 'unchanged') {
+                  continue;
+                }
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              } catch (reconcileError) {
+                console.error(' Chat: Failed to reconcile chat history:', reconcileError);
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              }
+            } else {
+              try {
+                const server = await apiService.getChatSession(pending.sessionId);
+                const resolution = reconcileAmbiguousHistorySave(
+                  server,
+                  pending.snapshot.mutationId,
+                  attemptedRevision,
+                );
+                if (resolution === 'committed') {
+                  lastServerRevisionRef.current = server.revision;
+                  lastSavedSnapshotRef.current = pending.fingerprint;
+                  terminalHistoryFailureRef.current = false;
+                  if (historyMountedRef.current) setHistorySaveState('saved');
+                } else {
+                  pendingHistorySaveRef.current = pending;
+                  conflictBlocked = true;
+                  terminalHistoryFailureRef.current = true;
+                  if (historyMountedRef.current) setHistorySaveState('error');
+                }
+              } catch (reconcileError) {
+                console.error(' Chat: Failed to reconcile chat history:', reconcileError);
+                pendingHistorySaveRef.current = pending;
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              }
+            }
+          }
+          break;
+        }
+      }
+    } finally {
+      historySaveInFlightRef.current = false;
+      if (
+        (retryHistorySaveRef.current || pendingHistorySaveRef.current) &&
+        !retryScheduled &&
+        !conflictBlocked
+      ) {
+        void drainHistorySaves();
+      }
+    }
+  };
+
+  useEffect(() => {
+    historyMountedRef.current = true;
+    return () => {
+      historyMountedRef.current = false;
+      if (historyRetryTimerRef.current !== null) {
+        window.clearTimeout(historyRetryTimerRef.current);
+        historyRetryTimerRef.current = null;
+      }
+      const unmountAction = historyUnmountAction(
+        terminalHistoryFailureRef.current,
+        Boolean(retryHistorySaveRef.current || pendingHistorySaveRef.current),
+      );
+      if (unmountAction === 'discard') {
+        historyGenerationRef.current += 1;
+        retryHistorySaveRef.current = null;
+        pendingHistorySaveRef.current = null;
+      } else if (unmountAction === 'flush') {
+        void drainHistorySaves();
+      }
+    };
+  }, []);
+
+  const mapAnalysisBusy = mapAnalysisPending || (
+    mobilityAnalysisResult?.type === 'thinking' ||
+    mobilityAnalysisResult?.type === 'pending'
+  );
+
+  useEffect(() => {
+    if (
+      !chatHistoryEnabled ||
+      chatMutation.isPending ||
+      privateSearchMutation.isPending ||
+      partsPending ||
+      mapAnalysisBusy
+    ) {
+      return;
+    }
+    if (historyRestorePending) {
+      historyRestoreWasPendingRef.current = true;
+      return;
+    }
+
+    const persistedMessages = persistedChatMessages(messages);
+    if (!persistedMessages.some((message) => message.role === 'user')) {
+      return;
+    }
+    const snapshot: Omit<ChatHistorySnapshot, 'expectedRevision' | 'mutationId'> = {
+      messages: persistedMessages,
+      context: {
+        selectedModel: selectedModel || undefined,
+        reasoningEffort: reasoningEffort || undefined,
+        selectedModule: selectedModule || undefined,
+        selectedDataset: selectedDataset
+          ? {
+              id: selectedDataset.id,
+              title: selectedDataset.title,
+              description: selectedDataset.description,
+            }
+          : undefined,
+        stacMode,
+        pin: currentPin || undefined,
+        map: mapContext
+          ? {
+              bounds: mapContext.bounds,
+              current_collection: mapContext.current_collection,
+              has_satellite_data: mapContext.has_satellite_data,
+              imagery_url: mapContext.imagery_url,
+              item_id: mapContext.item_id,
+              datetime: mapContext.datetime,
+              zoom_level: mapContext.zoom_level,
+              tile_urls: boundedHistoryTileUrls(mapContext.tile_urls),
+              vision_mode: mapContext.vision_mode,
+              vision_pin: mapContext.vision_pin,
+            }
+          : undefined,
+      },
+    };
+    const fingerprint = chatHistoryFingerprint(snapshot);
+    if (historyRestoreWasPendingRef.current) {
+      historyRestoreWasPendingRef.current = false;
+      lastSavedSnapshotRef.current = fingerprint;
+      setHistorySaveState('saved');
+      return;
+    }
+    if (fingerprint === lastSavedSnapshotRef.current) return;
+
+    setHistorySaveState('saving');
+    terminalHistoryFailureRef.current = false;
+    pendingHistorySaveRef.current = {
+      sessionId: conversationId,
+      snapshot: {
+        ...snapshot,
+        mutationId: createChatHistoryMutationId(),
+      },
+      fingerprint,
+      generation: historyGenerationRef.current,
+      attempts: 0,
+    };
+    void drainHistorySaves();
+  }, [
+    chatHistoryEnabled,
+    chatMutation.isPending,
+    conversationId,
+    currentPin,
+    mapContext,
+    mapAnalysisBusy,
+    messages,
+    partsPending,
+    privateSearchMutation.isPending,
+    reasoningEffort,
+    historyRestorePending,
+    selectedDataset,
+    selectedModel,
+    selectedModule,
+    stacMode,
+  ]);
+
+  const handleLoadHistorySession = (session: ChatHistorySession) => {
+    if (chatMutation.isPending || privateSearchMutation.isPending || partsPending || mapAnalysisBusy || historySaveState === 'saving') {
+      return false;
+    }
+    const failedSave = hasFailedHistorySave(
+      historySaveState,
+      Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+    );
+    if (!confirmFailedHistoryDiscard(failedSave)) return false;
+    const restoredMessages = restoreChatMessages(session.messages);
+    historyGenerationRef.current += 1;
+    terminalHistoryFailureRef.current = false;
+    pendingHistorySaveRef.current = null;
+    retryHistorySaveRef.current = null;
+    if (historyRetryTimerRef.current !== null) {
+      window.clearTimeout(historyRetryTimerRef.current);
+      historyRetryTimerRef.current = null;
+    }
+    lastServerRevisionRef.current = session.revision;
+    const restoredContext = onRestoreContext?.(session.context) || session.context;
+    restoringDatasetIdRef.current = restoredContext.selectedDataset?.id || null;
+    lastSavedSnapshotRef.current = chatHistoryFingerprint({
+      messages: restoredMessages,
+      context: restoredContext,
+    });
+    setConversationId(session.sessionId);
+    setMessages(restoredMessages);
+    setPendingConfirms([]);
+    setFeedback({});
+    setHistorySaveState('saved');
+    return true;
+  };
+
+  const historyBusy = (
+    chatMutation.isPending ||
+    privateSearchMutation.isPending ||
+    partsPending ||
+    mapAnalysisBusy ||
+    historySaveState === 'saving'
+  );
+
+  const failedHistorySave = hasFailedHistorySave(
+    historySaveState,
+    Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+  );
+  const historySaveAtRisk = isHistorySaveAtRisk(
+    historySaveState,
+    Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+  );
+
+  useEffect(() => {
+    onHistorySaveRiskChange?.(historySaveAtRisk);
+    return () => onHistorySaveRiskChange?.(false);
+  }, [historySaveAtRisk, onHistorySaveRiskChange]);
+
+  useEffect(() => {
+    if (!historySaveAtRisk) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [historySaveAtRisk]);
+
   const getPlanetaryComputerExamples = (dataset: Dataset | null): string[] => {
     const defaultExamples = [
       'Show Sentinel-2 images of Seattle from last month',
@@ -2580,8 +2922,38 @@ const Chat: React.FC<ChatProps> = ({
     <div className="right">
       <div className="chat chat-container">
         <div className="header">
-          <span>Planetary Explorer Agent</span>
+          <span className="chat-header-title">Planetary Explorer Agent</span>
+          {chatHistoryEnabled && (
+            <div className="chat-history-toolbar">
+              <span className={`chat-save-state ${historySaveState}`} aria-live="polite">
+                {historySaveState === 'saving' && 'Saving'}
+                {historySaveState === 'saved' && 'Saved'}
+                {historySaveState === 'error' && 'Save failed'}
+              </span>
+              <button
+                type="button"
+                className="chat-history-trigger"
+                onClick={() => setHistoryOpen(true)}
+                disabled={historyBusy}
+                aria-label="Open saved chat sessions"
+                title="Saved chat sessions"
+              >
+                <History size={17} aria-hidden="true" />
+                <span>History</span>
+              </button>
+            </div>
+          )}
         </div>
+
+        <ChatHistoryDrawer
+          activeSessionId={conversationId}
+          enabled={chatHistoryEnabled}
+          busy={historyBusy}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onLoad={handleLoadHistorySession}
+          onActiveSessionDeleted={() => onRestartSession?.(true)}
+        />
 
         <div className="messages">
           {/* Examples removed to prevent flash on page load */}

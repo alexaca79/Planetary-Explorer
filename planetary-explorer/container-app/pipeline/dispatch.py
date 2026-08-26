@@ -160,7 +160,12 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         if isinstance(entry, str):
             tile_urls.append(entry)
         elif isinstance(entry, dict):
-            url = entry.get("url") or entry.get("href") or entry.get("tile_url")
+            url = (
+                entry.get("url")
+                or entry.get("href")
+                or entry.get("tile_url")
+                or entry.get("tilejson_url")
+            )
             if isinstance(url, str) and url.strip():
                 tile_urls.append(url)
 

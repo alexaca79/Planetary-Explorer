@@ -162,4 +162,118 @@ describe('ModelSelector', () => {
     expect(onReasoningEffortChange).toHaveBeenLastCalledWith('none');
     expect(localStorage.getItem('planetaryexplorer-reasoning-effort')).toBe('none');
   });
+
+  it('synchronizes a restored model after mount and preserves it on refresh', async () => {
+    // Arrange
+    mockedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        checks: {
+          azure_openai: {
+            status: 'configured',
+            model: 'gpt-4o',
+            available_models: ['gpt-4o', 'gpt-5.6-sol'],
+            model_capabilities: {
+              'gpt-4o': {
+                reasoning_efforts: ['none'],
+                default_reasoning_effort: 'none',
+              },
+              'gpt-5.6-sol': {
+                reasoning_efforts: ['none', 'medium', 'high'],
+                default_reasoning_effort: 'medium',
+              },
+            },
+          },
+        },
+      }),
+    } as Response);
+    const onModelChange = vi.fn();
+    const { rerender } = render(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="gpt-4o"
+        selectedReasoningEffort="none"
+        onModelChange={onModelChange}
+      />
+    );
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith('gpt-4o'));
+
+    // Act
+    rerender(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="gpt-5.6-sol"
+        selectedReasoningEffort="high"
+        onModelChange={onModelChange}
+      />
+    );
+    fireEvent.click(screen.getByText('Models'));
+
+    // Assert
+    await waitFor(() => expect(
+      screen.getByRole('option', { name: /GPT-5\.6 Sol/i }),
+    ).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByRole('button', { name: 'High' })).toHaveAttribute('aria-pressed', 'true');
+
+    rerender(
+      <ModelSelector
+        apiBaseUrl="https://api.example/refreshed"
+        selectedModel="gpt-5.6-sol"
+        selectedReasoningEffort="high"
+        onModelChange={onModelChange}
+      />
+    );
+    await waitFor(() => expect(onModelChange).toHaveBeenLastCalledWith('gpt-5.6-sol'));
+  });
+
+  it('publishes fallback values for an unavailable restored model and effort', async () => {
+    // Arrange
+    const onModelChange = vi.fn();
+    const onReasoningEffortChange = vi.fn();
+    mockedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        checks: {
+          azure_openai: {
+            status: 'configured',
+            model: 'gpt-4o',
+            available_models: ['gpt-4o'],
+            model_capabilities: {
+              'gpt-4o': {
+                reasoning_efforts: ['none'],
+                default_reasoning_effort: 'none',
+              },
+            },
+          },
+        },
+      }),
+    } as Response);
+    const { rerender } = render(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="gpt-4o"
+        selectedReasoningEffort="none"
+        onModelChange={onModelChange}
+        onReasoningEffortChange={onReasoningEffortChange}
+      />
+    );
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith('gpt-4o'));
+    onModelChange.mockClear();
+    onReasoningEffortChange.mockClear();
+
+    // Act
+    rerender(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="retired-model"
+        selectedReasoningEffort="high"
+        onModelChange={onModelChange}
+        onReasoningEffortChange={onReasoningEffortChange}
+      />
+    );
+
+    // Assert
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith('gpt-4o'));
+    expect(onReasoningEffortChange).toHaveBeenCalledWith('none');
+  });
 });
