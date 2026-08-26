@@ -1,12 +1,8 @@
 """
 Router Agent - Heuristic + LLM-assisted query classification and routing.
 
-Wave 4 retired the Semantic Kernel ChatCompletionAgent that previously drove
-this module. The kernel-function tools were dead code (route_query produced
-the action dict directly via heuristics + two narrow LLM helpers, never
-delegating to the agent). This module now uses direct
-`AsyncAzureOpenAI` calls via `pipeline._aoai.get_aoai_client()` and the
-shared `SessionContextStore`.
+This module uses direct `AsyncAzureOpenAI` calls through
+`pipeline._aoai.get_aoai_client()` and the shared `SessionContextStore`.
 
 Public API preserved for backward compatibility with `fastapi_app.py`:
 - `RouterAgent` class
@@ -59,10 +55,8 @@ except Exception as e:
 # ROUTER AGENT TOOLS - backing storage for session context
 # ============================================================================
 #
-# Historically `tools.session_contexts` was a plain dict bolted onto the
-# Semantic Kernel plugin object so its kernel_function methods could share
-# state. Wave 4 moved the actual storage into `pipeline.session_store`. We
-# expose it here as a property so legacy code that does
+# Session state lives in `pipeline.session_store`. We expose it here as a
+# property so existing code that does
 #     router_agent.tools.session_contexts.get(sid, {})
 #     router_agent.tools.session_contexts[sid]["foo"] = ...
 # keeps working unchanged.
@@ -103,14 +97,14 @@ class RouterAgentTools:
 class RouterAgent:
     """Heuristic + LLM-assisted classifier producing the legacy action dict.
 
-    No longer depends on Semantic Kernel. The two LLM helpers
-    (`_classify_query_with_llm`, `_extract_location_only`) issue direct
-    chat-completions calls via `pipeline._aoai.get_aoai_client()`.
+    The two LLM helpers (`_classify_query_with_llm`,
+    `_extract_location_only`) issue direct chat-completions calls through
+    `pipeline._aoai.get_aoai_client()`.
     """
 
     def __init__(self) -> None:
         self.tools = RouterAgentTools()
-        logger.info(" RouterAgent created (direct AOAI, no Semantic Kernel)")
+        logger.info(" RouterAgent created (direct Azure OpenAI)")
 
     # -- accessor passthroughs ------------------------------------------------
 

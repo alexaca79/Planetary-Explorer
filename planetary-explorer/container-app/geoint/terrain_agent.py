@@ -1,7 +1,6 @@
 """
 Terrain Agent - Azure AI Agent Service with Function Tools
 
-Refactored from Semantic Kernel ChatCompletionAgent to Azure AI Agent Service.
 Uses AgentsClient with FunctionTool/ToolSet for automatic function calling.
 
 This agent:

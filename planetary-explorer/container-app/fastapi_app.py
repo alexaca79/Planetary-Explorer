@@ -1,7 +1,7 @@
 # FastAPI Planetary Explorer API - Complete Implementation
 # Containerized version with full Planetary Explorer functionality ported from Azure Functions
-# Wave 5: Semantic Kernel retired; routing handled by RouterAgent (Microsoft Agent
-# Framework) with deterministic pre-checks + AsyncAzureOpenAI classifier.
+# Routing uses RouterAgent with Microsoft Agent Framework, deterministic
+# pre-checks, and an AsyncAzureOpenAI classifier.
 
 from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -581,7 +581,7 @@ def _apply_stac_mode_override(stac_endpoint: str, req_body: Dict[str, Any] | Non
     return stac_endpoint
 
 # Feature availability flags
-SEMANTIC_KERNEL_AVAILABLE = True  # Will be updated in startup
+AGENT_FRAMEWORK_AVAILABLE = True  # Will be updated in startup
 
 
 def _split_id_tokens(s: str) -> List[str]:
@@ -1170,7 +1170,7 @@ async def _prewarm_collection_index():
 @app.on_event("startup")
 async def startup_event():
     """Initialize the application components"""
-    global semantic_translator, global_translator, SEMANTIC_KERNEL_AVAILABLE, router_agent
+    global semantic_translator, global_translator, AGENT_FRAMEWORK_AVAILABLE, router_agent
     global terrain_analyzer, mobility_classifier, los_calculator, geoint_utils, GEOINT_AVAILABLE
     
     logger.info("[LAUNCH] PLANETARY EXPLORER CONTAINER STARTING UP")
@@ -1204,15 +1204,17 @@ async def startup_event():
                     model_name=azure_openai_deployment,
                     azure_credential=credential  # Pass credential for managed identity
                 )
+                if not await semantic_translator.initialize_agent_runtime():
+                    raise RuntimeError("Microsoft Agent Framework provider initialization failed")
                 global_translator = semantic_translator  # For session management
-                SEMANTIC_KERNEL_AVAILABLE = True
+                AGENT_FRAMEWORK_AVAILABLE = True
                 logger.info("[OK] Planetary Explorer API initialized successfully with Semantic Translator (Managed Identity)")
             except Exception as e:
                 logger.error(f"[FAIL] Failed to initialize with managed identity: {e}")
                 logger.warning("[WARN] Running in limited mode - no Azure OpenAI access")
                 semantic_translator = None
                 global_translator = None
-                SEMANTIC_KERNEL_AVAILABLE = False
+                AGENT_FRAMEWORK_AVAILABLE = False
         # API-key fallback (only when MI is explicitly disabled)
         elif azure_openai_endpoint and azure_openai_api_key:
             semantic_translator = SemanticQueryTranslator(
@@ -1220,14 +1222,16 @@ async def startup_event():
                 azure_openai_api_key=azure_openai_api_key,
                 model_name=azure_openai_deployment
             )
+            if not await semantic_translator.initialize_agent_runtime():
+                raise RuntimeError("Microsoft Agent Framework provider initialization failed")
             global_translator = semantic_translator  # For session management
-            SEMANTIC_KERNEL_AVAILABLE = True
+            AGENT_FRAMEWORK_AVAILABLE = True
             logger.info("[OK] Planetary Explorer API initialized successfully with Semantic Translator (API Key)")
         else:
             logger.warning("[WARN] Azure OpenAI credentials not provided - running in limited mode")
             semantic_translator = None
             global_translator = None
-            SEMANTIC_KERNEL_AVAILABLE = False
+            AGENT_FRAMEWORK_AVAILABLE = False
             
         # GEOINT endpoints use lazy imports - no initialization needed here
         logger.info("[OK] GEOINT endpoints ready (lazy import mode)")
@@ -1302,7 +1306,7 @@ async def startup_event():
         semantic_translator = None
         global_translator = None
         router_agent = None
-        SEMANTIC_KERNEL_AVAILABLE = False
+        AGENT_FRAMEWORK_AVAILABLE = False
 
 # Helper functions ported from Router Function App
 def detect_collections(query: str) -> List[str]:
@@ -6116,8 +6120,8 @@ async def unified_query_processor(request: Request):
                     "router_action": router_action
                 }
         
-        logger.info(f"[SEARCH] SEMANTIC_KERNEL_AVAILABLE: {SEMANTIC_KERNEL_AVAILABLE}")
-        if SEMANTIC_KERNEL_AVAILABLE and global_translator:
+        logger.info(f"[SEARCH] AGENT_FRAMEWORK_AVAILABLE: {AGENT_FRAMEWORK_AVAILABLE}")
+        if AGENT_FRAMEWORK_AVAILABLE and global_translator:
             try:
                 translator = global_translator
                 
@@ -6606,8 +6610,8 @@ async def unified_query_processor(request: Request):
                 logger.info(f"[SKIP] Skipping collection mapping for {intent_type} query (no STAC search needed)")
         
         if not skip_collection_mapping:
-            if not SEMANTIC_KERNEL_AVAILABLE:
-                logger.warning("[WARN] Semantic Kernel not available, using fallback processing")
+            if not AGENT_FRAMEWORK_AVAILABLE:
+                logger.warning("[WARN] Agent Framework translator not available, using fallback processing")
                 
                 # Fallback: Simple collection detection (like Router Function App)
                 collections = detect_collections(natural_query)
@@ -6621,7 +6625,7 @@ async def unified_query_processor(request: Request):
                     stac_query = build_stac_query(stac_params)
                     logger.info(f"[TOOL] Built fallback STAC query: {json.dumps(stac_query, indent=2)}")
                 
-            elif SEMANTIC_KERNEL_AVAILABLE and translator:
+            elif AGENT_FRAMEWORK_AVAILABLE and translator:
                 try:
                     logger.info(f"[BOT] Starting multi-agent pipeline — query='{natural_query}' pin={pin}")
                     
@@ -7000,7 +7004,7 @@ async def unified_query_processor(request: Request):
                     # 2. Ensuring "NO GAPS in spatial coverage" (explicit in GPT prompt)
                     # 3. Using context-aware tile limits (5-50 based on AOI size)
                     # Pre-filtering with geometric overlap could remove tiles Agent 3 needs for seamless coverage
-                    if SEMANTIC_KERNEL_AVAILABLE and translator and raw_features and stac_query.get("bbox"):
+                    if AGENT_FRAMEWORK_AVAILABLE and translator and raw_features and stac_query.get("bbox"):
                         requested_bbox = stac_query.get("bbox")
                         
                         # Pass ALL tiles to Agent 3 for intelligent selection
@@ -7206,7 +7210,7 @@ async def unified_query_processor(request: Request):
         logger.info(f"[SEARCH] RESPONSE GENERATION DEBUG:")
         logger.info(f"   - features count: {len(features) if features else 0}")
         logger.info(f"   - stac_response features: {len(stac_response.get('results', {}).get('features', []))}")
-        logger.info(f"   - SEMANTIC_KERNEL_AVAILABLE: {SEMANTIC_KERNEL_AVAILABLE}")
+        logger.info(f"   - AGENT_FRAMEWORK_AVAILABLE: {AGENT_FRAMEWORK_AVAILABLE}")
         logger.info(f"   - translator: {translator is not None}")
         logger.info(f"   - stac_query: {stac_query is not None}")
         
@@ -7219,7 +7223,7 @@ async def unified_query_processor(request: Request):
             features = stac_response_features
             search_diagnostics["final_count"] = len(features)
         
-        if SEMANTIC_KERNEL_AVAILABLE and translator and features:
+        if AGENT_FRAMEWORK_AVAILABLE and translator and features:
             try:
                 logger.info("[NOTE] Generating contextual response message...")
                 
@@ -7279,7 +7283,7 @@ async def unified_query_processor(request: Request):
             except Exception as e:
                 logger.error(f"[FAIL] Response generation failed: {e}")
                 response_message = generate_fallback_response(natural_query, features, stac_query.get("collections", []) if stac_query else [])
-        elif not features and stac_query and SEMANTIC_KERNEL_AVAILABLE and translator:
+        elif not features and stac_query and AGENT_FRAMEWORK_AVAILABLE and translator:
             # [NEW] ENHANCED: Use GPT to generate context-aware response for empty results
             # GPT analyzes the specific failure point and provides intelligent, actionable suggestions
             try:
@@ -7300,7 +7304,7 @@ async def unified_query_processor(request: Request):
                     search_diagnostics
                 )
         elif not features and stac_query:
-            # Fallback: Use rule-based response if Semantic Kernel not available
+            # Fallback: Use a rule-based response when Agent Framework is unavailable.
             logger.info(f"ℹ️ No features found - using rule-based diagnostic response (failure stage: {search_diagnostics.get('failure_stage')})")
             response_message = generate_contextual_empty_response(
                 natural_query, 
@@ -7321,7 +7325,7 @@ async def unified_query_processor(request: Request):
         requested_collections = stac_query.get("collections", []) if stac_query else []
 
         # GROUND-TRUTH COLLECTION RESOLUTION.
-        # The semantic-kernel translator emits canonical public-PC ids
+        # The agent translator emits canonical public-PC ids
         # (e.g. ``sentinel-2-l2a``) even when the user named a private
         # collection (``sentinel2-fire``). ``execute_direct_stac_search``
         # then fuzzy-remaps to the actual Pro id internally, but only
@@ -7777,7 +7781,7 @@ async def unified_query_processor(request: Request):
             "debug": {
                 "stac_routing": _stac_routing_debug,
                 "semantic_translator": {
-                    "available": SEMANTIC_KERNEL_AVAILABLE,
+                    "available": AGENT_FRAMEWORK_AVAILABLE,
                     "selected_collections": stac_query.get("collections", []) if stac_query else [],
                     "location_info": {
                         "bbox": stac_query.get("bbox") if stac_query else None,
@@ -8160,7 +8164,7 @@ async def session_reset(request: Request):
         await get_analyst_agent().reset_session(conversation_id)
         
         # Reset conversation context if translator is available
-        if SEMANTIC_KERNEL_AVAILABLE and global_translator:
+        if AGENT_FRAMEWORK_AVAILABLE and global_translator:
             global_translator.reset_conversation_context(conversation_id)
             message = f"Session {client_conversation_id} reset successfully"
         else:

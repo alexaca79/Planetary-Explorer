@@ -1163,7 +1163,7 @@ jobs:
   # GEOINT agents (Vision, Terrain, Mobility, Building Damage, Comparison,
   # Extreme Weather) can use multi-turn tool orchestration.
   #
-  # The Router Agent works immediately (Semantic Kernel + Azure OpenAI),
+  # The Router Agent works immediately (Microsoft Agent Framework + Azure OpenAI),
   # but all specialized GEOINT agents require Agent Service to function.
   #
   # This job:

@@ -8,14 +8,17 @@ Run this script to verify that all critical dependencies are correctly installed
 """
 
 import sys
-import importlib.util
+import importlib
+from importlib.metadata import PackageNotFoundError, version as package_version
+
 from packaging import version
 
-def check_module(module_name, min_version=None, exact_version=None):
+
+def check_module(module_name, min_version=None, exact_version=None, distribution_name=None):
     """Check if a module can be imported and meets version requirements."""
     try:
-        module = importlib.import_module(module_name)
-        module_version = getattr(module, '__version__', 'unknown')
+        importlib.import_module(module_name)
+        module_version = package_version(distribution_name or module_name)
         
         if exact_version and module_version != exact_version:
             print(f"  {module_name}: {module_version} (expected exactly {exact_version})")
@@ -27,50 +30,46 @@ def check_module(module_name, min_version=None, exact_version=None):
             print(f" {module_name}: {module_version}")
             return True
             
-    except ImportError as e:
+    except (ImportError, PackageNotFoundError) as e:
         print(f" {module_name}: Not installed ({e})")
         return False
     except Exception as e:
         print(f"  {module_name}: Error checking version ({e})")
         return False
 
-def test_semantic_kernel_imports():
-    """Test semantic kernel specific imports that commonly fail."""
-    print("\n Testing Semantic Kernel imports...")
-    
+def test_agent_framework_imports():
+    """Verify the MAF OpenAI provider imports and constructs offline."""
+    print("\n Testing Microsoft Agent Framework imports...")
+
     try:
-        from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
-        print(" AzureChatCompletion import successful")
-    except ImportError as e:
-        print(f" AzureChatCompletion import failed: {e}")
-        return False
-    
-    try:
-        from semantic_kernel.functions import KernelFunction, KernelArguments
-        print(" KernelFunction, KernelArguments import successful")
-    except ImportError as e:
-        print(f" KernelFunction, KernelArguments import failed: {e}")
-        return False
-    
-    try:
-        from semantic_kernel import Kernel
-        kernel = Kernel()
-        print(" Kernel creation successful")
+        from agent_framework.openai import OpenAIChatCompletionClient
+
+        client = OpenAIChatCompletionClient(
+            model="verification-model",
+            azure_endpoint="https://example.openai.azure.com",
+            api_key="verification-key",
+            api_version="2024-10-21",
+        )
+        print(f" Agent Framework client creation successful ({type(client).__name__})")
     except Exception as e:
-        print(f" Kernel creation failed: {e}")
+        print(f" Agent Framework provider validation failed: {e}")
         return False
-    
+
     return True
 
 def main():
     print(" Planetary Explorer Installation Verification")
     print("=" * 50)
     
-    # Critical dependencies with exact versions
+    # Framework packages are kept on the same release line.
     critical_exact = {
-        'semantic_kernel': '1.36.2',
-        'pydantic': '2.11.9',
-        'openai': '1.107.2'
+        'agent-framework-core': ('agent_framework', '1.10.0'),
+        'agent-framework-openai': ('agent_framework.openai', '1.10.0'),
+    }
+
+    critical_minimum = {
+        'openai': '2.54.0',
+        'pydantic': '2.5.0',
     }
     
     # Core dependencies with minimum versions
@@ -91,8 +90,15 @@ def main():
     
     print("\n Checking critical dependencies (exact versions required):")
     critical_ok = True
-    for module, exact_ver in critical_exact.items():
-        if not check_module(module, exact_version=exact_ver):
+    for distribution, (module, exact_ver) in critical_exact.items():
+        if not check_module(
+            module,
+            exact_version=exact_ver,
+            distribution_name=distribution,
+        ):
+            critical_ok = False
+    for module, min_ver in critical_minimum.items():
+        if not check_module(module, min_version=min_ver):
             critical_ok = False
     
     print("\n Checking core dependencies:")
@@ -105,8 +111,7 @@ def main():
     for module in optional_deps:
         check_module(module)
     
-    # Test semantic kernel imports
-    imports_ok = test_semantic_kernel_imports()
+    imports_ok = test_agent_framework_imports()
     
     print("\n" + "=" * 50)
     if critical_ok and core_ok and imports_ok:
@@ -120,8 +125,8 @@ def main():
         print(" FAILED: Some components need attention")
         print("\nTo fix issues:")
         print("1. pip install -r requirements.txt")
-        print("2. For semantic kernel issues:")
-        print("   pip install --force-reinstall semantic-kernel==1.36.2 pydantic==2.11.9 openai==1.107.2")
+        print("2. For Agent Framework issues:")
+        print("   pip install --force-reinstall agent-framework-core==1.10.0 agent-framework-openai==1.10.0 'openai>=2.54.0,<3.0.0'")
         print("3. Re-run this script to verify")
         return 1
 

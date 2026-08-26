@@ -15,6 +15,8 @@ import time
 import hashlib
 import traceback
 
+from _framework.agent_runtime import AgentFrameworkRuntime
+
 # Import the consolidated location resolver
 from location_resolver import EnhancedLocationResolver
 from cloud_config import cloud_cfg  # [CLOUD] Cloud environment configuration
@@ -148,39 +150,8 @@ logging.basicConfig(
 )
 # Suppress verbose HTTP/SDK debug traffic that floods container logs
 for _noisy in ["httpcore", "httpx", "openai", "azure.core", "azure.identity",
-               "urllib3", "aiohttp", "semantic_kernel.connectors"]:
+               "urllib3", "aiohttp", "agent_framework"]:
     logging.getLogger(_noisy).setLevel(logging.WARNING)
-
-# Wave 5: Semantic Kernel package retired. The `sk_shim` module installs a
-# minimal AsyncAzureOpenAI-backed compatibility layer under the legacy
-# `semantic_kernel.*` import paths so the imports below resolve to the shim.
-import sk_shim  # noqa: F401  side-effect: registers sys.modules['semantic_kernel']
-
-try:
-    import semantic_kernel as sk
-    from semantic_kernel import Kernel
-    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
-    from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
-    from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
-    from semantic_kernel.contents.chat_history import ChatHistory
-    from semantic_kernel.functions.kernel_arguments import KernelArguments
-    from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import (
-        AzureChatPromptExecutionSettings,
-    )
-    from semantic_kernel.prompt_template.prompt_template_config import PromptTemplateConfig
-    from semantic_kernel.prompt_template.input_variable import InputVariable
-    from semantic_kernel.functions.kernel_function import KernelFunction
-    SK_AVAILABLE = True
-    logging.info(f"[OK] sk_shim {sk.__version__} active (no semantic-kernel package required)")
-except ImportError as e:
-    SK_AVAILABLE = False
-    logging.error(f"[ERROR] sk_shim import failed: {e}")
-    logging.error("This will prevent AI functionality - Planetary Explorer requires the sk_shim module")
-    raise ImportError(f"Semantic Kernel is required for Planetary Explorer functionality: {e}")
-except Exception as e:
-    SK_AVAILABLE = False
-    logging.error(f"[FAIL] Unexpected error loading Semantic Kernel: {e}")
-    raise Exception(f"Critical error initializing Semantic Kernel: {e}")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -243,7 +214,7 @@ class LocationCache:
 
 class GeocodingPlugin:
     """
-    Semantic Kernel plugin providing Azure Maps geocoding as an AI-callable tool.
+    Azure Maps geocoding tools exposed directly to Agent Framework agents.
     
     This enables "True Agent with Tools" architecture where GPT-5 can:
     1. Identify that a location needs verification
@@ -305,7 +276,7 @@ class GeocodingPlugin:
                         data = await response.json()
                         if data.get("results") and len(data["results"]) > 0:
                             result = data["results"][0]
-                            
+
                             # Extract location type
                             entity_type = result.get("entityType", "unknown")
                             type_mapping = {
@@ -486,12 +457,12 @@ class GeocodingPlugin:
                 "coordinates": {"latitude": latitude, "longitude": longitude}
             })
 
-# Create global instance for use by the kernel
+# Create a shared geocoding tool for Agent Framework agents.
 geocoding_plugin = GeocodingPlugin()
 
 
 class SemanticQueryTranslator:
-    """Enhanced query translator using Semantic Kernel with GPT-5 for intelligent entity extraction and contextual Earth science analysis"""
+    """Translate Earth-observation queries with Microsoft Agent Framework."""
     
     # ============================================================================
     # PERFORMANCE OPTIMIZATION: Intent-based keyword mapping
@@ -668,10 +639,13 @@ class SemanticQueryTranslator:
         "nasa nex-gddp-cmip6": ["nasa-nex-gddp-cmip6"],
     }
     
-    def __init__(self, azure_openai_endpoint: str, azure_openai_api_key: str, model_name: str, azure_credential=None):
-        if not SK_AVAILABLE:
-            raise ImportError("Semantic Kernel is not available")
-        
+    def __init__(
+        self,
+        azure_openai_endpoint: str,
+        azure_openai_api_key: str | None,
+        model_name: str,
+        azure_credential: Any = None,
+    ) -> None:
         # Store configuration for lazy initialization (GPT-5 optimized)
         self.azure_openai_endpoint = azure_openai_endpoint
         self.azure_openai_api_key = azure_openai_api_key
@@ -684,9 +658,9 @@ class SemanticQueryTranslator:
             "veda": "https://openveda.cloud/api/stac/search"
         }
         
-        # Kernel will be initialized lazily on first use
-        self.kernel = None
-        self._kernel_initialized = False
+        # Agent runtime is initialized lazily on first use.
+        self.agent_runtime: AgentFrameworkRuntime | None = None
+        self._agent_runtime_initialized = False
         
         # Initialize consolidated location resolver
         self.location_resolver = EnhancedLocationResolver()
@@ -907,9 +881,9 @@ class SemanticQueryTranslator:
         if model_name and model_name != self._model_override:
             logger.info(f"[BOT] Model override set: {self._model_override or self.model_name} -> {model_name}")
             self._model_override = model_name
-            # Reset kernel to reinitialize with new model
-            self.kernel = None
-            self._kernel_initialized = False
+            # Reset the runtime so the next request uses the new model.
+            self.agent_runtime = None
+            self._agent_runtime_initialized = False
     
     def get_active_model(self) -> str:
         """Get the currently active model name (override or default)."""
@@ -1251,24 +1225,15 @@ Query: "Show me the damage from Hurricane Sandy in NYC"
 Response: {{"intent_type": "stac", "needs_satellite_data": true, "needs_vision_analysis": false, "needs_contextual_info": false, "confidence": 0.93, "reasoning": "Contains 'show me' keyword - user wants to visualize/load imagery"}}
 """
             
-            # Use fast model for intent classification (lightweight task)
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            _cls_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
+            content = await self.agent_runtime.run(
+                prompt,
+                name="unified_intent_classifier",
+                tier="fast",
                 temperature=0.3,
-                max_completion_tokens=200
+                max_tokens=200,
+                response_format={"type": "json_object"},
             )
-            _cls_args = KernelArguments(settings=_cls_settings)
-            
-            result = await self.kernel.invoke_prompt(
-                prompt=prompt,
-                function_name="classify_query_unified",
-                plugin_name="classification",
-                arguments=_cls_args
-            )
-            
-            content = self._extract_clean_content_from_sk_result(result).strip()
+            content = content.strip()
             
             # Clean JSON markers
             if '```json' in content:
@@ -1347,25 +1312,14 @@ Return only: map_only_request, chat_only_request, or hybrid_request
 Query: "{query}"
 """
             
-            # Use fast model for fallback classification (lightweight task)
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            _cls_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
+            intent = await self.agent_runtime.run(
+                prompt,
+                name="fallback_intent_classifier",
+                tier="fast",
                 temperature=0.3,
-                max_completion_tokens=50
+                max_tokens=50,
             )
-            _cls_args = KernelArguments(settings=_cls_settings)
-            
-            # Use Semantic Kernel for classification
-            result = await self.kernel.invoke_prompt(
-                prompt=prompt,
-                function_name="classify_query",
-                plugin_name="classification",
-                arguments=_cls_args
-            )
-            
-            intent = self._extract_clean_content_from_sk_result(result).strip().lower()
+            intent = intent.strip().lower()
             logger.info(f"[BOT] GPT classified query '{query}' as: {intent}")
             
             # Return in expected format with auto-detected modules
@@ -1460,17 +1414,17 @@ Query: "{query}"
                 "reasoning": "Follow-up query - contextual analysis only"
             }
         
-        # Ensure kernel is initialized
-        await self._ensure_kernel_initialized()
+        # Ensure the Agent Framework runtime is initialized.
+        await self._ensure_agent_runtime_initialized()
         
-        if not self._kernel_initialized or self.kernel is None:
-            logger.warning("Semantic Kernel not available, defaulting to hybrid")
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
+            logger.warning("Agent Framework not available, defaulting to hybrid")
             return {
                 "intent_type": "hybrid",
                 "needs_satellite_data": True,
                 "needs_contextual_info": True,
                 "confidence": 0.5,
-                "fallback_reason": "Semantic Kernel not available"
+                "fallback_reason": "Agent Framework not available"
             }
         
         try:
@@ -1516,40 +1470,18 @@ Query: "{query}"
             Query to classify: "{{$query}}"
             """
             
-            # Create prompt configuration for SK 1.36.2
-            prompt_config = PromptTemplateConfig(
-                template=classification_prompt,
-                name="classify_query",
-                description="Classify user query for Planetary Explorer",
-                template_format="semantic-kernel",
-                input_variables=[
-                    InputVariable(name="query", description="The user's query to classify")
-                ]
-            )
-            
-            # Execute classification using SK 1.36.2 invoke_prompt
-            arguments = KernelArguments(query=query)
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=classification_prompt,
-                    function_name="classify_query",
-                    plugin_name="semantic_translator",
-                    arguments=arguments,
-                    prompt_template_config=prompt_config
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    classification_prompt.replace("{{$query}}", query),
+                    name="legacy_intent_classifier",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=300,
+                    response_format={"type": "json_object"},
                 ),
-                timeout=30.0
+                timeout=30.0,
             )
-            
-            # Parse the JSON response
-            content = str(result.value) if hasattr(result, 'value') else str(result)
             content = content.strip()
-            
-            # CRITICAL FIX: If result is wrapped in ChatMessageContent/TextContent, extract the actual text
-            if content.startswith('[ChatMessageContent') or content.startswith('[TextContent'):
-                import re
-                text_match = re.search(r"text='([^']+)'", content) or re.search(r'text="([^"]+)"', content)
-                if text_match:
-                    content = text_match.group(1)
             
             # Clean up the response to extract JSON
             if '```json' in content:
@@ -1587,195 +1519,65 @@ Query: "{query}"
     
 
         
-    async def _ensure_kernel_initialized(self):
-        """Lazy initialization of the Semantic Kernel with proper error handling"""
-        logger.info("[TOOL] _ensure_kernel_initialized() called")
-        logger.info(f"   Current state: _kernel_initialized={self._kernel_initialized}")
-        
-        if self._kernel_initialized:
-            logger.info(f"   [OK] Kernel already initialized, returning")
+    async def _ensure_agent_runtime_initialized(self):
+        """Lazily initialize Microsoft Agent Framework chat clients."""
+        if self._agent_runtime_initialized:
             return
-            
+
         try:
-            logger.info(f"   [SYNC] Starting kernel initialization...")
-            logger.info(f"   Azure OpenAI Endpoint: {self.azure_openai_endpoint}")
-            logger.info(f"   Model Name: {self.get_active_model()}")
-            logger.info(f"   API Key present: {bool(self.azure_openai_api_key)}")
-            logger.info(f"   Azure Credential present: {bool(self.azure_credential)}")
-            
-            self.kernel = Kernel()
-            logger.info(f"   [OK] Kernel object created")
-            
-            # Add Azure OpenAI service with optimal GPT configuration for SK 1.37.0+
-            # Use stable API version that works well with GPT-5
-            base_url = f"{self.azure_openai_endpoint}/openai" if not self.azure_openai_endpoint.endswith('/openai') else self.azure_openai_endpoint
-            logger.info(f"   Base URL: {base_url}")
-            
-            # Get the active model (supports runtime override)
             active_model = self.get_active_model()
-            
-            # Determine authentication method
-            ad_token_provider = None
-            if self.azure_credential and not self.azure_openai_api_key:
-                # Use managed identity - create token provider for fresh tokens
-                logger.info(f"   [KEY] Using managed identity authentication...")
-                # Token provider is a callable that returns fresh tokens
-                def get_token():
-                    token_response = self.azure_credential.get_token(cloud_cfg.cognitive_services_scope)
-                    logger.debug(f"   [SYNC] Refreshed Azure AD token (expires: {token_response.expires_on})")
-                    return token_response.token
-                ad_token_provider = get_token
-                # Verify token works on first call
-                test_token = ad_token_provider()
-                logger.info(f"   [OK] Verified Azure AD token acquisition")
-            
-            # Primary service: GPT-5 for complex reasoning tasks
-            if ad_token_provider:
-                azure_chat_service = AzureChatCompletion(
-                    deployment_name=active_model,
-                    ad_token_provider=ad_token_provider,
-                    base_url=base_url,
-                    api_version="2024-10-21",  # Stable API version with full GPT support
-                    service_id="chat-completion"  # Explicitly set service ID
-                )
-                logger.info(f"   [OK] AzureChatCompletion service created with managed identity ({active_model})")
-            else:
-                azure_chat_service = AzureChatCompletion(
-                    deployment_name=active_model,
-                    api_key=self.azure_openai_api_key,
-                    base_url=base_url,
-                    api_version="2024-10-21",  # Stable API version with full GPT support
-                    service_id="chat-completion"  # Explicitly set service ID
-                )
-                logger.info(f"   [OK] AzureChatCompletion service created with API key ({active_model})")
-            
-            self.kernel.add_service(azure_chat_service)
-            logger.info(f"   [OK] {active_model} service added to kernel")
-            
-            # Secondary service for lightweight tasks (classification, extraction, datetime parsing)
-            # Uses AZURE_OPENAI_FAST_DEPLOYMENT (gpt-4o-mini) for speed — these tasks
-            # don't need GPT-5's deep reasoning, just fast structured output.
             fast_model = os.getenv("AZURE_OPENAI_FAST_DEPLOYMENT", "gpt-4o-mini")
-            try:
-                if ad_token_provider:
-                    azure_chat_service_4o = AzureChatCompletion(
-                        deployment_name=fast_model,
-                        ad_token_provider=ad_token_provider,
-                        base_url=base_url,
-                        api_version="2024-10-21",
-                        service_id="chat-completion-4o"
-                    )
-                else:
-                    azure_chat_service_4o = AzureChatCompletion(
-                        deployment_name=fast_model,
-                        api_key=self.azure_openai_api_key,
-                        base_url=base_url,
-                        api_version="2024-10-21",
-                        service_id="chat-completion-4o"
-                    )
-                logger.info(f"   [OK] AzureChatCompletion FAST service created ({fast_model}) for lightweight tasks")
-                
-                self.kernel.add_service(azure_chat_service_4o)
-                logger.info(f"   [OK] Fast {fast_model} service added to kernel for classification/extraction")
-            except Exception as e:
-                logger.warning(f"   [WARN] Failed to add secondary service: {e}")
-                # Not fatal - will continue with primary service
-            
-            # ================================================================
-            # [MAP] REGISTER GEOCODING PLUGIN - Azure Maps tool for function calling
-            # ================================================================
-            # This enables the location extraction agent to call Azure Maps
-            # when the fast keyword match doesn't find a known location
-            try:
-                from semantic_kernel.functions import kernel_function
-                
-                # Create the geocoding function with proper decorator
-                @kernel_function(
-                    name="azure_maps_geocode",
-                    description="Geocode a location name using Azure Maps API. Returns bbox coordinates and location metadata. Use this to verify locations and get accurate coordinates."
-                )
-                async def geocode_location(location_name: str) -> str:
-                    """Geocode a location using Azure Maps"""
-                    return await geocoding_plugin.azure_maps_geocode(location_name)
-                
-                # Add as a plugin to the kernel
-                self.kernel.add_function(plugin_name="geocoding", function=geocode_location)
-                logger.info(f"   [OK] Geocoding plugin registered (azure_maps_geocode tool available)")
-            except Exception as e:
-                logger.warning(f"   [WARN] Failed to register geocoding plugin: {e}")
-                # Not fatal - will fall back to non-tool location extraction
-            
-            self._kernel_initialized = True
-            logger.info(f"   [OK] Kernel initialization SUCCESSFUL!")
-            auth_mode = "Managed Identity" if ad_token_provider else "API Key"
-            logger.info(f"   [OK] Semantic Kernel initialized with {self.model_name} at {base_url} ({auth_mode}, API v2024-10-21)")
-            
-        except Exception as e:
-            logger.error(f"   [FAIL] Kernel initialization FAILED!")
-            logger.error(f"   Exception type: {type(e).__name__}")
-            logger.error(f"   Exception message: {str(e)}")
-            logger.error(f"   Traceback:")
-            logger.error(traceback.format_exc())
-            # Raise error - require proper Azure OpenAI connection
-            self.kernel = None
-            self._kernel_initialized = False
+            self.agent_runtime = AgentFrameworkRuntime.from_azure_openai(
+                endpoint=self.azure_openai_endpoint,
+                primary_model=active_model,
+                fast_model=fast_model,
+                api_key=self.azure_openai_api_key or None,
+                credential=self.azure_credential,
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            )
+            self._agent_runtime_initialized = True
+            logger.info(
+                "Agent Framework initialized: primary=%s fast=%s auth=%s",
+                active_model,
+                fast_model,
+                "managed-identity"
+                if self.azure_credential and not self.azure_openai_api_key
+                else "api-key",
+            )
+        except Exception as exc:
+            logger.error("Agent Framework initialization failed: %s", exc)
+            logger.debug(traceback.format_exc())
+            self.agent_runtime = None
+            self._agent_runtime_initialized = False
+
+    async def initialize_agent_runtime(self) -> bool:
+        """Initialize the Agent Framework provider and report availability."""
+        await self._ensure_agent_runtime_initialized()
+        return self._agent_runtime_initialized and self.agent_runtime is not None
     
     async def test_connection(self) -> bool:
         """Test connection to Azure OpenAI model for health check"""
         try:
             logger.info(f"[SEARCH] Testing Azure OpenAI {self.model_name} connectivity...")
-            await self._ensure_kernel_initialized()
-            
-            if not self.kernel:
+            await self._ensure_agent_runtime_initialized()
+
+            if not self.agent_runtime:
                 return False
-            
-            # Create a simple test prompt
-            test_prompt = "Test connection - respond with 'OK'"
-            
-            # Create chat history for testing
-            from semantic_kernel.contents import ChatHistory
-            chat_history = ChatHistory()
-            chat_history.add_user_message(test_prompt)
-            
-            # Get the chat completion service
-            chat_completion = self.kernel.get_service("chat-completion")
-            
-            # Test with minimal settings and timeout
-            from semantic_kernel.connectors.ai.open_ai import AzureChatPromptExecutionSettings
-            execution_settings = AzureChatPromptExecutionSettings(
-                temperature=1.0,  # GPT-5 default temperature
-                max_completion_tokens=200,  # Sufficient for intent classification
-                service_id="chat-completion"
-            )
-            
-            # Try to get a response with timeout
+
             response = await asyncio.wait_for(
-                chat_completion.get_chat_message_content(
-                    chat_history=chat_history,
-                    settings=execution_settings,
-                    kernel=self.kernel
+                self.agent_runtime.run(
+                    "Respond with OK.",
+                    name="connection_test",
+                    max_tokens=20,
                 ),
-                timeout=30.0  # 30 second timeout for GPT models
+                timeout=30.0,
             )
-            
-            # Check if we got a valid response
-            # GPT-5 may return response with usage data but empty content in some cases
-            # This is normal - the model is working, just using reasoning tokens internally
-            if response:
-                if response.content:
-                    logger.info(f"[OK] Azure OpenAI {self.model_name} connectivity test successful: {response.content[:50]}...")
-                else:
-                    logger.info(f"[OK] Azure OpenAI {self.model_name} connectivity test successful (reasoning model response)")
-                return True
-            else:
-                logger.warning("[WARN] Azure OpenAI responded but with no response object")
-                return False
-                
-        except Exception as e:
-            logger.error(f"[FAIL] Azure OpenAI connectivity test failed: {e}")
-            logger.error(f"[FAIL] Full traceback: {traceback.format_exc()}")
-            return False
-                
+            logger.info(
+                "[OK] Azure OpenAI %s connectivity test successful: %s",
+                self.model_name,
+                response[:50],
+            )
+            return True
         except asyncio.TimeoutError:
             logger.error("[FAIL] Azure OpenAI connectivity test timed out")
             return False
@@ -1815,13 +1617,13 @@ Query: "{query}"
             return keyword_matched
         # ========================================================================
         
-        await self._ensure_kernel_initialized()
+        await self._ensure_agent_runtime_initialized()
         
-        logger.info(f"[SEARCH] AGENT 1 DEBUG: Kernel initialized? {self._kernel_initialized}")
-        logger.info(f"[SEARCH] AGENT 1 DEBUG: Kernel object exists? {self.kernel is not None}")
+        logger.info(f"[SEARCH] AGENT 1 DEBUG: Runtime initialized? {self._agent_runtime_initialized}")
+        logger.info(f"[SEARCH] AGENT 1 DEBUG: Runtime object exists? {self.agent_runtime is not None}")
         
-        if not self._kernel_initialized or self.kernel is None:
-            logger.warning("[WARN] AGENT 1: Kernel not initialized - falling back to keyword-based selection")
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
+            logger.warning("[WARN] AGENT 1: Runtime not initialized - falling back to keyword-based selection")
             fallback_result = self._select_collections_fallback(query)
             logger.info(f"[SYNC] AGENT 1 FALLBACK: Returned {len(fallback_result)} collections: {fallback_result}")
             return fallback_result
@@ -1901,63 +1703,20 @@ IMPORTANT CONSTRAINTS
 Return ONLY a JSON array of collection IDs. No explanations.
 Format: ["collection-id"]"""
 
-            logger.info("[TOOL] AGENT 1: Creating execution settings...")
-            # Execute with Semantic Kernel
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            
-            # Use fast model (gpt-4o-mini) for structured classification tasks
-            # Collection mapping is a lightweight task — just returns a JSON array of IDs
-            execution_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
-                temperature=0.3,  # Lower temp for precise classification
-                max_completion_tokens=300  # Reduced tokens (just need JSON array)
-            )
-            logger.info(f"[OK] AGENT 1: Execution settings created (fast model, temp=0.3, max_tokens=300)")
-            
-            arguments = KernelArguments(settings=execution_settings)
-            logger.info(f"[OK] AGENT 1: KernelArguments created")
-            
-            logger.info(f"[LAUNCH] AGENT 1: Calling kernel.invoke_prompt() with query: '{query[:100]}...'")
+            logger.info(f"[LAUNCH] AGENT 1: Calling MAF agent with query: '{query[:100]}...'")
             logger.info(f"[LAUNCH] AGENT 1: Prompt length: {len(prompt)} characters")
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=prompt,
-                    function_name="select_collections",
-                    plugin_name="collection_selector",
-                    arguments=arguments
+
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    prompt,
+                    name="collection_selector",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=300,
                 ),
-                timeout=30.0
+                timeout=30.0,
             )
-            
-            logger.info(f"[OK] AGENT 1: kernel.invoke_prompt() completed successfully")
-            logger.info(f"[SEARCH] AGENT 1: Result type: {type(result)}")
-            logger.info(f"[SEARCH] AGENT 1: Result has 'value' attr? {hasattr(result, 'value')}")
-            
-            # Extract result - handle Semantic Kernel response objects properly
-            if hasattr(result, 'value'):
-                content = str(result.value)
-                logger.info(f"[PAGE] AGENT 1: Extracted content from result.value")
-            else:
-                content = str(result)
-                logger.info(f"[PAGE] AGENT 1: Extracted content from str(result)")
-            
-            # CRITICAL FIX: If result is wrapped in ChatMessageContent/TextContent, extract the actual text
-            # This happens when SK returns a list of content objects instead of plain text
-            if content.startswith('[ChatMessageContent') or content.startswith('[TextContent'):
-                logger.info(f"[TOOL] AGENT 1: Detected wrapped SK content, extracting text...")
-                # Extract text from the content object(s)
-                # Pattern: text='["collection-id"]' or text="[\"collection-id\"]"
-                import re
-                text_match = re.search(r"text='([^']+)'", content) or re.search(r'text="([^"]+)"', content)
-                if text_match:
-                    content = text_match.group(1)
-                    logger.info(f"[OK] AGENT 1: Extracted text content: {content[:100]}")
-                else:
-                    logger.error(f"[FAIL] AGENT 1: Failed to extract text from wrapped content")
-                    logger.error(f"   Content preview: {content[:200]}")
-                    raise ValueError(f"Could not extract text from SK response")
+            logger.info("[OK] AGENT 1: MAF agent completed successfully")
             
             logger.info(f"[PAGE] AGENT 1: Raw GPT Response (first 500 chars):")
             logger.info(f"   {content[:500]}")
@@ -2520,15 +2279,15 @@ ESSENTIAL FIRE:
             Complete STAC query dict ready for API
         """
         
-        await self._ensure_kernel_initialized()
+        await self._ensure_agent_runtime_initialized()
         
-        print(f"[ALERT] DEBUG: After _ensure_kernel_initialized() - _kernel_initialized={self._kernel_initialized}, kernel={self.kernel is not None}")
+        print(f"[ALERT] DEBUG: After runtime initialization - initialized={self._agent_runtime_initialized}, runtime={self.agent_runtime is not None}")
         
-        if not self._kernel_initialized or self.kernel is None:
-            print(f"[FAIL][ALERT] DEBUG: KERNEL NOT INITIALIZED! Using fallback basic query builder")
-            print(f"   _kernel_initialized: {self._kernel_initialized}")
-            print(f"   self.kernel: {self.kernel}")
-            logger.warning("[WARN] Kernel not initialized - using basic query builder")
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
+            print(f"[FAIL][ALERT] DEBUG: AGENT RUNTIME NOT INITIALIZED! Using fallback basic query builder")
+            print(f"   runtime_initialized: {self._agent_runtime_initialized}")
+            print(f"   agent_runtime: {self.agent_runtime}")
+            logger.warning("[WARN] Agent runtime not initialized - using basic query builder")
             return await self._build_stac_query_basic(query, collections)
         
         try:
@@ -2785,17 +2544,17 @@ ESSENTIAL FIRE:
             }
         # ========================================================================
 
-        # Ensure kernel is initialized before use
-        await self._ensure_kernel_initialized()
+        # Ensure the Agent Framework runtime is initialized before use.
+        await self._ensure_agent_runtime_initialized()
         
         logger.info("=" * 100)
         logger.info(f"[BOT][BOT][BOT] AGENT 2.1 START: Location Extraction Agent")
         logger.info(f"[NOTE] Query to analyze: '{query}'")
         logger.info("=" * 100)
         
-        if not self.kernel:
+        if not self.agent_runtime:
             logger.error("=" * 100)
-            logger.error("[FAIL][FAIL][FAIL] AGENT 2.1 CRITICAL: Kernel initialization failed, cannot extract location")
+            logger.error("[FAIL][FAIL][FAIL] AGENT 2.1 CRITICAL: Agent runtime initialization failed, cannot extract location")
             logger.error("=" * 100)
             return {"location": None}
 
@@ -2867,60 +2626,23 @@ Query to analyze: {query}
 Return only the JSON object. No explanations or additional text."""
 
         try:
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            
-            # Use fast model (gpt-4o-mini) for location extraction with function calling
-            # Location extraction is a structured entity extraction task (extract city/region name)
-            # gpt-4o-mini supports function calling and is much faster for this task
-            execution_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
-                temperature=0.3,  # Lower temp for precise extraction
-                max_completion_tokens=500,  # Increased for function calling responses
-                function_choice_behavior=FunctionChoiceBehavior.Auto(
-                    auto_invoke=True,  # Automatically execute tool calls
-                    filters={"included_plugins": ["geocoding"]}  # Only allow geocoding plugin
-                )
-            )
-            
             logger.info("[TOOL] Function calling enabled - fast model can use azure_maps_geocode tool")
-
-            # Execute using simplified invoke_prompt (no template needed with f-string)
-            arguments = KernelArguments(settings=execution_settings)
-            
             logger.info(f"[SEARCH] Sending location extraction prompt to fast model...")
             logger.info(f"[TOOL] Using fast model (temp=0.3, max_tokens=500) for structured entity extraction")
             logger.info(f"[SEARCH] Prompt preview (first 200 chars): {entity_extraction_prompt[:200]}...")
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=entity_extraction_prompt,
-                    function_name="extract_entities",
-                    plugin_name="semantic_translator",
-                    arguments=arguments
-                ),
-                timeout=20.0
-            )
 
-            # Extract and clean response from SK result (Semantic Kernel 1.37.0+)
-            if hasattr(result, 'value'):
-                # SK returns FunctionResult with .value attribute
-                if isinstance(result.value, list) and len(result.value) > 0:
-                    # List of ChatMessageContent objects
-                    content = str(result.value[0].content)
-                else:
-                    content = str(result.value)
-            elif hasattr(result, 'content'):
-                # Direct ChatMessageContent object
-                content = str(result.content)
-            elif isinstance(result, list) and len(result) > 0:
-                # List of ChatMessageContent objects returned directly
-                content = str(result[0].content)
-            elif hasattr(result, 'result'):
-                content = str(result.result)
-            else:
-                content = str(result)
-            
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    entity_extraction_prompt,
+                    name="location_extractor",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=500,
+                    response_format={"type": "json_object"},
+                    tools=[geocoding_plugin.azure_maps_geocode],
+                ),
+                timeout=20.0,
+            )
             content = content.strip()
             
             # [SEARCH] DEBUG: Log raw GPT-5 response
@@ -3172,7 +2894,7 @@ Return only the JSON object. No explanations or additional text."""
             logger.info(f"[BOT] AGENT 3 STEP 4: Calling GPT-5 for tile selection...")
             
             try:
-                await self._initialize_kernel()
+                await self._ensure_agent_runtime_initialized()
                 
                 # Build GPT prompt
                 prompt = f"""You are an expert satellite imagery selection agent. Your task is to select the OPTIMAL tiles for visualization.
@@ -3236,30 +2958,17 @@ IMPORTANT:
 - Select tiles that fully cover the bounding box
 - Prioritize quality over quantity"""
 
-                # Use GPT-5 for tile selection
-                execution_settings = AzureChatPromptExecutionSettings(
-                    max_completion_tokens=2000,
-                    temperature=1.0,  # GPT-5 only supports default temperature
-                    top_p=0.95
+                response_text = await self.agent_runtime.run(
+                    prompt,
+                    name="tile_selector",
+                    instructions=(
+                        "You are an expert satellite imagery selection agent. "
+                        "Return only valid JSON arrays."
+                    ),
+                    max_tokens=2000,
+                    temperature=1.0,
+                    top_p=0.95,
                 )
-                
-                # Create chat history
-                chat_history = ChatHistory()
-                chat_history.add_system_message("You are an expert satellite imagery selection agent. Return ONLY valid JSON arrays.")
-                chat_history.add_user_message(prompt)
-                
-                # Get chat completion service for tile selection
-                chat_completion = self.kernel.get_service(type=ChatCompletionClientBase)
-                
-                # Get GPT response
-                result = await chat_completion.get_chat_message_content(
-                    chat_history=chat_history,
-                    settings=execution_settings,
-                    kernel=self.kernel
-                )
-                
-                # Extract tile IDs from response
-                response_text = str(result) if result else ""
                 logger.info(f"   GPT response length: {len(response_text)} chars")
                 logger.info(f"   GPT response preview: {response_text[:200]}...")
                 
@@ -3577,7 +3286,7 @@ IMPORTANT:
             if '/' in datetime_range:
                 start, end = datetime_range.split('/')
                 logger.info(f"   |--- Start Date: {start}")
-                logger.info(f"   \--- End Date:   {end}")
+                logger.info(f"   `--- End Date:   {end}")
             logger.info("=" * 80)
             print(f"[OK] Datetime added to STAC query: {datetime_range}")
         else:
@@ -3798,7 +3507,7 @@ IMPORTANT:
     async def _build_stac_query_basic(self, query: str, collections: List[str]) -> Dict[str, Any]:
         """Fallback basic STAC query builder with location resolution"""
         
-        logger.warning("[WARN] Using fallback basic query builder (kernel not initialized)")
+        logger.warning("[WARN] Using fallback basic query builder (agent runtime not initialized)")
         
         stac_query = {
             "collections": collections,
@@ -4320,8 +4029,8 @@ IMPORTANT:
             If mode="comparison": dict (e.g., {"before": "2025-01-01/...", "after": "2025-01-03/...", "explanation": "..."}) or None
         """
         
-        # [SEARCH] Ensure kernel is initialized first
-        await self._ensure_kernel_initialized()
+        # [SEARCH] Ensure the Agent Framework runtime is initialized first.
+        await self._ensure_agent_runtime_initialized()
         
         # ========================================================================
         # � DATETIME AGENT - Input Logging
@@ -4404,36 +4113,19 @@ IMPORTANT:
             datetime_prompt = self._build_comparison_datetime_prompt(current_date, current_year, query)
         
         try:
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            
-            # Use fast model (gpt-4o-mini) for datetime parsing
-            # Datetime translation is a lightweight structured task — just returns JSON dates
-            execution_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
-                temperature=0.3,  # Lower temp for precise date parsing
-                max_completion_tokens=300 if mode == "comparison" else 150  # Reduced tokens for JSON output
-            )
             logger.info(f"[TOOL] AGENT 2.2: Using fast model (temp=0.3, max_tokens={300 if mode == 'comparison' else 150})")
-            
-            arguments = KernelArguments(query=query, settings=execution_settings)
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=datetime_prompt,
-                    function_name=f"translate_datetime_{mode}",
-                    plugin_name="datetime_agent",
-                    arguments=arguments
+
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    datetime_prompt,
+                    name=f"datetime_translator_{mode}",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=300 if mode == "comparison" else 150,
+                    response_format={"type": "json_object"},
                 ),
-                timeout=15.0
+                timeout=15.0,
             )
-            
-            # Extract content from SK result
-            if hasattr(result, 'value'):
-                content = str(result.value[0].content) if isinstance(result.value, list) else str(result.value)
-            else:
-                content = str(result)
-            
             content = content.strip()
             
             # [SEARCH] DEBUG: Log raw GPT response
@@ -4827,36 +4519,19 @@ Response: {{"cloud_intent": "high", "threshold": 75, "reasoning": "User explicit
 Return ONLY a JSON object with "cloud_intent", "threshold", and "reasoning". No additional text."""
 
         try:
-            from semantic_kernel.functions.kernel_arguments import KernelArguments
-            from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
-            
-            # Use fast model (gpt-4o-mini) for cloud intent detection
-            # Cloud filtering is a simple yes/no + threshold task — perfect for fast model
-            execution_settings = AzureChatPromptExecutionSettings(
-                service_id="chat-completion-4o",  # Fast model (gpt-4o-mini)
-                temperature=0.3,  # Lower temp for precise classification
-                max_completion_tokens=100  # Reduced tokens for simple JSON response
-            )
             logger.info(f"[TOOL] AGENT 2.3: Using fast model (temp=0.3, max_tokens=100)")
-            
-            arguments = KernelArguments(query=query, settings=execution_settings)
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=cloud_prompt,
-                    function_name="detect_cloud_intent",
-                    plugin_name="cloud_agent",
-                    arguments=arguments
+
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    cloud_prompt,
+                    name="cloud_filter",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=100,
+                    response_format={"type": "json_object"},
                 ),
-                timeout=10.0
+                timeout=10.0,
             )
-            
-            # Extract content
-            if hasattr(result, 'value'):
-                content = str(result.value[0].content) if isinstance(result.value, list) else str(result.value)
-            else:
-                content = str(result)
-            
             content = content.strip()
             
             # [SEARCH] DEBUG: Log raw response
@@ -5167,174 +4842,82 @@ Return ONLY a JSON object with "cloud_intent", "threshold", and "reasoning". No 
             logger.warning(f"Mapbox failed for {location_name}: {e}")
         return None
     
-    async def _resolve_via_semantic_kernel(self, location_name: str, location_type: str) -> Optional[List[float]]:
-        """Use Azure OpenAI directly for geographic location resolution with enhanced debugging"""
-        
-        logger.info(f"[TOOL] SEMANTIC KERNEL DEBUG: Starting location resolution for '{location_name}'")
-        
-        # Ensure kernel is initialized
-        await self._ensure_kernel_initialized()
-        
-        if not self._kernel_initialized:
-            logger.error(f"[FAIL] Azure OpenAI not available for location resolution: {location_name}")
+    async def _resolve_via_agent_framework(self, location_name: str, location_type: str) -> Optional[List[float]]:
+        """Resolve a geographic bounding box through Agent Framework."""
+        logger.info("[TOOL] Agent Framework location resolution for '%s'", location_name)
+        await self._ensure_agent_runtime_initialized()
+
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
+            logger.error("[FAIL] Agent Framework is unavailable for location resolution: %s", location_name)
             return None
-        
+
+        prompt = f"""Resolve this geographic location: {location_name}
+Location type hint: {location_type or "unknown"}
+
+Return a JSON object with:
+- bbox: [west_longitude, south_latitude, east_longitude, north_latitude]
+- confidence: a number from 0 to 1
+
+Use decimal degrees. Ensure west < east and south < north. Use a tight urban
+boundary for cities and the full administrative boundary for regions or countries."""
+
         try:
-            # [TARGET] PURE API-BASED location resolution prompt (NO hardcoded coordinates)
-            location_prompt = f"""You are a geographic expert with access to comprehensive global geographic knowledge. 
+            response_text = await self.agent_runtime.run(
+                prompt,
+                name="location_resolver",
+                instructions=(
+                    "You are a geographic expert. Return only valid JSON with an "
+                    "accurate bounding box and confidence score."
+                ),
+                temperature=0.0,
+                max_tokens=150,
+                response_format={"type": "json_object"},
+            )
+            cleaned_content = response_text.strip()
+            if "```json" in cleaned_content:
+                cleaned_content = cleaned_content.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in cleaned_content:
+                cleaned_content = cleaned_content.split("```", 1)[1].split("```", 1)[0]
 
-Analyze the location: {location_name}
+            location_data = json.loads(cleaned_content.strip())
+            bbox = location_data.get("bbox")
+            confidence = float(location_data.get("confidence", 0.0))
+            if not isinstance(bbox, list) or len(bbox) != 4 or confidence <= 0.5:
+                logger.warning(
+                    "[WARN] Agent Framework returned a low-confidence or invalid bbox for %s: %s",
+                    location_name,
+                    location_data,
+                )
+                return None
 
-Return ONLY valid JSON with precise bounding box coordinates based on your geographic knowledge:
+            west, south, east, north = (float(value) for value in bbox)
+            if not (
+                -180 <= west <= 180
+                and -180 <= east <= 180
+                and -90 <= south <= 90
+                and -90 <= north <= 90
+                and west < east
+                and south < north
+            ):
+                logger.warning("[WARN] Agent Framework returned invalid coordinates for %s: %s", location_name, bbox)
+                return None
 
-Format: {{"bbox": [west_longitude, south_latitude, east_longitude, north_latitude], "confidence": 0.0_to_1.0}}
+            resolved_bbox = [west, south, east, north]
+            logger.info(
+                "[OK] Agent Framework resolved %s: %s (confidence: %.2f)",
+                location_name,
+                resolved_bbox,
+                confidence,
+            )
+            return resolved_bbox
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("[WARN] Agent Framework returned invalid location JSON for %s: %s", location_name, exc)
+        except Exception as exc:
+            logger.error("[FAIL] Agent Framework location resolution failed for %s: %s", location_name, exc)
 
-Guidelines:
-- Use your comprehensive geographic knowledge to determine accurate coordinates
-- Return bounding box in [west, south, east, north] format (decimal degrees)
-- West/East: longitude values (-180 to +180, negative = west, positive = east)  
-- South/North: latitude values (-90 to +90, negative = south, positive = north)
-- Confidence: 0.9 for well-known places, 0.7 for regions, 0.5 for less certain locations
-- Ensure west < east and south < north
-- For cities: tight bounding box around urban area
-- For states/provinces: encompass the full administrative boundary
-- For countries: include the main territory boundaries
-
-Location to analyze: {location_name}"""
-
-            # Use Azure OpenAI directly with enhanced strategies
-            azure_openai_endpoint = self.azure_openai_endpoint
-            azure_openai_api_key = self.azure_openai_api_key
-            model_name = self.model_name
-            
-            headers = {
-                "Content-Type": "application/json",
-                "api-key": azure_openai_api_key
-            }
-            
-            # [SYNC] Strategy 1: JSON mode with pure geographic knowledge
-            payload_json = {
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a geographic expert with comprehensive global knowledge. Return ONLY valid JSON with accurate bounding box coordinates for any requested location worldwide."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Provide accurate geographic bounding box coordinates for: {location_name}\n\nFormat: {{\"bbox\": [west_longitude, south_latitude, east_longitude, north_latitude], \"confidence\": confidence_score}}\n\nUse your geographic knowledge to determine precise coordinates."
-                    }
-                ],
-                "max_completion_tokens": 150,
-                "temperature": 0.0,
-                "response_format": {"type": "json_object"}
-            }
-            
-            # [SYNC] Strategy 2: Simple structured prompt  
-            payload_simple = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": location_prompt
-                    }
-                ],
-                "max_completion_tokens": 100,
-                "temperature": 0.0
-            }
-            
-            strategies = [
-                ("JSON Mode", payload_json),
-                ("Simple Prompt", payload_simple)
-            ]
-            
-            async with aiohttp.ClientSession() as session:
-                url = f"{azure_openai_endpoint}/openai/deployments/{model_name}/chat/completions?api-version=2024-06-01"
-                timeout = aiohttp.ClientTimeout(total=30)
-                
-                # [SYNC] Try multiple strategies in order
-                for strategy_name, payload in strategies:
-                    try:
-                        logger.info(f"[SYNC] Trying location resolution strategy: {strategy_name} for {location_name}")
-                        
-                        async with session.post(url, headers=headers, json=payload, timeout=timeout) as response:
-                            logger.info(f"[WEB] Azure OpenAI response status: {response.status} for {strategy_name}")
-                            
-                            if response.status == 200:
-                                result = await response.json()
-                                
-                                # Enhanced response processing
-                                if "choices" in result and result["choices"]:
-                                    content = result["choices"][0]["message"]["content"]
-                                    logger.info(f"[SEARCH] Raw Azure OpenAI content ({strategy_name}): '{content}'")
-                                    
-                                    # Check if response is empty
-                                    if not content or content.strip() == "":
-                                        logger.warning(f"[WARN] Empty response from Azure OpenAI for {location_name} with {strategy_name}")
-                                        continue  # Try next strategy
-                                        
-                                    # Enhanced JSON parsing
-                                    try:
-                                        # Clean up any markdown formatting
-                                        cleaned_content = content.strip()
-                                        if '```json' in cleaned_content:
-                                            cleaned_content = cleaned_content.split('```json')[1].split('```')[0]
-                                        elif '```' in cleaned_content:
-                                            cleaned_content = cleaned_content.split('```')[1].split('```')[0]
-                                        
-                                        cleaned_content = cleaned_content.strip()
-                                        logger.info(f"[CLEAN] Cleaned content: '{cleaned_content}'")
-                                        
-                                        if not cleaned_content:
-                                            logger.warning(f"[WARN] Content empty after cleaning for {location_name} with {strategy_name}")
-                                            continue  # Try next strategy
-                                        
-                                        location_data = json.loads(cleaned_content)
-                                        bbox = location_data.get('bbox')
-                                        confidence = location_data.get('confidence', 0.0)
-                                        
-                                        logger.info(f"[SEARCH] Parsed JSON - bbox: {bbox}, confidence: {confidence}")
-                                        
-                                        if bbox and len(bbox) == 4 and confidence > 0.5:
-                                            west, south, east, north = bbox
-                                            
-                                            # Validate coordinates
-                                            if (-180 <= west <= 180 and -180 <= east <= 180 and 
-                                                -90 <= south <= 90 and -90 <= north <= 90 and
-                                                west < east and south < north):
-                                                
-                                                logger.info(f"[OK] Azure OpenAI successfully resolved {location_name}: {bbox} (confidence: {confidence:.2f}, strategy: {strategy_name})")
-                                                return bbox
-                                            else:
-                                                logger.warning(f"[WARN] Invalid coordinates from Azure OpenAI for {location_name}: {bbox} (strategy: {strategy_name})")
-                                        else:
-                                            logger.warning(f"[WARN] Low confidence or invalid bbox from Azure OpenAI for {location_name}: {location_data} (strategy: {strategy_name})")
-                                            
-                                    except json.JSONDecodeError as e:
-                                        logger.error(f"[FAIL] Failed to parse Azure OpenAI response for {location_name} with {strategy_name}: '{cleaned_content}'")
-                                        logger.error(f"JSON error: {e}")
-                                        continue  # Try next strategy
-                                else:
-                                    logger.warning(f"[WARN] No choices in Azure OpenAI response for {location_name} with {strategy_name}")
-                            else:
-                                error_text = await response.text()
-                                logger.error(f"[FAIL] Azure OpenAI API error {response.status} for {strategy_name}: {error_text}")
-                                continue  # Try next strategy
-                                
-                    except asyncio.TimeoutError:
-                        logger.error(f"[TIME] Azure OpenAI timeout resolving {location_name} with {strategy_name}")
-                        continue  # Try next strategy
-                    except Exception as e:
-                        logger.error(f"[FAIL] Azure OpenAI error resolving {location_name} with {strategy_name}: {e}")
-                        continue  # Try next strategy
-                
-                # All strategies failed
-                logger.error(f"[FAIL] ALL Azure OpenAI strategies failed for {location_name}")
-            
-        except Exception as e:
-            logger.error(f"[FAIL] Critical error in Azure OpenAI resolution for {location_name}: {e}")
-        
         return None
     
-    # No more predefined regions or Nominatim fallbacks - pure Semantic Kernel approach
+    # No more predefined regions or Nominatim fallbacks in this legacy path.
     
     def select_collections(self, entities: Dict[str, Any]) -> List[str]:
         """
@@ -6359,7 +5942,7 @@ Location to analyze: {location_name}"""
                 "confidence": overall_confidence,
                 "reasoning": self._build_reasoning(entities, location_info),
                 "extracted_entities": entities,
-                "translation_method": "semantic_kernel",
+                "translation_method": "agent_framework",
                 "analysis": analysis,
                 "clarification_questions": clarification_questions,
                 "needs_clarification": analysis["needs_clarification"]
@@ -6495,7 +6078,7 @@ Location to analyze: {location_name}"""
         if not parts:
             parts.append("general satellite imagery analysis")
         
-        return "Semantic Kernel extraction: " + " ".join(parts)
+        return "Agent Framework extraction: " + " ".join(parts)
     
     def _prepare_geoint_summary(self, geoint_results: Dict[str, Any]) -> str:
         """
@@ -6610,10 +6193,10 @@ Location to analyze: {location_name}"""
     async def generate_contextual_earth_science_response(self, natural_query: str, classification: Dict[str, Any], stac_response: Optional[Dict[str, Any]] = None, geoint_results: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Generate comprehensive contextual Earth science response with optional satellite data integration and GEOINT analysis results"""
         
-        # Ensure kernel is initialized
-        await self._ensure_kernel_initialized()
+        # Ensure the Agent Framework runtime is initialized.
+        await self._ensure_agent_runtime_initialized()
         
-        if not self._kernel_initialized or self.kernel is None:
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
             return await self._fallback_contextual_response(natural_query, classification, stac_response)
         
         try:
@@ -6644,7 +6227,7 @@ Location to analyze: {location_name}"""
             conversation_context = ""
             
             # Generate response using the 3-template system
-            response_content = await self._generate_response_with_sk(
+            response_content = await self._generate_response_with_agent_framework(
                 response_prompt,
                 natural_query,
                 stac_data_summary,
@@ -6717,11 +6300,11 @@ Location to analyze: {location_name}"""
             logger.info("[FAST-FAIL] STAC empty result -> deterministic fallback (skip LLM prose)")
             return self._fallback_empty_result_response(natural_query, stac_query, collections, diagnostics)
 
-        # Ensure kernel is initialized
-        await self._ensure_kernel_initialized()
+        # Ensure the Agent Framework runtime is initialized.
+        await self._ensure_agent_runtime_initialized()
         
-        if not self._kernel_initialized or self.kernel is None:
-            logger.warning("[WARN] Semantic Kernel not available for empty result response, using fallback")
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
+            logger.warning("[WARN] Agent Framework not available for empty result response, using fallback")
             return self._fallback_empty_result_response(natural_query, stac_query, collections, diagnostics)
         
         try:
@@ -6733,8 +6316,8 @@ Location to analyze: {location_name}"""
             # Create prompt for empty result analysis
             empty_result_prompt = self._create_empty_result_prompt()
             
-            # Generate response using Semantic Kernel
-            response_content = await self._generate_empty_result_with_sk(
+            # Generate response using Agent Framework.
+            response_content = await self._generate_empty_result_with_agent_framework(
                 empty_result_prompt,
                 natural_query,
                 diagnostic_context
@@ -6775,10 +6358,10 @@ Location to analyze: {location_name}"""
         Returns:
             Dict with message explaining the alternative results shown
         """
-        # Ensure kernel is initialized
-        await self._ensure_kernel_initialized()
+        # Ensure the Agent Framework runtime is initialized.
+        await self._ensure_agent_runtime_initialized()
         
-        if not self._kernel_initialized or self.kernel is None:
+        if not self._agent_runtime_initialized or self.agent_runtime is None:
             return await self._fallback_alternative_response(
                 natural_query, stac_response, original_filters, alternative_filters, explanation
             )
@@ -6809,8 +6392,8 @@ Location to analyze: {location_name}"""
                 geoint_summary = self._prepare_geoint_summary(geoint_results)
                 stac_data_summary = f"{stac_data_summary}\n\n**GEOINT ANALYSIS RESULTS:**\n{geoint_summary}"
             
-            # Generate response using Semantic Kernel
-            response_content = await self._generate_alternative_with_sk(
+            # Generate response using Agent Framework.
+            response_content = await self._generate_alternative_with_agent_framework(
                 alternative_prompt,
                 natural_query,
                 alternative_context,
@@ -6933,51 +6516,30 @@ Location to analyze: {location_name}"""
         
         return "\n".join(context_parts)
     
-    async def _generate_alternative_with_sk(
+    async def _generate_alternative_with_agent_framework(
         self,
         prompt_template: str,
         user_query: str,
         alternative_context: str,
         data_summary: str
     ) -> str:
-        """Generate alternative result explanation using Semantic Kernel"""
+        """Generate an alternative-result explanation with Agent Framework."""
         
         try:
-            # Create prompt configuration
-            prompt_config = PromptTemplateConfig(
-                template=prompt_template,
-                name="generate_alternative_result_response",
-                template_format="semantic-kernel",
-                input_variables=[
-                    InputVariable(name="user_query", description="The user's original query"),
-                    InputVariable(name="alternative_context", description="Context about what alternative is being shown"),
-                    InputVariable(name="data_summary", description="Summary of the alternative data being displayed")
-                ]
+            prompt = (
+                prompt_template.replace("{{$user_query}}", user_query)
+                .replace("{{$alternative_context}}", alternative_context)
+                .replace("{{$data_summary}}", data_summary)
             )
-            
-            # Create function
-            alternative_function = KernelFunction.from_prompt(
-                prompt_template_config=prompt_config,
-                function_name="generate_alternative_result_response",
-                plugin_name="semantic_translator"
+            response_content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    prompt,
+                    name="alternative_result_narrator",
+                    max_tokens=700,
+                ),
+                timeout=20.0,
             )
-            
-            # Execute with timeout
-            arguments = KernelArguments(
-                user_query=user_query,
-                alternative_context=alternative_context,
-                data_summary=data_summary
-            )
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke(alternative_function, arguments=arguments),
-                timeout=20.0
-            )
-            
-            # Extract response content
-            response_content = self._extract_clean_content_from_sk_result(result)
-            
-            # Validate content
+
             if not response_content or response_content.strip() == "":
                 logger.warning("Empty content returned from GPT for alternative, using fallback")
                 return f"I couldn't find exactly what you requested, but I'm showing you similar imagery that's available for this location."
@@ -6994,7 +6556,7 @@ Location to analyze: {location_name}"""
             return response_content
             
         except Exception as e:
-            logger.error(f"Alternative explanation SK generation failed: {e}")
+            logger.error(f"Alternative explanation generation failed: {e}")
             raise
     
     async def _fallback_alternative_response(
@@ -7159,48 +6721,28 @@ Location to analyze: {location_name}"""
         
         return "\n".join(context_parts)
     
-    async def _generate_empty_result_with_sk(
+    async def _generate_empty_result_with_agent_framework(
         self,
         prompt_template: str,
         user_query: str,
         diagnostic_context: str
     ) -> str:
-        """Generate empty result response using Semantic Kernel"""
+        """Generate an empty-result response with Agent Framework."""
         
         try:
-            # Create prompt configuration
-            prompt_config = PromptTemplateConfig(
-                template=prompt_template,
-                name="generate_empty_result_response",
-                template_format="semantic-kernel",
-                input_variables=[
-                    InputVariable(name="user_query", description="The user's original query"),
-                    InputVariable(name="diagnostic_context", description="Diagnostic information about the search failure")
-                ]
+            prompt = (
+                prompt_template.replace("{{$user_query}}", user_query)
+                .replace("{{$diagnostic_context}}", diagnostic_context)
             )
-            
-            # Create function
-            empty_result_function = KernelFunction.from_prompt(
-                prompt_template_config=prompt_config,
-                function_name="generate_empty_result_response",
-                plugin_name="semantic_translator"
+            response_content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    prompt,
+                    name="empty_result_narrator",
+                    max_tokens=700,
+                ),
+                timeout=20.0,
             )
-            
-            # Execute with timeout
-            arguments = KernelArguments(
-                user_query=user_query,
-                diagnostic_context=diagnostic_context
-            )
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke(empty_result_function, arguments=arguments),
-                timeout=20.0
-            )
-            
-            # Extract response content
-            response_content = self._extract_clean_content_from_sk_result(result)
-            
-            # Validate content
+
             if not response_content or response_content.strip() == "":
                 logger.warning("Empty content returned from GPT, using fallback")
                 return "I searched for satellite data but didn't find any matching your criteria. Try adjusting your search parameters or date range."
@@ -7217,7 +6759,7 @@ Location to analyze: {location_name}"""
             return response_content
             
         except Exception as e:
-            logger.error(f"Empty result SK generation failed: {e}")
+            logger.error(f"Empty result generation failed: {e}")
             raise
     
     def _fallback_empty_result_response(
@@ -7328,45 +6870,25 @@ Location to analyze: {location_name}"""
         
         return "; ".join(context_parts)
     
-    async def _generate_contextual_response_with_sk(self, prompt_template: str, user_query: str, context_data: str) -> str:
-        """Generate contextual response using Semantic Kernel"""
+    async def _generate_contextual_response_with_agent_framework(self, prompt_template: str, user_query: str, context_data: str) -> str:
+        """Generate a contextual response with Agent Framework."""
         
         try:
-            # Create prompt configuration
-            prompt_config = PromptTemplateConfig(
-                template=prompt_template,
-                name="generate_contextual_response",
-                template_format="semantic-kernel",
-                input_variables=[
-                    InputVariable(name="user_query", description="The user's natural language query"),
-                    InputVariable(name="context_data", description="Contextual data for Earth science analysis")
-                ]
+            prompt = (
+                prompt_template.replace("{{$user_query}}", user_query)
+                .replace("{{$context_data}}", context_data)
             )
-            
-            # Create function
-            contextual_function = KernelFunction.from_prompt(
-                prompt_template_config=prompt_config,
-                function_name="generate_contextual_response",
-                plugin_name="semantic_translator"
+            response_content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    prompt,
+                    name="contextual_response_narrator",
+                    max_tokens=900,
+                ),
+                timeout=25.0,
             )
-            
-            # Execute with timeout
-            arguments = KernelArguments(
-                user_query=user_query,
-                context_data=context_data
-            )
-            
-            result = await asyncio.wait_for(
-                self.kernel.invoke(contextual_function, arguments=arguments),
-                timeout=25.0
-            )
-            
-            # Extract response content using the same robust method as other SK calls
-            response_content = self._extract_clean_content_from_sk_result(result)
-            
-            # Validate content
+
             if not response_content or response_content.strip() == "":
-                logger.warning("Empty contextual content returned from SK, using fallback")
+                logger.warning("Empty contextual content returned from MAF, using fallback")
                 return f"I found relevant information about your query: {user_query}. Please check the data visualization for details."
             
             # Clean up response - handle both single and double quotes
@@ -7381,11 +6903,11 @@ Location to analyze: {location_name}"""
             return response_content
             
         except Exception as e:
-            logger.error(f"Contextual response generation with SK failed: {e}")
+            logger.error(f"Contextual response generation with MAF failed: {e}")
             raise
     
     async def _fallback_contextual_response(self, query: str, classification: Dict[str, Any], stac_response: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate contextual response using direct Azure OpenAI HTTP call when Semantic Kernel fails"""
+        """Generate a contextual response through the shared MAF runtime."""
         
         try:
             # Use direct HTTP call to Azure OpenAI instead of hardcoded responses
@@ -7393,12 +6915,12 @@ Location to analyze: {location_name}"""
             
             return {
                 "message": response_content,
-                "query_type": "direct_llm_contextual",
+                "query_type": "agent_framework_contextual",
                 "has_satellite_data": stac_response is not None and stac_response.get("success", False),
                 "has_contextual_analysis": True,
                 "location_focus": classification.get("location_focus"),
-                "fallback_used": False,  # Not a fallback anymore, it's a direct LLM call
-                "method": "direct_azure_openai_http"
+                "fallback_used": False,
+                "method": "agent_framework"
             }
             
         except Exception as e:
@@ -7440,10 +6962,7 @@ Location to analyze: {location_name}"""
             }
     
     async def _direct_llm_call_for_contextual_analysis(self, query: str, classification: Dict[str, Any], stac_response: Optional[Dict[str, Any]]) -> str:
-        """Make direct HTTP call to Azure OpenAI for contextual analysis when Semantic Kernel fails"""
-        
-        import aiohttp
-        import json
+        """Run contextual analysis through Microsoft Agent Framework."""
         
         # Prepare context data
         context_info = []
@@ -7491,51 +7010,16 @@ Keep your response focused, informative, and directly relevant to the user's que
 
         user_prompt = f"Context: {context_text}\n\nUser Question: {query}\n\nProvide a comprehensive, educational response:"
         
-        # Prepare auth: prefer api-key when present, otherwise fall back to
-        # managed-identity bearer token. The container app deploys with
-        # AZURE_OPENAI_API_KEY="" by design (MI-only), so without this
-        # branch the request always 401s and the user sees the canned
-        # "LLM call failed" sentinel.
-        headers = {"Content-Type": "application/json"}
-        if self.azure_openai_api_key:
-            headers["api-key"] = self.azure_openai_api_key
-        else:
-            try:
-                from azure.identity import DefaultAzureCredential
-                token = DefaultAzureCredential().get_token(
-                    "https://cognitiveservices.azure.com/.default"
-                ).token
-                headers["Authorization"] = f"Bearer {token}"
-            except Exception as auth_err:  # noqa: BLE001
-                raise Exception(
-                    f"No AZURE_OPENAI_API_KEY set and managed-identity "
-                    f"token acquisition failed: {auth_err}"
-                )
-        
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "max_completion_tokens": 800,  # Reduced to encourage concise responses
-            # NOTE: temperature/top_p intentionally omitted. gpt-5 reasoning
-            # deployments only accept the default temperature (1) and reject
-            # any explicit value with HTTP 400, which would otherwise trigger
-            # the user-visible "LLM call failed" sentinel.
-        }
-        
-        url = f"{self.azure_openai_endpoint}/openai/deployments/{self.model_name}/chat/completions?api-version=2024-02-01"
-        
-        # Make the HTTP request
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result["choices"][0]["message"]["content"].strip()
-                else:
-                    error_text = await response.text()
-                    raise Exception(f"Azure OpenAI API call failed: {response.status} - {error_text}")
+        await self._ensure_agent_runtime_initialized()
+        if self.agent_runtime is None:
+            raise RuntimeError("Agent Framework runtime is unavailable")
+
+        return await self.agent_runtime.run(
+            user_prompt,
+            name="contextual_analysis",
+            instructions=system_prompt,
+            max_tokens=800,
+        )
     
     def _extract_bbox_from_features(self, features: List[Dict]) -> Optional[List[float]]:
         """Extract bounding box from STAC features"""
@@ -8032,46 +7516,27 @@ Keep your response focused, informative, and directly relevant to the user's que
         else:
             return self._create_brief_map_data_prompt()  # Default fallback
     
-    async def _generate_response_with_sk(self, prompt_template: str, user_query: str, data_summary: Dict[str, Any], conversation_context: str = "") -> str:
-        """Generate response using Semantic Kernel with the prepared data and conversation context"""
+    async def _generate_response_with_agent_framework(self, prompt_template: str, user_query: str, data_summary: Dict[str, Any], conversation_context: str = "") -> str:
+        """Generate a response with the prepared data and conversation context."""
         
         try:
-            # Create prompt template configuration for SK 1.36.2
-            prompt_config = PromptTemplateConfig(
-                template=prompt_template,
-                name="generate_response",
-                description="Generate response based on user query, data summary, and conversation context",
-                template_format="semantic-kernel",
-                input_variables=[
-                    InputVariable(name="user_query", description="The user's natural language query"),
-                    InputVariable(name="data_summary", description="Comprehensive analysis of the STAC data found"),
-                    InputVariable(name="conversation_context", description="Recent conversation history for context")
-                ]
-            )
-            
-            # Prepare data summary as formatted text for the LLM
             formatted_data_summary = self._format_data_summary_for_llm(data_summary)
-            
-            # Execute using SK 1.36.2 invoke_prompt
-            arguments = KernelArguments(
-                user_query=user_query,
-                data_summary=formatted_data_summary,
-                conversation_context=conversation_context or "No previous conversation context."
+            prompt = (
+                prompt_template.replace("{{$user_query}}", user_query)
+                .replace("{{$data_summary}}", formatted_data_summary)
+                .replace(
+                    "{{$conversation_context}}",
+                    conversation_context or "No previous conversation context.",
+                )
             )
-            result = await self.kernel.invoke_prompt(
-                prompt=prompt_template,
-                function_name="generate_response",
-                plugin_name="semantic_translator",
-                arguments=arguments,
-                prompt_template_config=prompt_config
+            content = await self.agent_runtime.run(
+                prompt,
+                name="query_response_narrator",
+                max_tokens=1000,
             )
-            
-            # Extract response content with comprehensive fallback handling
-            content = self._extract_clean_content_from_sk_result(result)
-            
-            # Final validation and cleanup
+
             if not content or content.strip() == "":
-                logger.warning("Empty content returned from Semantic Kernel, using fallback")
+                logger.warning("Empty content returned from MAF, using fallback")
                 return f"Found {data_summary.get('total_images', 0)} satellite images for your query."
             
             # Clean and return the response
@@ -8081,77 +7546,8 @@ Keep your response focused, informative, and directly relevant to the user's que
             return cleaned_content
             
         except Exception as e:
-            logger.error(f"SK response generation failed: {e}")
+            logger.error(f"MAF response generation failed: {e}")
             raise Exception(f"Failed to generate intelligent response: {e}")
-    
-    def _extract_clean_content_from_sk_result(self, result) -> str:
-        """Extract clean text content from Semantic Kernel result with comprehensive error handling"""
-        
-        if not result:
-            return ""
-        
-        # Method 1: Direct value extraction (most common path)
-        if hasattr(result, 'value') and result.value:
-            # Check if it's a simple string
-            if isinstance(result.value, str):
-                return result.value
-            
-            # Check for ChatMessageContent structure
-            if hasattr(result.value, 'inner_content'):
-                if hasattr(result.value.inner_content, 'content'):
-                    return str(result.value.inner_content.content)
-                elif hasattr(result.value.inner_content, 'text'):
-                    return str(result.value.inner_content.text)
-            
-            # Check for direct content attribute
-            if hasattr(result.value, 'content'):
-                if isinstance(result.value.content, str):
-                    return result.value.content
-                elif hasattr(result.value.content, 'text'):
-                    return str(result.value.content.text)
-            
-            # Check for items collection
-            if hasattr(result.value, 'items') and result.value.items:
-                for item in result.value.items:
-                    if hasattr(item, 'text') and item.text:
-                        return str(item.text)
-                    elif hasattr(item, 'content') and item.content:
-                        return str(item.content)
-        
-        # Method 2: String parsing for debug objects that leaked through
-        result_str = str(result)
-        if 'ChatMessageContent' in result_str or 'ChatCompletion' in result_str:
-            import re
-            # Comprehensive regex patterns to extract content
-            patterns = [
-                r"content='([^']*)'",           # Single quotes
-                r'content="([^"]*)"',           # Double quotes  
-                r"content=([^,\]\)]+)",         # Unquoted content
-                r"text='([^']*)'",              # Text field single quotes
-                r'text="([^"]*)"',              # Text field double quotes
-                r"message='([^']*)'",           # Message field
-                r'message="([^"]*)"',           # Message field double quotes
-                r"'text':\s*'([^']*)'",         # JSON-like structure
-                r'"text":\s*"([^"]*)"',         # JSON-like structure
-                r"content=ChatCompletionMessage\(content='([^']*)'",  # Nested structure
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, result_str, re.DOTALL)
-                if match:
-                    extracted = match.group(1).strip()
-                    if extracted and len(extracted) > 10:  # Ensure it's meaningful content
-                        logger.info(f"Extracted content via regex: {pattern}")
-                        return extracted
-        
-        # Method 3: Last resort - return string representation if it looks like normal text
-        result_str = str(result)
-        if result_str and not any(debug_marker in result_str for debug_marker in ['ChatMessageContent', 'ChatCompletion', 'inner_content=', 'role=', 'function_call=']):
-            return result_str
-        
-        # If all else fails, return empty string to trigger fallback
-        logger.warning(f"Could not extract clean content from SK result: {type(result)} - {str(result)[:200]}")
-        return ""
     
     def _format_data_summary_for_llm(self, data_summary: Dict[str, Any]) -> str:
         """Format the data summary with detailed technical specifications for map data responses"""
@@ -8251,10 +7647,10 @@ Keep your response focused, informative, and directly relevant to the user's que
             Dict with GEOINT intent details or None if not a GEOINT query
         """
         try:
-            # Ensure kernel is initialized for GPT-4 analysis
-            await self._ensure_kernel_initialized()
+            # Ensure the Agent Framework runtime is initialized for analysis.
+            await self._ensure_agent_runtime_initialized()
             
-            if not self._kernel_initialized or self.kernel is None:
+            if not self._agent_runtime_initialized or self.agent_runtime is None:
                 # Fallback to simple keyword detection if GPT-4 unavailable
                 logger.warning("[TARGET] GPT-4 unavailable, using fallback keyword detection for GEOINT")
                 return self._detect_geoint_intent_fallback(query)
@@ -8352,20 +7748,17 @@ If NOT GEOINT (regular map/satellite data request):
 **Instructions:** Return ONLY the JSON object. No markdown formatting, no explanations, no additional text.
 """
             
-            # Execute GPT-4 classification
-            arguments = KernelArguments(query=query)
-            result = await asyncio.wait_for(
-                self.kernel.invoke_prompt(
-                    prompt=geoint_classification_prompt,
-                    function_name="classify_geoint",
-                    plugin_name="geoint_classifier",
-                    arguments=arguments
+            content = await asyncio.wait_for(
+                self.agent_runtime.run(
+                    geoint_classification_prompt.replace("{{$query}}", query),
+                    name="geoint_classifier",
+                    tier="fast",
+                    temperature=0.3,
+                    max_tokens=300,
+                    response_format={"type": "json_object"},
                 ),
-                timeout=15.0
+                timeout=15.0,
             )
-            
-            # Parse the JSON response
-            content = self._extract_clean_content_from_sk_result(result)
             content = content.strip()
             
             # Clean up the response to extract JSON

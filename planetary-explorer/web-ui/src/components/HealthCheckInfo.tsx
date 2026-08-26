@@ -12,7 +12,7 @@ interface HealthCheckData {
   message?: string;
   version?: string;
   basic_checks?: {
-    semantic_kernel?: boolean;
+    agent_framework?: boolean;
     geoint?: boolean;
     azure_openai_endpoint?: boolean;
     azure_openai_api_key?: boolean;

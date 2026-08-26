@@ -1,4 +1,4 @@
-# Use Python 3.11 base image (required for semantic-kernel>=1.0.0)
+# Use the Python 3.11 runtime supported by the application dependencies.
 FROM python:3.11-slim
 
 # Set working directory
