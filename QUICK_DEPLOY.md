@@ -1,4 +1,9 @@
-# Quick Deploy - Planetary Explorer (GitHub Actions)
+---
+title: Quick Deploy - Planetary Explorer
+description: Deploy Planetary Explorer to Azure with GitHub Actions or Azure Developer CLI
+---
+
+## Quick Deploy with GitHub Actions
 
 **Full automated deployment to Azure via GitHub Actions**
 
@@ -13,7 +18,7 @@ Deploy Planetary Explorer to your Azure subscription with full automation. This 
 
 ### What Gets Deployed
 
-Planetary Explorer is a multi-agent geospatial AI system powered by **Azure AI Foundry**, **Microsoft Agent Framework (MAF)**, **Semantic Kernel**, **Azure AI Agent Service**, and **Model Context Protocol (MCP)**.
+Planetary Explorer is a multi-agent geospatial AI system powered by **Azure AI Foundry**, **Microsoft Agent Framework (MAF)**, **Azure AI Agent Service**, and **Model Context Protocol (MCP)**.
 
 **Core stack (always deployed):**
 - **Azure AI Foundry** - Model deployment for AI agents (GPT-5 or model of choice)
@@ -68,6 +73,7 @@ These instructions work for any Azure subscription:
 - **Azure Account**: Active Azure subscription
 - **GitHub Account**: To fork this repository
 - **Azure CLI 2.51+**: Required for Azure authentication, the federated-credential setup in Step 7, and resource provider registration. Run `az upgrade` if you're on an older version. ([Install in Step 3](#step-3-install-required-cli-tools))
+- **PowerShell 7+**: Required for `deploy-infrastructure.ps1` and its typed region/model preflight
 - **GitHub CLI**: Optional but recommended for easier secret configuration ([Install in Step 3](#step-3-install-required-cli-tools))
 
 ### Required Azure Permissions
@@ -82,7 +88,7 @@ You need these permissions (all configured manually before deploying):
 > **Heads up**
 > - **`User Access Administrator`** is *not* granted to a default Contributor. Step 7.2's second `az role assignment create` will fail unless you're a subscription **Owner**. If you're not, ask your subscription Owner to run that single command for you.
 > - **"Users can register applications"** is disabled in many enterprise tenants. If so, both Step 7 (`az ad app create`) and Step 8.3 (creating the auth app registration) will fail with *Insufficient privileges*. Check with your tenant admin before starting.
-> - **GPT-5 quota** is *not* granted by default — most subscriptions need to either request `GlobalStandard` quota in advance, or deploy with `-f deploy_gpt5=false` (the app then uses GPT-4o, which every Azure OpenAI region has).
+> - **GPT-5 and GPT-5.6 quota** is *not* granted by default. Both are opt-in. The baseline deployment uses GPT-4o; enable premium models only after `GlobalStandard` quota is available.
 > - **Region quota** — the GitHub Actions path defaults to `eastus2`. If your subscription has no AOAI / Container Apps quota in eastus2, set `vars.LOCATION` in Settings → Environments → dev to a region where you do (e.g. `eastus`, `swedencentral`, `westus3`). The local `deploy-infrastructure.ps1` path auto-picks a region for you via preflight.
 
 ---
@@ -347,7 +353,7 @@ The pipeline automatically configures Entra ID authentication (EasyAuth) on **bo
 1. Go to [Azure Portal](https://portal.azure.com) → **Microsoft Entra ID** → **App registrations** → **New registration**
 2. **Name**: `PlanetaryExplorer-Auth` (or any name you prefer)
 3. **Supported account types**: Single tenant (this organization only)
-4. **Redirect URI**: Leave blank (the pipeline sets this automatically)
+4. **Redirect URI**: Leave blank initially. The pipeline attempts to set the deployed App Service callback and emits the exact URI when the deployment identity lacks Microsoft Graph write permission.
 5. Click **Register**
 6. Copy the **Application (client) ID** from the overview page
 
@@ -362,9 +368,11 @@ gh secret set AUTH_CLIENT_ID --env dev
 
 > **Why manual?** Creating app registrations requires Microsoft Graph API permissions (`Application.ReadWrite.All`) — these are directory-level permissions separate from Azure RBAC. A standard deployment service principal (Contributor + User Access Administrator) doesn't have them. 
 
-> **Skip this step** if you want to deploy without authentication first and add it later.
+> **Public demo mode:** To deploy without authentication, run the workflow with
+> `disable_auth=true`. Without that explicit flag, a missing `AUTH_CLIENT_ID`
+> stops deployment instead of silently exposing the app.
 
-> **AADSTS50011 after deploy?** If sign-in fails with *"The redirect URI ... does not match"*, the workflow tried to patch your app registration but the deployment SP lacked `Application.ReadWrite.OwnedBy`. Fix manually with:
+> **AADSTS50011 after deploy?** If sign-in fails with *"The redirect URI ... does not match"*, copy the callback URI from the workflow warning and configure it with your user identity:
 > ```powershell
 > az ad app update --id <AUTH_CLIENT_ID> --web-redirect-uris "https://<your-webapp>.azurewebsites.net/.auth/login/aad/callback"
 > ```
@@ -374,23 +382,23 @@ gh secret set AUTH_CLIENT_ID --env dev
 
 ## Step 9: Deploy via GitHub Actions
 
-**Now the automated part begins!** The default deployment is **public** with Entra ID authentication (if `AUTH_CLIENT_ID` is set in Step 8.3).
+**Now the automated part begins!** The default deployment requires Entra ID authentication. Use `disable_auth=true` only for an intentional public demo.
 
 ### Option A: GitHub CLI (Recommended)
 
 ```powershell
-# Trigger deployment — public by default; auth enabled if AUTH_CLIENT_ID is set (Step 8.3).
-# deploy_gpt5=false uses GPT-4o instead (available in every AOAI region, no special quota).
-gh workflow run deploy.yml -f force_all=true -f deploy_gpt5=false
+# Trigger deployment. AUTH_CLIENT_ID is required unless disable_auth=true is explicit.
+# GPT-5 and GPT-5.6 are off by default, so this uses GPT-4o.
+gh workflow run deploy.yml -f force_all=true
 
 # Watch the workflow run
 gh run watch
 ```
 
-If you've already requested and been granted `GlobalStandard` quota for GPT-5, drop the flag (it defaults to `true`):
+If you've been granted `GlobalStandard` quota, opt in to the deployments you need:
 
 ```powershell
-gh workflow run deploy.yml -f force_all=true
+gh workflow run deploy.yml -f force_all=true -f deploy_gpt5=true -f deploy_gpt56=true
 ```
 
 > **Want a fully private deployment?** For production lockdown with VNet, private endpoints, and ACR agent pool:
@@ -399,7 +407,7 @@ gh workflow run deploy.yml -f force_all=true
 > ```
 > This adds VNet integration, private DNS zones, and a VNet-integrated ACR build agent. First deploy takes ~30-45 min.
 
-> Flags can be combined: `-f enable_private_endpoints=true -f deploy_gpt5=false`
+> Flags can be combined: `-f enable_private_endpoints=true -f deploy_gpt56=true`
 
 ### Option B: GitHub Web UI
 
@@ -479,7 +487,7 @@ The container exposes the effective config at `GET /api/config` → `features: {
 
 **Expected deployment time**: ~20-30 minutes on the first run (cold ACR build + AI Foundry Hub/Project + Agent Service capability host wiring), ~10-15 minutes on subsequent runs. ~30-45 minutes on the first deploy with `enable_private_endpoints=true` (adds ACR VNet-integrated agent pool provisioning).
 
-> **If the workflow fails on `Microsoft.CognitiveServices/accounts/deployments`** with a quota or capacity error, your chosen region doesn't have the model SKU available. Either re-run with `-f deploy_gpt5=false`, or change `vars.LOCATION` (Settings → Environments → dev) to a region with quota and re-run.
+> **If the workflow fails on `Microsoft.CognitiveServices/accounts/deployments`** with a quota or capacity error, your chosen region doesn't have the requested model SKU available. Disable the corresponding premium-model flag, or change `vars.LOCATION` (Settings → Environments → dev) to a region with quota and re-run.
 
 ```powershell
 # Watch the workflow run (if using GitHub CLI)
@@ -495,7 +503,7 @@ The workflow runs these jobs:
 3. **Deploy Backend** — Container App with FastAPI + the full agent surface: Clarifier (L1+L2), Action Router, Query Splitter, Load Agent, Raster Sampling, Contextual, Vision, Terrain, Mobility, Comparison, Building Damage, Extreme Weather, **Site Intel** (MAF), **Resilience** (MAF), **Forecast** (MAF; Aurora + Earth-2 FCN + MAI Weather). Credentials wired via managed identity.
 4. **Deploy Frontend** — App Service with React UI (Public/Pro STAC toggle, GEOINT module selectors, Site Intel + Resilience + Forecast panels)
 5. **Enable Agent Service** — Enables Agent Service capability hosts on AI Foundry so GEOINT agents can use multi-turn tool orchestration (fallback: `scripts\enable-agent-service.ps1`)
-6. **Configure Auth** — Configures Entra ID EasyAuth on both frontend (login redirect) and backend Container App (Return401) using the app registration from Step 8.3 (skipped if `AUTH_CLIENT_ID` secret is not set or `disable_auth=true`)
+6. **Configure Auth** — Configures Entra ID EasyAuth on the frontend and in-process token validation on the backend. A missing `AUTH_CLIENT_ID` fails deployment unless `disable_auth=true` explicitly selects public mode.
 7. **Summary** — Prints deployment status, endpoints, auth configuration, and Agent Service status
 
 ![GitHub Actions Auto Deploy](documentation/images/auto_deploy_github_actions.png)
@@ -645,7 +653,7 @@ $env:MPC_PRO = 'true'; $env:FABRIC = 'true'; $env:PRIVATE = 'true'
 # Or via flags
 .\deploy-infrastructure.ps1 -EnableMpcPro -EnableFabric -EnablePrivateEndpoints
 
-# Pin a region (skips preflight)
+# Pin a region (required services and quota are still validated)
 .\deploy-infrastructure.ps1 -Location eastus2
 ```
 

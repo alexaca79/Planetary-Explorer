@@ -1,3 +1,8 @@
+---
+title: Planetary Explorer
+description: Explore Earth science data through natural-language geospatial agents
+---
+
 <div align="center">
 
 <img src="./documentation/images/hero_banner.png" alt="Planetary Explorer - AI-Powered Geospatial Intelligence" width="100%"/>
@@ -6,7 +11,7 @@
 
 </div>
 
-# 🌍 Welcome to Planetary Explorer!
+## 🌍 Welcome to Planetary Explorer!
 Planetary Explorer, built on AI Foundry, demonstrates how organizations can use Microsoft Planetary Computer Pro to combine geospatial data with generative AI experiences. By enabling users to explore Earth science data through natural language, it makes complex geospatial workflows more accessible to analysts, operators, and decision makers—not just GIS specialists. This helps teams accelerate insight generation and support scenarios ranging from operational monitoring to risk management. 
 
 ## 📋 Overview
@@ -25,7 +30,7 @@ Meet users where they already work:
 - **M365 Copilot** — declarative agent surfaces the same answers inside Word, Outlook, and Copilot Chat
 - **VS Code / Claude Desktop** — every agent exposed as MCP tools for developers
 
-Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, **Semantic Kernel** and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
+Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
 
 **Watch Satya Nadella introduce NASA Earth Copilot, the inspiration behind Planetary Explorer, at Microsoft Ignite 2024**: [View Here](https://www.linkedin.com/posts/microsoft_msignite-activity-7265061510635241472-CAYx/?utm_source=share&utm_medium=member_desktop)
 
@@ -37,7 +42,7 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, **Semantic K
 
 ## ✨ Features
 
-- **Multi-Agent Architecture** — Microsoft Agent Framework (MAF) workflows + Semantic Kernel + Azure AI Agent Service. 
+- **Multi-Agent Architecture** — Microsoft Agent Framework (MAF) prompt agents and workflows plus Azure AI Agent Service tool agents.
 - **Dual MPC Surface** — Chat over **MPC Public** *or* **MPC Pro / GeoCatalog** in your own tenant
 - **Pluggable Connection Surfaces** — Bring your own **Microsoft Fabric** Lakehouse, **Azure AI Search** indexes, and **Foundry geospatial + weather models**. 
 - **MCP Server** — Expose every agent as Model Context Protocol tools for VS Code GitHub Copilot, Claude Desktop, and other MCP clients.
@@ -204,7 +209,7 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 - **Technology**: React 18, TypeScript, Vite, Azure Maps SDK v2
 
 **Container App Backend (`planetary-explorer/container-app/`) - Azure Container Apps**
-- **Microsoft Agent Framework + Semantic Kernel + Azure AI Agent Service**: Mixed-framework orchestration over Azure AI Foundry (GPT-5 or model of choice)
+- **Microsoft Agent Framework + Azure AI Agent Service**: Prompt agents, workflows, and hosted tool orchestration over Azure AI Foundry (GPT-5 or model of choice)
 - **MCP Runtime** (`mcp_runtime/`): Public STAC adapter + Pro MCP sidecar client; agents default to public MPC for reasoning, Pro for governed chat
 - **Fabric Connector**: Delta-table reads for Site Intel + Resilience (power, water, candidate sites, facilities, supply edges)
 - **Weather Provider Registry** (`connectors/weather`): Pluggable providers — Aurora, Earth-2 FCN, MAI Weather — used by the Forecast Agent
@@ -214,7 +219,7 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 - **Multi-Strategy Geocoding**: Google Maps, Azure Maps, Mapbox, OpenAI fallback
 - **Hybrid Rendering System**: TiTiler for 130+ satellite collection types
 - **VNet Integration**: Enterprise-grade security with private networking (optional)
-- **Technology**: Python 3.12, FastAPI, Microsoft Agent Framework, Semantic Kernel, MCP, Azure Container Apps
+- **Technology**: Python 3.11, FastAPI, Microsoft Agent Framework, MCP, Azure Container Apps
 
 **Azure Infrastructure**
 - **Azure AI Foundry**: Model deployments for agent intelligence (GPT-5 or model of choice); host for MAI Weather forecast provider
@@ -246,7 +251,7 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 - **Azure Cloud Services** - Azure AI Foundry, Azure Maps, Container Apps, AI Search
 - **Python Development** - Python 3.12, FastAPI, async programming, package management
 - **React/TypeScript** - React 18, TypeScript, Vite, modern JavaScript
-- **AI/ML Concepts** - LLMs, Semantic Kernel, multi-agent systems, RAG
+- **AI/ML Concepts** - LLMs, agent tool calling, multi-agent systems, RAG
 - **Microsoft Agent Framework & MCP** - MAF `WorkflowBuilder` graphs, Model Context Protocol clients/servers
 - **Microsoft Fabric / Delta Lake** - Lakehouse workspaces, Delta tables, SQL endpoint access
 - **Geospatial Data** - STAC standards, satellite imagery, raster processing (GDAL/Rasterio)

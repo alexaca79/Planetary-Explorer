@@ -9,6 +9,16 @@ param sku object = {
 @description('Enable private endpoints — disables public access')
 param enablePrivateEndpoints bool = false
 
+@description('Create the private Blob container and Queue used by durable GeoFM runs.')
+param deployGeoFmResources bool = false
+
+@description('Create the private Blob container used by downloadable chat test artifacts.')
+param deployChatHistoryResources bool = false
+
+@description('Number of days chat artifact files remain available.')
+@minValue(1)
+param chatArtifactRetentionDays int = 90
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: name
   location: location
@@ -42,6 +52,76 @@ resource dataContainer 'Microsoft.Storage/storageAccounts/blobServices/container
   }
 }
 
+resource chatArtifactContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = if (deployChatHistoryResources) {
+  parent: blobService
+  name: 'chat-artifacts'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-01-01' = if (deployChatHistoryResources) {
+  parent: storageAccount
+  name: 'default'
+  properties: {
+    policy: {
+      rules: [
+        {
+          enabled: true
+          name: 'expire-chat-artifacts'
+          type: 'Lifecycle'
+          definition: {
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterModificationGreaterThan: chatArtifactRetentionDays
+                }
+              }
+            }
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                '${chatArtifactContainer.name}/'
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+resource geoFmContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = if (deployGeoFmResources) {
+  parent: blobService
+  name: 'geofm'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = if (deployGeoFmResources) {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource geoFmQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = if (deployGeoFmResources) {
+  parent: queueService
+  name: 'geofm-jobs'
+}
+
+resource geoFmPoisonQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = if (deployGeoFmResources) {
+  parent: queueService
+  name: 'geofm-poison'
+}
+
 output name string = storageAccount.name
 output id string = storageAccount.id
 output primaryEndpoints object = storageAccount.properties.primaryEndpoints
+output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
+output queueEndpoint string = storageAccount.properties.primaryEndpoints.queue
+output geoFmContainerName string = deployGeoFmResources ? geoFmContainer.name : ''
+output geoFmQueueName string = deployGeoFmResources ? geoFmQueue.name : ''
+output geoFmPoisonQueueName string = deployGeoFmResources ? geoFmPoisonQueue.name : ''
+output chatArtifactContainerName string = deployChatHistoryResources ? chatArtifactContainer.name : ''

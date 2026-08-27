@@ -5,12 +5,36 @@ targetScope = 'subscription'
 @description('Name of the environment that will be used to name resources')
 param environmentName string
 
+@description('Exact API Container App name. Empty preserves the legacy token-based name.')
+param apiContainerAppName string = ''
+
+@description('Provision or reconcile the API Container App infrastructure.')
+param deployApiContainer bool = true
+
+@description('Exact existing Container Apps environment name. When set, services reuse it and skip environment reconciliation.')
+param existingContainerAppsEnvironmentName string = ''
+
+@description('HTTPS URL of an adopted API Container App when its infrastructure is not reconciled.')
+param existingApiUrl string = ''
+
+@description('Provision the frontend App Service targeted by azd deploy web.')
+param deployFrontend bool = false
+
+@description('Exact frontend Web App name. Empty derives a globally unique stable name.')
+param frontendWebAppName string = ''
+
+@description('Exact frontend App Service plan name. Empty derives a stable resource-group name.')
+param frontendAppServicePlanName string = ''
+
 @minLength(1)
 @description('Primary location for all resources')
 param location string
 
 @description('Container image name')
 param containerImage string = ''
+
+@description('Frontend origin allowed to make credentialed API requests, for example https://app.example.com')
+param frontendUrl string = ''
 
 @description('Azure OpenAI API Key')
 @secure()
@@ -26,6 +50,12 @@ param openAiApiKey string = ''
 // Authentication parameters
 @description('Enable Microsoft Entra (Azure AD) authentication')
 param enableAuthentication bool = false
+
+@description('Explicitly expose protected API routes without authentication for development or demos.')
+param publicDemoMode bool = false
+
+@description('Deploy durable per-user chat history in Cosmos DB with downloadable artifacts in Blob Storage.')
+param deployChatHistory bool = true
 
 @description('Microsoft Entra Client ID (Application ID)')
 param microsoftEntraClientId string = ''
@@ -45,8 +75,17 @@ param cloudEnvironment string = 'Commercial'
 @description('Deploy Azure AI Foundry (OpenAI) with GPT-4 model')
 param deployAIFoundry bool = true
 
+@description('Name of the Microsoft Foundry Agent Service project.')
+param agentProjectName string = 'planetary-explorer-agents'
+
 @description('Deploy GPT-5 model (requires GlobalStandard quota — set false if unavailable)')
-param deployGpt5 bool = true
+param deployGpt5 bool = false
+
+@description('Deploy GPT-5.6 Sol, Terra, and Luna models (requires GlobalStandard quota — set false if unavailable)')
+param deployGpt56 bool = false
+
+@description('Deploy the text embedding model used by search and retrieval workloads')
+param deployEmbeddingModel bool = true
 
 // Microsoft Fabric integration (opt-in, three-way toggle)
 //
@@ -110,7 +149,7 @@ param restoreSoftDeletedAccount bool = false
 @description('Name of the ACR agent pool for VNet-integrated builds. Override to use an existing pool.')
 param acrAgentPoolName string = 'buildpool'
 
-@description('Number of always-on ACR agent pool VMs (1 = ready for builds, 0 = slower cold start)')
+@description('Number of always-on ACR agent pool VMs. Set 0 to omit the optional pool.')
 param acrAgentPoolCount int = 1
 
 // MCP Server (in-repo Planetary Explorer MCP server, exposes /api/query as MCP tools)
@@ -123,6 +162,19 @@ param mcpImageName string = 'planetary-explorer-mcp:latest'
 @description('Shared API key required on inbound MCP requests via the X-API-Key header. Empty disables key auth.')
 @secure()
 param mcpApiKey string = ''
+
+@description('Deploy the internal Azure Web Search MCP service. Requires the Microsoft Foundry project deployed by this template.')
+param deployWebSearchMcp bool = false
+
+@description('Existing Microsoft Foundry account name used by Web Search when deployAIFoundry is false.')
+param webSearchFoundryAccountName string = ''
+
+@description('Existing Microsoft Foundry project endpoint used by Web Search when deployAIFoundry is false.')
+param webSearchFoundryProjectEndpoint string = ''
+
+@secure()
+@description('Shared API key for API-to-Web Search MCP calls.')
+param webSearchMcpApiKey string = ''
 
 // MPC Pro MCP sidecar (Microsoft\'s upstream geocatalog-mcp-server, run as an
 // internal Container App for the backend to call as an MCP client). The image
@@ -146,6 +198,30 @@ param mpcDefaultGeoCatalogUri string = ''
 @description('Backend feature flag: route Pro catalog inventory through the MCP sidecar when ``true``. Set to ``false`` initially after deploy, then flip to ``true`` after the Phase 2 validation checklist passes in dev.')
 @allowed(['true', 'false'])
 param useMpcMcp string = 'false'
+
+// GeoFM capability (internal MCP control plane + queue-scaled GPU worker).
+@description('Deploy the Planetary Explorer GeoFM capability. Requires a region that supports the selected serverless GPU profile and available GPU quota.')
+param deployGeoFm bool = false
+
+@description('Create the GeoFM MCP and worker apps. Set false for infrastructure-first GPU quota validation.')
+param deployGeoFmServices bool = true
+
+@description('Region-supported serverless GPU workload profile type. Validate with az containerapp env workload-profile list-supported before deployment.')
+param geoFmGpuProfileType string = 'Consumption-GPU-NC8as-T4'
+
+@description('Allow jobs to use the conditional PlanAura profile after the exact worker image passes GPU validation.')
+param geoFmAllowConditional bool = false
+
+@description('Expose the API-key-protected GeoFM MCP endpoint for clients in another Container Apps environment.')
+param geoFmMcpExternalIngress bool = false
+
+@secure()
+@description('Shared API key for backend-to-GeoFM MCP calls. Required with at least 32 characters when deployGeoFm=true.')
+param geoFmMcpApiKey string = ''
+
+@secure()
+@description('Distinct HMAC key binding GeoFM run operations to their authenticated owner.')
+param geoFmOwnerSigningKey string = ''
 
 @description('Dynamic collection selector mode. off | shadow | v2. When v2, the natural-language -> STAC collection id mapping uses the live CollectionIndex + constrained-LLM pick pipeline (collection_selector.py) instead of the legacy LoadAgent prompt catalog. Passed to web.bicep as COLLECTION_SELECTOR.')
 @allowed([ 'off', 'shadow', 'v2' ])
@@ -183,10 +259,35 @@ param forecastAgentEnabled bool = true
 
 var abbrs = loadJsonContent('./abbreviations.json')
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+var resolvedApiContainerAppName = empty(apiContainerAppName) ? '${abbrs.appContainerApps}web-${resourceToken}' : apiContainerAppName
+var resolvedFrontendWebAppName = empty(frontendWebAppName) ? 'app-planetaryexplorer-${resourceToken}' : frontendWebAppName
+var resolvedFrontendAppServicePlanName = empty(frontendAppServicePlanName) ? 'asp-${resourceToken}' : frontendAppServicePlanName
+var resolvedFrontendUrl = empty(frontendUrl) ? 'https://${resolvedFrontendWebAppName}.azurewebsites.net' : frontendUrl
+var apiBootstrapImage = 'mcr.microsoft.com/k8se/quickstart:latest'
+var isApiBootstrapImage = containerImage == apiBootstrapImage
+var resolvedApiImage = contains(containerImage, '/') ? containerImage : '${registry.outputs.loginServer}/${containerImage}'
+var shouldDeployApiContainer = deployApiContainer && !empty(containerImage)
+var shouldDeployWebSearchMcp = deployWebSearchMcp && length(webSearchMcpApiKey) >= 32 && (deployAIFoundry || (!empty(webSearchFoundryAccountName) && !empty(webSearchFoundryProjectEndpoint)))
+var resolvedContainerAppsEnvironmentName = empty(existingContainerAppsEnvironmentName) ? '${abbrs.appManagedEnvironments}${resourceToken}' : existingContainerAppsEnvironmentName
+var shouldDeployAppsEnvironment = empty(existingContainerAppsEnvironmentName) && (shouldDeployApiContainer || deployGeoFm || deployMcpServer || deployMpcMcp || shouldDeployWebSearchMcp || deployWeatherStub)
 var tags = {
   'azd-env-name': environmentName
   'azd-app-name': 'planetary-explorer'
 }
+var managedChatModels = concat(
+  [
+    'gpt-4o'
+    'gpt-4o-mini'
+  ],
+  deployGpt5 ? ['gpt-5'] : [],
+  deployGpt56 ? [
+    'gpt-5.6-sol'
+    'gpt-5.6-terra'
+    'gpt-5.6-luna'
+  ] : []
+)
+var deployedChatModels = deployAIFoundry ? managedChatModels : ['gpt-4o']
+var primaryChatModel = deployAIFoundry && deployGpt5 ? 'gpt-5' : 'gpt-4o'
 
 // Auto-generate a stable, recoverable Postgres admin password if the caller
 // didn't supply one. Format: <16-char hash><uppercase><digit><symbol>.
@@ -196,6 +297,11 @@ resource rg 'Microsoft.Resources/resourceGroups@2022-09-01' = {
   name: 'rg-${environmentName}'
   location: location
   tags: tags
+}
+
+resource adoptedApi 'Microsoft.App/containerApps@2025-01-01' existing = if (!shouldDeployApiContainer && !empty(apiContainerAppName)) {
+  name: resolvedApiContainerAppName
+  scope: rg
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -251,11 +357,11 @@ module registry './shared/registry.bicep' = {
   }
 }
 
-module appsEnv './shared/apps-env.bicep' = {
+module appsEnv './shared/apps-env.bicep' = if (shouldDeployAppsEnvironment) {
   name: 'apps-env'
   scope: rg
   params: {
-    name: '${abbrs.appManagedEnvironments}${resourceToken}'
+    name: resolvedContainerAppsEnvironmentName
     location: location
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
@@ -264,15 +370,31 @@ module appsEnv './shared/apps-env.bicep' = {
     // internal = false so the Container App has a public FQDN for the React SPA.
     infrastructureSubnetId: enablePrivateEndpoints ? (networking.?outputs.?containerAppsSubnetId ?? '') : ''
     internal: false
+    enableGeoFmGpu: deployGeoFm
+    geoFmGpuProfileName: 'geofm-gpu'
+    geoFmGpuProfileType: geoFmGpuProfileType
   }
 }
 
 // Storage Account (required for AI Foundry Hub)
-module storage './shared/storage.bicep' = if (deployAIFoundry) {
+module storage './shared/storage.bicep' = if (deployAIFoundry || deployGeoFm || deployChatHistory) {
   name: 'storage'
   scope: rg
   params: {
     name: '${abbrs.storageStorageAccounts}${resourceToken}'
+    location: location
+    tags: tags
+    enablePrivateEndpoints: enablePrivateEndpoints
+    deployGeoFmResources: deployGeoFm
+    deployChatHistoryResources: deployChatHistory
+  }
+}
+
+module chatHistory './shared/cosmos-chat-history.bicep' = if (deployChatHistory) {
+  name: 'chat-history'
+  scope: rg
+  params: {
+    name: '${abbrs.documentDBDatabaseAccounts}${resourceToken}'
     location: location
     tags: tags
     enablePrivateEndpoints: enablePrivateEndpoints
@@ -301,9 +423,12 @@ module aiFoundry './shared/ai-foundry.bicep' = if (deployAIFoundry) {
     tags: tags
     deployModels: true
     deployGpt5: deployGpt5
+    deployGpt56: deployGpt56
+    deployEmbeddingModel: deployEmbeddingModel
     deployAgentService: true
     hubName: '${abbrs.machineLearningServicesWorkspaces}hub-${resourceToken}'
     projectName: '${abbrs.machineLearningServicesWorkspaces}project-${resourceToken}'
+    agentProjectName: agentProjectName
     storageAccountId: storage.?outputs.?id ?? ''
     keyVaultId: keyVault.?outputs.?id ?? ''
     applicationInsightsId: monitoring.outputs.applicationInsightsId
@@ -358,7 +483,7 @@ module peKeyVault './shared/private-endpoint.bicep' = if (enablePrivateEndpoints
   }
 }
 
-module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployAIFoundry) {
+module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && (deployAIFoundry || deployGeoFm || deployChatHistory)) {
   name: 'pe-storage-blob'
   scope: rg
   params: {
@@ -369,6 +494,34 @@ module peStorageBlob './shared/private-endpoint.bicep' = if (enablePrivateEndpoi
     groupId: 'blob'
     subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
     privateDnsZoneId: privateDnsZones.?outputs.?storageBlobDnsZoneId ?? ''
+  }
+}
+
+module peChatHistory './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployChatHistory) {
+  name: 'pe-chat-history'
+  scope: rg
+  params: {
+    name: 'pe-cosmos-${resourceToken}'
+    location: location
+    tags: tags
+    serviceResourceId: chatHistory.?outputs.?accountId ?? ''
+    groupId: 'Sql'
+    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
+    privateDnsZoneId: privateDnsZones.?outputs.?cosmosSqlDnsZoneId ?? ''
+  }
+}
+
+module peStorageQueue './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployGeoFm) {
+  name: 'pe-storage-queue'
+  scope: rg
+  params: {
+    name: 'pe-st-queue-${resourceToken}'
+    location: location
+    tags: tags
+    serviceResourceId: storage.?outputs.?id ?? ''
+    groupId: 'queue'
+    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
+    privateDnsZoneId: privateDnsZones.?outputs.?storageQueueDnsZoneId ?? ''
   }
 }
 
@@ -426,24 +579,89 @@ module peAiHub './shared/private-endpoint.bicep' = if (enablePrivateEndpoints &&
 // PE operations on the Hub only. The Hub PE covers the project as well.
 
 // Reference the deployed AI Foundry to get the key (only when deploying web with AI Foundry)
-resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAIFoundry && !empty(containerImage)) {
+resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAIFoundry && shouldDeployApiContainer) {
   name: '${abbrs.cognitiveServicesAccounts}foundry-${resourceToken}'
   scope: rg
+}
+
+module geoFm './app/geofm.bicep' = if (deployGeoFm && deployGeoFmServices) {
+  name: 'geofm'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}geofm-${resourceToken}'
+    workerName: '${abbrs.appContainerApps}geofm-worker-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+    containerRegistryName: registry.outputs.name
+    storageAccountName: storage.?outputs.?name ?? ''
+    storageBlobEndpoint: storage.?outputs.?blobEndpoint ?? ''
+    storageQueueEndpoint: storage.?outputs.?queueEndpoint ?? ''
+    gpuWorkloadProfileName: 'geofm-gpu'
+    isConditionalModelAllowed: geoFmAllowConditional
+    mcpExternalIngress: geoFmMcpExternalIngress
+    mcpApiKey: geoFmMcpApiKey
+    ownerSigningKey: geoFmOwnerSigningKey
+  }
+}
+
+module webSearchMcp './app/web-search-mcp.bicep' = if (shouldDeployWebSearchMcp) {
+  name: 'web-search-mcp'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}web-search-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+    containerRegistryName: registry.outputs.name
+    foundryProjectEndpoint: deployAIFoundry
+      ? (aiFoundry.?outputs.?agentProjectEndpoint ?? '')
+      : webSearchFoundryProjectEndpoint
+    modelDeploymentName: primaryChatModel
+    apiKey: webSearchMcpApiKey
+  }
+}
+
+module webSearchMcpFoundryAccess './shared/foundry-role.bicep' = if (shouldDeployWebSearchMcp) {
+  name: 'web-search-mcp-foundry-access'
+  scope: rg
+  params: {
+    aiFoundryAccountName: deployAIFoundry
+      ? 'cog-foundry-${resourceToken}'
+      : webSearchFoundryAccountName
+    principalId: webSearchMcp.?outputs.?principalId ?? ''
+  }
+}
+
+module frontend './app/frontend.bicep' = if (deployFrontend) {
+  name: 'frontend'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    appServicePlanName: resolvedFrontendAppServicePlanName
+    webAppName: resolvedFrontendWebAppName
+    enablePrivateEndpoints: enablePrivateEndpoints
+    vnetSubnetId: enablePrivateEndpoints ? (networking.?outputs.?appServiceSubnetId ?? '') : ''
+  }
 }
 
 
 // Only deploy web container app if containerImage is provided
 // The backend job in CI/CD handles container deployment separately
-module web './app/web.bicep' = if (!empty(containerImage)) {
+module web './app/web.bicep' = if (shouldDeployApiContainer) {
   name: 'web'
   scope: rg
   params: {
-    name: '${abbrs.appContainerApps}web-${resourceToken}'
+    name: resolvedApiContainerAppName
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
-    imageName: '${registry.outputs.loginServer}/${containerImage}'
+    imageName: resolvedApiImage
+    targetPort: isApiBootstrapImage ? 80 : 8080
+    enableHealthProbes: !isApiBootstrapImage
+    frontendUrl: resolvedFrontendUrl
     // AI Foundry / Azure OpenAI: prefer managed-identity (DefaultAzureCredential
     // in the container falls through to MI when AZURE_OPENAI_API_KEY is empty).
     // We do NOT call listKeys() on the Foundry account because many managed
@@ -451,11 +669,23 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     // disableLocalAuth=true and listKeys() fails with BadRequest.
     azureOpenAiApiKey: azureOpenAiApiKey
     azureOpenAiEndpoint: deployAIFoundry ? (aiFoundry.?outputs.?endpoint ?? '') : azureOpenAiEndpoint
+    azureOpenAiDeploymentName: primaryChatModel
+    azureOpenAiFastDeployment: 'gpt-4o-mini'
+    azureOpenAiAvailableModels: join(deployedChatModels, ',')
     openAiApiKey: openAiApiKey
     // Azure Maps subscription key for geocoding
     azureMapsSubscriptionKey: maps.outputs.primaryKey
     enableAuthentication: enableAuthentication
+    publicDemoMode: publicDemoMode
+    microsoftEntraClientId: microsoftEntraClientId
+    microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
+    enableChatHistory: deployChatHistory && !publicDemoMode
+    cosmosChatEndpoint: deployChatHistory && !publicDemoMode ? (chatHistory.?outputs.?endpoint ?? '') : ''
+    cosmosChatDatabase: chatHistory.?outputs.?databaseName ?? 'planetary-explorer'
+    cosmosChatContainer: chatHistory.?outputs.?containerName ?? 'chat-history'
+    chatArtifactBlobEndpoint: deployChatHistory && !publicDemoMode ? (storage.?outputs.?blobEndpoint ?? '') : ''
+    chatArtifactContainer: storage.?outputs.?chatArtifactContainerName ?? 'chat-artifacts'
     // Cloud environment
     cloudEnvironment: cloudEnvironment
     // AI Agent Service project endpoint
@@ -470,6 +700,13 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
     // been applied.
     mpcMcpUrl: deployMpcMcp ? (mpcMcp.?outputs.?uri ?? '') : ''
     useMpcMcp: useMpcMcp
+    geoFmMcpUrl: (deployGeoFm && deployGeoFmServices) ? (geoFm.?outputs.?mcpUri ?? '') : ''
+    enableGeoFm: deployGeoFm && deployGeoFmServices
+    geoFmMcpApiKey: geoFmMcpApiKey
+    geoFmOwnerSigningKey: geoFmOwnerSigningKey
+    webSearchMcpUrl: shouldDeployWebSearchMcp ? (webSearchMcp.?outputs.?uri ?? '') : ''
+    enableWebSearch: shouldDeployWebSearchMcp
+    webSearchMcpApiKey: webSearchMcpApiKey
     // Feature flags surfaced to the UI via /api/config. These are
     // independent of the deploy* flags so an operator can disable a
     // feature's UI without tearing down its infrastructure.
@@ -492,10 +729,25 @@ module web './app/web.bicep' = if (!empty(containerImage)) {
   }
 }
 
+module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHistory && (shouldDeployApiContainer || !empty(apiContainerAppName)) && !publicDemoMode) {
+  name: 'chat-history-access'
+  scope: rg
+  params: {
+    cosmosAccountName: chatHistory.?outputs.?accountName ?? ''
+    cosmosDatabaseName: chatHistory.?outputs.?databaseName ?? ''
+    cosmosContainerName: chatHistory.?outputs.?containerName ?? ''
+    storageAccountName: storage.?outputs.?name ?? ''
+    blobContainerName: storage.?outputs.?chatArtifactContainerName ?? ''
+    principalId: shouldDeployApiContainer
+      ? (web.?outputs.?principalId ?? '')
+      : (adoptedApi.?identity.?principalId ?? '')
+  }
+}
+
 // Forecast Agent provider URLs + KV-User role assignment for the API
 // container. Wraps RG-scope resources in a module so they deploy from
 // this subscription-scope template.
-module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry && !empty(containerImage)) {
+module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry && shouldDeployApiContainer) {
   name: 'forecast-secrets'
   scope: rg
   params: {
@@ -514,7 +766,7 @@ module forecastSecrets './shared/forecast-secrets.bicep' = if (deployAIFoundry &
 // on the AI Foundry account so DefaultAzureCredential in the container can call
 // the OpenAI inference endpoint. This is required when disableLocalAuth=true is
 // enforced (managed sandbox / regulated subscriptions).
-module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && !empty(containerImage)) {
+module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && shouldDeployApiContainer) {
   name: 'web-foundry-access'
   scope: rg
   params: {
@@ -524,31 +776,31 @@ module webFoundryAccess './shared/foundry-role.bicep' = if (deployAIFoundry && !
 }
 
 // Azure Bot Service for Teams integration (requires App Registration)
-module botService './shared/bot-service.bicep' = if (deployBotService && !empty(microsoftBotAppId) && !empty(containerImage)) {
+module botService './shared/bot-service.bicep' = if (deployBotService && !empty(microsoftBotAppId) && (shouldDeployApiContainer || !empty(existingApiUrl))) {
   name: 'bot-service'
   scope: rg
   params: {
     name: 'bot-${resourceToken}'
     tags: tags
     microsoftAppId: microsoftBotAppId
-    messagingEndpoint: '${web.?outputs.?uri ?? ''}/api/messages'
+    messagingEndpoint: '${shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl}/api/messages'
     tenantId: tenant().tenantId
   }
 }
 
 // MCP server (opt-in via deployMcpServer). Deployed AFTER web so it can be
 // pointed at the freshly provisioned backend FQDN.
-module mcp './app/mcp.bicep' = if (deployMcpServer && !empty(containerImage)) {
+module mcp './app/mcp.bicep' = if (deployMcpServer && (shouldDeployApiContainer || !empty(existingApiUrl))) {
   name: 'mcp'
   scope: rg
   params: {
     name: '${abbrs.appContainerApps}mcp-${resourceToken}'
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     imageName: mcpImageName
-    planetaryExplorerApiUrl: web.?outputs.?uri ?? ''
+    planetaryExplorerApiUrl: shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
     mcpApiKey: mcpApiKey
   }
 }
@@ -565,7 +817,7 @@ module mpcMcp './app/mpc-mcp.bicep' = if (deployMpcMcp) {
     name: '${abbrs.appContainerApps}mpc-mcp-${resourceToken}'
     location: location
     tags: tags
-    containerAppsEnvironmentName: appsEnv.outputs.name
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
     containerRegistryName: registry.outputs.name
     imageName: mpcMcpImageName
     defaultGeoCatalogUri: mpcDefaultGeoCatalogUri
@@ -601,11 +853,20 @@ var fabricEffectiveCapacityId = enableFabric
   : ''
 
 output AZURE_LOCATION string = location
+output AZURE_RESOURCE_GROUP string = rg.name
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registry.outputs.loginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = registry.outputs.name
-output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.outputs.name
-output AZURE_CONTAINER_APP_NAME string = web.?outputs.?name ?? ''
-output AZURE_CONTAINER_APP_URL string = web.?outputs.?uri ?? ''
+output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+output AZURE_CONTAINER_APP_NAME string = shouldDeployApiContainer ? (web.?outputs.?name ?? '') : apiContainerAppName
+output AZURE_CONTAINER_APP_URL string = shouldDeployApiContainer ? (web.?outputs.?uri ?? '') : existingApiUrl
+output AZURE_COSMOS_CHAT_HISTORY_ENDPOINT string = chatHistory.?outputs.?endpoint ?? ''
+output AZURE_COSMOS_CHAT_HISTORY_DATABASE string = chatHistory.?outputs.?databaseName ?? ''
+output AZURE_COSMOS_CHAT_HISTORY_CONTAINER string = chatHistory.?outputs.?containerName ?? ''
+output AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT string = storage.?outputs.?blobEndpoint ?? ''
+output AZURE_CHAT_ARTIFACT_CONTAINER string = storage.?outputs.?chatArtifactContainerName ?? ''
+output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName
+output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl ?? '') : resolvedFrontendUrl
+output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName
 // AI Foundry outputs
 output AZURE_AI_FOUNDRY_NAME string = aiFoundry.?outputs.?name ?? ''
 output AZURE_AI_FOUNDRY_ENDPOINT string = aiFoundry.?outputs.?endpoint ?? ''
@@ -629,6 +890,10 @@ output AZURE_MCP_CONTAINER_APP_NAME string = mcp.?outputs.?name ?? ''
 output AZURE_MCP_CONTAINER_APP_URL string = mcp.?outputs.?uri ?? ''
 output AZURE_MCP_CONTAINER_APP_FQDN string = mcp.?outputs.?fqdn ?? ''
 
+// Azure Web Search MCP outputs (empty when deployWebSearchMcp = false).
+output AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME string = webSearchMcp.?outputs.?name ?? ''
+output AZURE_WEB_SEARCH_MCP_URL string = webSearchMcp.?outputs.?uri ?? ''
+
 // MPC Pro MCP sidecar outputs (empty when deployMpcMcp = false). The
 // principalId is what an operator pastes into the GeoCatalog instance's
 // Access control pane to grant the sidecar Reader (or Contributor).
@@ -636,6 +901,13 @@ output AZURE_MPC_MCP_CONTAINER_APP_NAME string = mpcMcp.?outputs.?name ?? ''
 output AZURE_MPC_MCP_CONTAINER_APP_URL string = mpcMcp.?outputs.?uri ?? ''
 output AZURE_MPC_MCP_CONTAINER_APP_FQDN string = mpcMcp.?outputs.?fqdn ?? ''
 output AZURE_MPC_MCP_PRINCIPAL_ID string = mpcMcp.?outputs.?principalId ?? ''
+
+// GeoFM outputs (empty when deployGeoFm = false).
+output AZURE_GEOFM_MCP_CONTAINER_APP_NAME string = geoFm.?outputs.?mcpName ?? ''
+output AZURE_GEOFM_MCP_URL string = geoFm.?outputs.?mcpUri ?? ''
+output AZURE_GEOFM_WORKER_CONTAINER_APP_NAME string = geoFm.?outputs.?workerName ?? ''
+output AZURE_GEOFM_CONTROL_IDENTITY_CLIENT_ID string = geoFm.?outputs.?controlIdentityClientId ?? ''
+output AZURE_GEOFM_WORKER_IDENTITY_CLIENT_ID string = geoFm.?outputs.?workerIdentityClientId ?? ''
 
 // Fabric capacity outputs.
 // AZURE_FABRIC_CAPACITY_ID is the freshly provisioned capacity (empty when

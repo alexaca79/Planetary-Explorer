@@ -227,6 +227,35 @@
   }
 }
 
+@media (max-width: 640px) {
+  .health-tooltip {
+    position: fixed;
+    top: 132px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    max-height: calc(100dvh - 144px);
+    display: flex;
+    flex-direction: column;
+    transform: none;
+    overflow: hidden;
+    background-color: #202933;
+  }
+
+  .health-tooltip-content {
+    min-height: 0;
+    max-height: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .health-tooltip {
+    top: 176px;
+    max-height: calc(100dvh - 188px);
+  }
+}
+
 /* Dark theme adjustments */
 @media (prefers-color-scheme: dark) {
   .health-tooltip {

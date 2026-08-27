@@ -50,9 +50,14 @@ class PermissionTier(str, Enum):
 # Static tier map keyed off tool-name regex. Patterns are intentionally
 # conservative — anything not matched falls through to READ.
 _TIER_PATTERNS: tuple[tuple[re.Pattern[str], PermissionTier], ...] = (
+    (re.compile(r"^geofm_cancel_"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^delete_|_delete$"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^bulk_ingest_|^batch_ingest_"), PermissionTier.DESTRUCTIVE),
     (re.compile(r"^replace_"), PermissionTier.DESTRUCTIVE),
+    (
+        re.compile(r"^geofm_(?:compare|embed|classify|segment|find_similar|retry)"),
+        PermissionTier.WRITE,
+    ),
     (re.compile(r"^create_|^configure_|^ingest_"), PermissionTier.WRITE),
 )
 
@@ -62,6 +67,42 @@ def classify_tool(tool: str) -> PermissionTier:
         if pat.search(tool):
             return tier
     return PermissionTier.READ
+
+
+def _sanitize_trace_text(value: str) -> str:
+    return re.sub(
+        r"(https?://[^\s?'\"<>]+)\?[^\s'\"<>]+",
+        r"\1?<redacted>",
+        value,
+    )
+
+
+def _redact_sensitive_args(value: Any) -> Any:
+    """Remove credentials from trace and confirmation payloads."""
+    if isinstance(value, dict):
+        return {
+            key: (
+                "<redacted>"
+                if any(
+                    marker in key.casefold()
+                    for marker in ("api_key", "secret", "signature", "token")
+                )
+                else _redact_sensitive_args(child)
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_args(child) for child in value]
+    if isinstance(value, str):
+        return _sanitize_trace_text(value)
+    return value
+
+
+def redact_sensitive_value(value: Any) -> Any:
+    """Return a model- and trace-safe copy of a structured value."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return _redact_sensitive_args(value)
 
 
 @dataclass
@@ -192,6 +233,48 @@ class TracedMcpClient:
         )
 
     @classmethod
+    def from_geofm(
+        cls,
+        *,
+        turn_id: str | None = None,
+        confirm: _ConfirmHook = _broker_confirm,
+    ) -> "TracedMcpClient | None":
+        """Return a traced GeoFM client when the service is enabled."""
+        try:
+            from connectors.geofm import get_client, is_enabled
+        except Exception:  # noqa: BLE001
+            return None
+        if not is_enabled():
+            return None
+        return cls(
+            server_id="geofm",
+            underlying=get_client(),
+            turn_id=turn_id,
+            confirm=confirm,
+        )
+
+    @classmethod
+    def from_web_search(
+        cls,
+        *,
+        turn_id: str | None = None,
+        confirm: _ConfirmHook = _broker_confirm,
+    ) -> "TracedMcpClient | None":
+        """Return a traced client when the web-search MCP server is enabled."""
+        from .registry import get_registry
+        from .remote_client import RemoteMcpClient
+
+        server = get_registry().get("web_search")
+        if server is None or not server.enabled:
+            return None
+        return cls(
+            server_id=server.server_id,
+            underlying=RemoteMcpClient(server.url, api_key=server.api_key),
+            turn_id=turn_id,
+            confirm=confirm,
+        )
+
+    @classmethod
     def for_agent_geospatial(
         cls,
         *,
@@ -227,7 +310,7 @@ class TracedMcpClient:
             turn_id=self.turn_id,
             server_id=self.server_id,
             tool=tool,
-            args=args,
+            args=redact_sensitive_value(args),
             tier=tier,
             started_at=time.time(),
         )
@@ -249,6 +332,7 @@ class TracedMcpClient:
                 entry.error = "denied_by_user"
                 entry.finished_at = time.time()
                 entry.latency_ms = int((entry.finished_at - entry.started_at) * 1000)
+                await _trace_emit({"type": "tool_result", **entry.to_dict()})
                 raise PermissionError(f"User denied {tier.value} call to {tool}")
 
         try:
@@ -265,7 +349,7 @@ class TracedMcpClient:
                 )
         except Exception as exc:  # noqa: BLE001
             entry.ok = False
-            entry.error = f"{type(exc).__name__}: {exc}"
+            entry.error = _sanitize_trace_text(f"{type(exc).__name__}: {exc}")
             entry.finished_at = time.time()
             entry.latency_ms = int((entry.finished_at - entry.started_at) * 1000)
             await _trace_emit({"type": "tool_result", **entry.to_dict()})
@@ -278,6 +362,7 @@ class TracedMcpClient:
                 preview = str(result)
             except Exception:  # noqa: BLE001
                 preview = "<unprintable>"
+            preview = _sanitize_trace_text(preview)
             entry.response_summary = preview[:summary_max]
             await _trace_emit({"type": "tool_result", **entry.to_dict()})
             return result

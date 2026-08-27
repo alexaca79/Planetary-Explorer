@@ -11,9 +11,16 @@ All tools are async. Naming follows the catalog in REQ-ARCH-1.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
+import os
+import secrets
 import time
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from .session_context import get_session
 
@@ -23,6 +30,46 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _geofm_owner_proof(
+    action: str,
+    owner: str,
+    resource: Any,
+) -> Dict[str, Any]:
+    key = (os.getenv("GEOFM_OWNER_SIGNING_KEY") or "").encode("utf-8")
+    if len(key) < 32:
+        raise RuntimeError("GeoFM owner signing is not configured.")
+    expires_at = int(time.time()) + 120
+    nonce = secrets.token_hex(16)
+    payload = json.dumps(
+        [action, owner, _canonical_geofm_resource(resource), expires_at, nonce],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "owner_signature": hmac.new(key, payload, hashlib.sha256).hexdigest(),
+        "owner_signature_expires_at": expires_at,
+        "owner_signature_nonce": nonce,
+    }
+
+
+def _canonical_geofm_resource(value: Any, *, key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {
+            child_key: _canonical_geofm_resource(child, key=child_key)
+            for child_key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_canonical_geofm_resource(child) for child in value]
+    if key == "run_id" and isinstance(value, str):
+        return str(UUID(value))
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return format(float(value), ".17g")
+    return value
 
 
 def _build_request(question_override: Optional[str] = None, hint: Optional[str] = None):
@@ -137,6 +184,106 @@ async def general_earth_qa(question: str) -> Dict[str, Any]:
     except Exception as e:
         logger.exception("general_earth_qa failed")
         return {"success": False, "error": str(e), "elapsed_ms": int((time.time() - started) * 1000)}
+
+
+async def search_web(
+    query: str,
+    search_context_size: str = "medium",
+) -> Dict[str, Any]:
+    """Search the current public web through Microsoft Foundry Web Search."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    if search_context_size not in {"low", "medium", "high"}:
+        return {
+            "success": False,
+            "error": "search_context_size must be low, medium, or high",
+        }
+    client = TracedMcpClient.from_web_search(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "Azure Web Search is not enabled in this environment.",
+        }
+    try:
+        result = await client.call(
+            "web_search",
+            {"query": query, "search_context_size": search_context_size},
+        )
+        structured = result if isinstance(result, dict) else {"answer": str(result)}
+        sources = [
+            {
+                "title": str(citation.get("title") or "Web source"),
+                "uri": citation.get("url"),
+                "kind": "web",
+            }
+            for citation in structured.get("citations", [])
+            if isinstance(citation, dict) and citation.get("url")
+        ]
+        cited_urls = {source["uri"] for source in sources}
+        for source_url in structured.get("source_urls", []) or []:
+            if isinstance(source_url, str) and source_url and source_url not in cited_urls:
+                sources.append(
+                    {
+                        "title": "Web source",
+                        "uri": source_url,
+                        "kind": "web",
+                    }
+                )
+                cited_urls.add(source_url)
+        answer = structured.get("answer") or ""
+        if not answer or not sources:
+            out = {
+                "success": False,
+                "error": "Azure Web Search returned no grounded answer with a usable source.",
+            }
+        else:
+            out = {
+                "success": True,
+                "answer": answer,
+                "structured": structured,
+                "sources": sources,
+            }
+    except Exception as error:
+        logger.exception("search_web failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("search_web", out)
+    return out
+
+
+async def get_current_datetime(timezone: str = "UTC") -> Dict[str, Any]:
+    """Get the current date and time from the web-search MCP host clock."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_web_search(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "The current-date MCP service is not enabled.",
+        }
+    try:
+        result = await client.call("get_current_datetime", {"timezone": timezone})
+        structured = result if isinstance(result, dict) else {"iso8601": str(result)}
+        date_value = str(structured.get("date") or "")
+        timezone_value = str(structured.get("timezone") or timezone)
+        out = {
+            "success": True,
+            "answer": f"The current date is {date_value} ({timezone_value}).",
+            "structured": structured,
+            "sources": [
+                {
+                    "title": "MCP host system clock",
+                    "uri": None,
+                    "kind": "calculation",
+                }
+            ],
+        }
+    except Exception as error:
+        logger.exception("get_current_datetime failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("get_current_datetime", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +508,15 @@ async def compare_temporal(
     collection: str,
     t1: str,
     t2: str,
+    metric: str = "auto",
 ) -> Dict[str, Any]:
     """Compare the same location + collection across two distinct time windows.
 
     This implements REQ-COMPARE-1 / closes G9. The tool:
       1. Confirms the user has a pin (or bbox) and a single collection target.
-      2. Runs ``sample_raster_value`` twice (once with each time window
-         in the hint) so the underlying RasterSamplingAgent picks the
-         right STAC item per epoch.
+        2. For NBR, searches Public Planetary Computer near each requested
+            epoch and computes a cloud-masked extent summary from signed COGs.
+            Other metrics continue through the generic raster sampler.
       3. Returns a structured diff: {t1_value, t2_value, delta,
          percent_change, narrative}.
 
@@ -377,6 +525,7 @@ async def compare_temporal(
                     loaded or what get_collection_metadata returned).
         t1: ISO date or year for the "before" window (e.g. "2015-06" or "2015").
         t2: ISO date or year for the "after" window.
+        metric: Metric to compare. Use "nbr" for Normalized Burn Ratio.
     """
     from pipeline.analyzers.raster_sampling_analyzer import RasterSamplingAnalyzer
 
@@ -390,6 +539,113 @@ async def compare_temporal(
             "missing_slot": "location",
             "error": "compare_temporal needs a pin or bbox to anchor both samples.",
         }
+
+    requested_metric = metric.strip().lower()
+    question_lower = s.question.lower()
+    if requested_metric == "auto" and (
+        "nbr" in question_lower or "normalized burn ratio" in question_lower
+    ):
+        requested_metric = "nbr"
+
+    if requested_metric in {"nbr", "dnbr", "normalized burn ratio"}:
+        import asyncio
+
+        from agents.raster_sampling_agent.spectral_indices import (
+            SpectralIndexSample,
+            sample_temporal_nbr,
+        )
+
+        if s.bbox:
+            sampling_bbox = s.bbox
+            spatial_support = "valid cloud-masked pixels in the requested extent"
+        else:
+            from pyproj import Geod
+
+            latitude, longitude = s.pin  # type: ignore[misc]
+            geod = Geod(ellps="WGS84")
+            west = geod.fwd(longitude, latitude, 270, 30)[0]
+            east = geod.fwd(longitude, latitude, 90, 30)[0]
+            south = geod.fwd(longitude, latitude, 180, 30)[1]
+            north = geod.fwd(longitude, latitude, 0, 30)[1]
+            sampling_bbox = (west, south, east, north)
+            spatial_support = "valid cloud-masked pixels in a 60 m window around the pin"
+
+        async def _sample_nbr(when: str) -> SpectralIndexSample:
+            return await asyncio.to_thread(
+                sample_temporal_nbr,
+                collection,
+                when,
+                bbox=sampling_bbox,
+            )
+
+        sampled = await asyncio.gather(
+            _sample_nbr(t1),
+            _sample_nbr(t2),
+            return_exceptions=True,
+        )
+        errors = [value for value in sampled if isinstance(value, BaseException)]
+        if errors:
+            out = {
+                "success": False,
+                "collection": collection,
+                "metric": "nbr",
+                "t1": t1,
+                "t2": t2,
+                "error": "; ".join(str(error) for error in errors),
+                "narrative": (
+                    "Could not retrieve valid NBR rasters for both epochs. "
+                    + "; ".join(str(error) for error in errors)
+                ),
+                "elapsed_ms": int((time.time() - started) * 1000),
+            }
+            _record_evidence("compare_temporal", out)
+            return out
+
+        before = sampled[0]
+        after = sampled[1]
+        assert isinstance(before, SpectralIndexSample)
+        assert isinstance(after, SpectralIndexSample)
+        delta = after.value - before.value
+        percent_change = (delta / before.value * 100.0) if before.value != 0 else None
+        dnbr = before.value - after.value
+        before_date = before.acquisition_datetime[:10]
+        after_date = after.acquisition_datetime[:10]
+        narrative = (
+            f"Mean NBR over {spatial_support} was {before.value:.4f} on {before_date} "
+            f"(requested {t1}) and {after.value:.4f} on {after_date} "
+            f"(requested {t2}). NBR change (after - before) is {delta:+.4f}; "
+            f"standard dNBR (before - after) is {dnbr:+.4f}"
+            + (
+                f", and relative NBR change is {percent_change:+.1f}%."
+                if percent_change is not None
+                else ". Relative change is undefined because baseline NBR is zero."
+            )
+        )
+        out = {
+            "success": True,
+            "collection": collection,
+            "metric": "nbr",
+            "summary_statistic": "mean",
+            "spatial_support": spatial_support,
+            "bbox": list(sampling_bbox),
+            "t1": t1,
+            "t2": t2,
+            "t1_value": before.value,
+            "t2_value": after.value,
+            "delta": delta,
+            "dnbr": dnbr,
+            "percent_change": percent_change,
+            "t1_sample": before.to_dict(),
+            "t2_sample": after.to_dict(),
+            "narrative": narrative,
+            "sources": [
+                {"title": before.item_id, "uri": before.item_url, "kind": "raster"},
+                {"title": after.item_id, "uri": after.item_url, "kind": "raster"},
+            ],
+            "elapsed_ms": int((time.time() - started) * 1000),
+        }
+        _record_evidence("compare_temporal", out)
+        return out
 
     # Sample at each epoch using the analyzer + a time-range hint.
     analyzer = RasterSamplingAnalyzer()
@@ -474,6 +730,336 @@ async def compare_temporal(
 
 
 # ---------------------------------------------------------------------------
+# GEOSPATIAL FOUNDATION MODEL TOOLS
+# ---------------------------------------------------------------------------
+
+
+def _parse_stac_datetime(item: Dict[str, Any]) -> datetime:
+    properties = item.get("properties") or {}
+    raw = properties.get("datetime") or properties.get("start_datetime") or ""
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def _select_geofm_pair(
+    before_item_id: Optional[str],
+    after_item_id: Optional[str],
+) -> tuple[str, str]:
+    session = get_session()
+    supported = {"hls2-s30", "hls2-l30"}
+    candidates = [
+        item
+        for item in session.stac_items
+        if isinstance(item, dict)
+        and item.get("id")
+        and (item.get("collection") or item.get("collection_id")) in supported
+    ]
+    by_id = {str(item["id"]): item for item in candidates}
+    if before_item_id or after_item_id:
+        if not before_item_id or not after_item_id:
+            raise ValueError("Provide both before_item_id and after_item_id, or neither.")
+        if before_item_id not in by_id or after_item_id not in by_id:
+            raise ValueError("Both GeoFM source items must be loaded HLS items in this map session.")
+        first = by_id[before_item_id]
+        second = by_id[after_item_id]
+        if (first.get("collection") or first.get("collection_id")) != (
+            second.get("collection") or second.get("collection_id")
+        ):
+            raise ValueError("GeoFM source items must come from the same HLS collection.")
+        first_datetime = _parse_stac_datetime(first)
+        second_datetime = _parse_stac_datetime(second)
+        missing_datetime = datetime.min.replace(tzinfo=UTC)
+        if first_datetime == missing_datetime or second_datetime == missing_datetime:
+            raise ValueError("Both GeoFM source items must include an acquisition datetime.")
+        if first_datetime == second_datetime:
+            raise ValueError("GeoFM source items must represent distinct acquisition times.")
+        if first_datetime > second_datetime:
+            return after_item_id, before_item_id
+        return before_item_id, after_item_id
+
+    collection_order = [
+        collection
+        for collection in session.loaded_collections
+        if collection in supported
+    ] + sorted(supported)
+    for collection in dict.fromkeys(collection_order):
+        same_collection = [
+            item
+            for item in candidates
+            if (item.get("collection") or item.get("collection_id")) == collection
+        ]
+        if len(same_collection) < 2:
+            continue
+        ordered = sorted(same_collection, key=_parse_stac_datetime)
+        return str(ordered[0]["id"]), str(ordered[-1]["id"])
+    raise ValueError("Load at least two HLS scenes from the same collection before using GeoFM.")
+
+
+def _geofm_aoi() -> Dict[str, Any]:
+    from pyproj import Geod
+
+    session = get_session()
+    geod = Geod(ellps="WGS84")
+    if session.bbox:
+        west, south, east, north = session.bbox
+        if west >= east or south >= north:
+            raise ValueError("The current map bounds do not form a valid GeoFM AOI.")
+        center_lon = (west + east) / 2
+        center_lat = (south + north) / 2
+        width_m = abs(geod.inv(west, center_lat, east, center_lat)[2])
+        height_m = abs(geod.inv(center_lon, south, center_lon, north)[2])
+        if width_m > 15_360 or height_m > 15_360:
+            raise ValueError(
+                "Zoom the map to an area no larger than 15.36 km by 15.36 km for PlanAura."
+            )
+    elif session.pin:
+        latitude, longitude = session.pin
+        west = geod.fwd(longitude, latitude, 270, 1000)[0]
+        east = geod.fwd(longitude, latitude, 90, 1000)[0]
+        south = geod.fwd(longitude, latitude, 180, 1000)[1]
+        north = geod.fwd(longitude, latitude, 0, 1000)[1]
+    else:
+        raise ValueError("GeoFM comparison needs current map bounds or a dropped pin.")
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [west, south],
+                [east, south],
+                [east, north],
+                [west, north],
+                [west, south],
+            ]
+        ],
+    }
+
+
+def _geofm_result(result: Any) -> Dict[str, Any]:
+    envelope = result if isinstance(result, dict) else {"summary": str(result)}
+    structured = envelope.get("payload") or {}
+    references = envelope.get("evidence") or []
+    sources = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            continue
+        reference_kind = reference.get("kind")
+        source_kind = "dataset" if reference_kind == "stac_item" else (
+            "raster" if reference_kind == "artefact" else "api"
+        )
+        sources.append(
+            {
+                "title": str(reference.get("identifier") or "GeoFM evidence"),
+                "uri": reference.get("uri"),
+                "kind": source_kind,
+            }
+        )
+    status = structured.get("status")
+    out: Dict[str, Any] = {
+        "success": status != "failed",
+        "answer": envelope.get("summary") or "GeoFM request completed.",
+        "structured": structured,
+        "sources": sources,
+        "warnings": envelope.get("warnings") or [],
+        "error": structured.get("error"),
+    }
+    features = structured.get("features")
+    if status == "complete" and isinstance(features, list) and features:
+        out["visualizations"] = [
+            {
+                "kind": "vector_layer",
+                "title": "PlanAura contextual change",
+                "spec": {
+                    "data": {"type": "FeatureCollection", "features": features},
+                    "metric": "cosine_distance",
+                    "threshold": (structured.get("statistics") or {}).get("threshold"),
+                },
+            }
+        ]
+    return out
+
+
+async def list_geofm_models() -> Dict[str, Any]:
+    """List GeoFM profiles with exact revisions and deployment gates."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        out = _geofm_result(await client.call("geofm_list_models", {}))
+    except Exception as error:
+        logger.exception("list_geofm_models failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("list_geofm_models", out)
+    return out
+
+
+async def compare_with_geofm(
+    before_item_id: Optional[str] = None,
+    after_item_id: Optional[str] = None,
+    threshold: float = 0.35,
+    max_features: int = 10,
+) -> Dict[str, Any]:
+    """Submit a durable PlanAura comparison for two loaded HLS scenes.
+
+    Leave both item ids empty to use the earliest and latest loaded scenes
+    from one HLS collection. The operation requires user approval because it
+    starts billed GPU work.
+    """
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    session = get_session()
+    client = TracedMcpClient.from_geofm(turn_id=session.session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
+        requested_by = (
+            session.authenticated_user_id or f"session:{session.session_id}"
+        )
+        request = {
+            "geometry": _geofm_aoi(),
+            "item_id_epoch_a": epoch_a,
+            "item_id_epoch_b": epoch_b,
+            "profile": "planaura_hls",
+            "correlation_id": session.session_id,
+            "requested_by": requested_by,
+            "threshold": threshold,
+            "max_features": max_features,
+        }
+        out = _geofm_result(
+            await client.call(
+                "geofm_compare_epochs",
+                {
+                    "request": request,
+                    **_geofm_owner_proof(
+                        "submit",
+                        requested_by,
+                        request,
+                    ),
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM submission was not approved."}
+    except Exception as error:
+        logger.exception("compare_with_geofm failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("compare_with_geofm", out)
+    return out
+
+
+async def get_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Poll a durable GeoFM run and return validated results when complete."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
+        out = _geofm_result(
+            await client.call(
+                "geofm_get_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "get",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
+                },
+            )
+        )
+    except Exception as error:
+        logger.exception("get_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("get_geofm_run", out)
+    return out
+
+
+async def cancel_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Cancel a queued or running GeoFM operation after user approval."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
+        out = _geofm_result(
+            await client.call(
+                "geofm_cancel_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "cancel",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM cancellation was not approved."}
+    except Exception as error:
+        logger.exception("cancel_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("cancel_geofm_run", out)
+    return out
+
+
+async def retry_geofm_run(run_id: str) -> Dict[str, Any]:
+    """Start another durable attempt for a failed GeoFM run after approval."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {"success": False, "error": "GeoFM is not enabled."}
+    try:
+        requested_by = get_session().authenticated_user_id or (
+            f"session:{get_session().session_id}"
+        )
+        out = _geofm_result(
+            await client.call(
+                "geofm_retry_run",
+                {
+                    "run_id": run_id,
+                    "requested_by": requested_by,
+                    **_geofm_owner_proof(
+                        "retry",
+                        requested_by,
+                        {"run_id": run_id},
+                    ),
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM retry was not approved."}
+    except Exception as error:
+        logger.exception("retry_geofm_run failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("retry_geofm_run", out)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CLARIFICATION TOOL (REQ-CLARIFY-2)
 # ---------------------------------------------------------------------------
 
@@ -514,6 +1100,8 @@ def create_analyst_functions():
     Order is the priority hint shown to the model in the tool list.
     """
     return {
+        get_current_datetime,
+        search_web,
         search_graphrag,
         general_earth_qa,
         describe_map_screenshot,
@@ -524,5 +1112,10 @@ def create_analyst_functions():
         get_extreme_weather_projection,
         compute_netcdf_trend,
         compare_temporal,
+        list_geofm_models,
+        compare_with_geofm,
+        get_geofm_run,
+        retry_geofm_run,
+        cancel_geofm_run,
         ask_user_to_clarify,
     }

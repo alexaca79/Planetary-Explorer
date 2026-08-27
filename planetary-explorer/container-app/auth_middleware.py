@@ -3,23 +3,17 @@
 # =============================================================================
 # Two paths, both verify the user is signed into the Entra tenant:
 #
-#   (A) PRIMARY — `X-MS-CLIENT-PRINCIPAL` header (production, post-proxy)
+#   (A) OPTIONAL — `X-MS-CLIENT-PRINCIPAL` header (trusted proxy only)
 #       Set by App Service / Container Apps EasyAuth when the request flows
-#       through an auth-gated origin. Base64-encoded JSON with claims that
-#       EasyAuth has *already validated*. The backend trusts the header
-#       because the network topology guarantees it can only have been
-#       injected by EasyAuth (the container is reachable only via the
-#       EasyAuth-fronted origin).
+#       through an auth-gated origin. This path is disabled unless
+#       TRUST_EASYAUTH_HEADER=true because the public Container App ingress
+#       otherwise lets clients forge the header.
 #
 #   (B) FALLBACK — `Authorization: Bearer <jwt>` (transitional)
 #       The current topology has the browser calling the backend container
 #       directly, bypassing EasyAuth. While we still operate that way, the
-#       frontend forwards the user's `/.auth/me` access_token and we
-#       validate signature + tenant issuer here. Audience is checked against
-#       an allow-list that includes the UI app, the Fabric API app, and
-#       Microsoft Graph — because depending on EasyAuth's scope config the
-#       returned token's `aud` can be any of them, but ALL are still
-#       AAD-signed proof that the user is authenticated to our tenant.
+#       frontend forwards the user's `/.auth/me` ID token and we validate its
+#       signature, tenant issuer, and application-specific audience here.
 #
 #       This fallback can be removed once the UI App Service proxies /api/*
 #       through itself so that EasyAuth headers are injected on every
@@ -51,20 +45,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 TENANT_ID = os.environ.get("AZURE_AD_TENANT_ID", "")
 CLIENT_ID = os.environ.get("AZURE_AD_CLIENT_ID", "")
-# Fabric OBO API app — when frontend forwards an access_token with this audience.
-FABRIC_API_CLIENT_ID = os.environ.get("FABRIC_CLIENT_ID", "")
-# Microsoft Graph app id (constant across all tenants). EasyAuth often hands
-# back a Graph-scoped access_token from /.auth/me when the login scope is
-# `openid profile email offline_access` — those tokens are still signed by
-# our tenant so they remain valid proof of authentication.
-GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 
 # Separate JWKS endpoints for v1.0 vs v2.0 tokens. AAD signs v1 and v2 tokens
 # with overlapping but not identical key sets; pick by the token's `iss` claim.
 JWKS_URL_V2 = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 JWKS_URL_V1 = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/keys"
-# Cross-tenant common endpoints — useful for Graph-signed tokens whose signing
-# key may not appear in any single-tenant JWKS during rotation windows.
+# Cross-tenant common endpoints provide a fallback during signing-key rotation.
 JWKS_URL_COMMON_V2 = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
 JWKS_URL_COMMON_V1 = "https://login.microsoftonline.com/common/discovery/keys"
 
@@ -74,21 +60,12 @@ VALID_ISSUERS: List[str] = [
     f"https://sts.windows.net/{TENANT_ID}/",
 ]
 
-# Accepted audiences: the UI app itself, the Fabric OBO API app, and Microsoft
-# Graph. We accept Graph because EasyAuth's `/.auth/me` typically returns a
-# Graph access_token when the login scope includes `offline_access`. The token
-# is still a valid AAD-signed proof of the user's identity, which is all the
-# backend needs — downstream Fabric calls use service-principal credentials
-# (`fabric_client.acquire_app_token`), not user-OBO.
-VALID_AUDIENCES: List[str] = [
-    CLIENT_ID,
-    f"api://{CLIENT_ID}",
-    FABRIC_API_CLIENT_ID,
-    f"api://{FABRIC_API_CLIENT_ID}",
-    GRAPH_APP_ID,
-    f"https://graph.microsoft.com",
-    f"https://graph.microsoft.com/",
-]
+# Accept only audiences bound to an application surface controlled by this
+# deployment. Tenant-signed Graph or unrelated API tokens do not prove that a
+# caller is assigned to Planetary Explorer.
+VALID_AUDIENCES: List[str] = (
+    [CLIENT_ID, f"api://{CLIENT_ID}"] if CLIENT_ID else []
+)
 
 # M365 declarative agent surface — separate app registration so its lifecycle
 # (revoke, rescope, secret rotation) is independent from the UI's. Backward
@@ -146,15 +123,26 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         # Up to four JWKS clients — one per AAD endpoint variant. Lazy-init.
         self._jwks_clients: dict[str, PyJWKClient] = {}
-        self._enabled = os.environ.get("DISABLE_AUTH", "").lower() not in (
+        self._trust_easyauth_header = os.environ.get(
+            "TRUST_EASYAUTH_HEADER", "false"
+        ).lower() in ("true", "1", "yes")
+        explicitly_disabled = os.environ.get("DISABLE_AUTH", "").lower() in (
             "true",
             "1",
             "yes",
         )
-        if self._enabled:
+        entra_configured = bool(TENANT_ID.strip() and CLIENT_ID.strip())
+        self._enabled = not explicitly_disabled
+        if self._enabled and entra_configured:
             logger.info(
                 "[AUTH] Entra ID auth middleware ENABLED  "
                 f"(tenant={TENANT_ID}, client={CLIENT_ID})"
+            )
+        elif self._enabled:
+            logger.error(
+                "[AUTH] Entra ID auth middleware ENABLED but "
+                "AZURE_AD_TENANT_ID or AZURE_AD_CLIENT_ID is missing; "
+                "protected routes will fail closed"
             )
         else:
             logger.info("[AUTH] Entra ID auth middleware DISABLED (DISABLE_AUTH=true)")
@@ -169,10 +157,8 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
     def _signing_key_for_token(self, token: str, iss: str):
         """Resolve the signing key for `token` by trying multiple JWKS endpoints.
 
-        AAD's discovery endpoints aren't a single source of truth — depending
-        on token version (v1/v2) and audience (your-app vs Graph) the kid
-        may only appear in one specific JWKS feed. We try the most-likely
-        endpoint first (based on iss claim) then fall back to the others.
+        AAD's discovery endpoints aren't a single source of truth. We try the
+        most likely endpoint first based on the issuer, then fall back.
         """
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid", "")
@@ -201,10 +187,9 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
     # -----------------------------------------------------------------------
     # Path A: EasyAuth-injected X-MS-CLIENT-PRINCIPAL header
     # -----------------------------------------------------------------------
-    # EasyAuth has *already* validated the user before injecting this header.
-    # The container trusts the header because the EasyAuth-fronted ingress is
-    # the only network path that can set it. Tenant id is still verified so
-    # we don't accept a header forged with a foreign tenant's principal.
+    # EasyAuth has already validated the user before injecting this header.
+    # Callers may use this path only when TRUST_EASYAUTH_HEADER=true and the
+    # network topology prevents direct clients from reaching this ingress.
     @staticmethod
     def _principal_from_easyauth_header(header_b64: str) -> Optional[dict]:
         try:
@@ -220,13 +205,19 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             claims.get("http://schemas.microsoft.com/identity/claims/tenantid")
             or claims.get("tid")
         )
-        if tid and tid != TENANT_ID:
+        if not TENANT_ID or not tid or tid != TENANT_ID:
             logger.warning("[AUTH] X-MS-CLIENT-PRINCIPAL wrong tenant: %s", tid)
             return None
+        subject = (
+            claims.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
+            or claims.get("oid")
+            or claims.get("sub")
+        )
+        if not subject:
+            logger.warning("[AUTH] X-MS-CLIENT-PRINCIPAL missing stable subject")
+            return None
         return {
-            "sub": claims.get("http://schemas.microsoft.com/identity/claims/objectidentifier")
-                or claims.get("oid")
-                or claims.get("sub"),
+            "sub": subject,
             "tid": tid,
             "preferred_username": (
                 claims.get("preferred_username")
@@ -277,7 +268,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         easyauth_header = request.headers.get("X-MS-CLIENT-PRINCIPAL") or request.headers.get(
             "x-ms-client-principal"
         )
-        if easyauth_header:
+        if self._trust_easyauth_header and easyauth_header:
             principal = self._principal_from_easyauth_header(easyauth_header)
             if principal is not None:
                 request.state.user = principal

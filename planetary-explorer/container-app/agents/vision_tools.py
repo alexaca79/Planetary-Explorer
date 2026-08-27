@@ -1,8 +1,7 @@
 """
 Vision Agent Tools - Standalone functions for Azure AI Agent Service FunctionTool.
 
-Refactored from Semantic Kernel @kernel_function class methods on VisionAgentTools
-to standalone functions compatible with Azure AI Agent Service FunctionTool.
+These standalone functions are compatible with Azure AI Agent Service FunctionTool.
 
 Each function uses docstring-based parameter descriptions and returns str.
 Session context (screenshot, STAC items, map bounds) is shared via module-level

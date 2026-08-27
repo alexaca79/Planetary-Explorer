@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: MIT
 # ------------------------------------------------------------------------------
 # deploy-backend.sh
 #
@@ -17,10 +19,14 @@
 #   CA_EXISTS                  "true" | "false"
 #   CA_NAME                    Container app name (empty when CA_EXISTS=false;
 #                              defaulted to ca-${PROJECT_NAME}-api)
+#   WEB_APP_NAME               Exact frontend Web App used to repair missing or
+#                              wildcard CORS configuration
 #   ENABLE_PRIVATE_ENDPOINTS   "true" to use the dedicated VNet ACR agent pool
 #   USE_MANAGED_IDENTITY       (optional) default "true". MI is the canonical
 #                              auth path -- key fetch is skipped when on.
 #   DEFAULT_STAC_MODE          (optional) default "public"
+#   DEPLOY_CHAT_HISTORY        (optional) default "true"
+#   PUBLIC_DEMO_MODE           (optional) disables per-user history when "true"
 #
 # Outputs (appended to $GITHUB_OUTPUT when running in Actions):
 #   container_app_name
@@ -41,6 +47,10 @@ set -euo pipefail
 USE_MANAGED_IDENTITY="${USE_MANAGED_IDENTITY:-true}"
 DEFAULT_STAC_MODE="${DEFAULT_STAC_MODE:-public}"
 ENABLE_PRIVATE_ENDPOINTS="${ENABLE_PRIVATE_ENDPOINTS:-false}"
+CORS_ORIGINS="${CORS_ORIGINS:-}"
+WEB_APP_NAME="${WEB_APP_NAME:-}"
+DEPLOY_CHAT_HISTORY="${DEPLOY_CHAT_HISTORY:-true}"
+PUBLIC_DEMO_MODE="${PUBLIC_DEMO_MODE:-false}"
 
 echo " Building and deploying backend..."
 
@@ -83,6 +93,40 @@ ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GR
 # ------------------------------------------------------------------------------
 # Helpers -- shared between create + update paths
 # ------------------------------------------------------------------------------
+
+resolve_cors_origins() {
+  local requires_resolution="false"
+  local origin
+  if [[ -z "${CORS_ORIGINS}" ]]; then
+    requires_resolution="true"
+  else
+    IFS=',' read -ra origins <<< "${CORS_ORIGINS}"
+    for origin in "${origins[@]}"; do
+      if [[ "${origin}" =~ ^[[:space:]]*\*[[:space:]]*$ ]]; then
+        requires_resolution="true"
+        break
+      fi
+    done
+  fi
+  if [[ "${requires_resolution}" != "true" ]]; then
+    return
+  fi
+  if [[ -z "${WEB_APP_NAME}" ]]; then
+    echo "ERROR: CORS_ORIGINS is missing or contains '*' and WEB_APP_NAME was not supplied." >&2
+    exit 1
+  fi
+  local web_host
+  web_host=$(az webapp show \
+    --resource-group "${RESOURCE_GROUP}" \
+    --name "${WEB_APP_NAME}" \
+    --query defaultHostName \
+    --output tsv 2>/dev/null || echo "")
+  if [[ -z "${web_host}" ]]; then
+    echo "ERROR: Frontend Web App '${WEB_APP_NAME}' was not found." >&2
+    exit 1
+  fi
+  CORS_ORIGINS="https://${web_host},http://localhost:5173"
+}
 
 # Resolve Azure OpenAI / AI Foundry account and pick best models. Sets:
 #   AZURE_OPENAI_NAME, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY,
@@ -216,6 +260,146 @@ grant_openai_role() {
   az role assignment create --assignee-object-id "$ca_identity" --assignee-principal-type ServicePrincipal --role "Cognitive Services OpenAI User" --scope "$openai_id" --output none 2>/dev/null || true
 }
 
+resolve_chat_history() {
+  CHAT_HISTORY_ENABLED="false"
+  CHAT_HISTORY_STORE="disabled"
+  CHAT_ARTIFACT_STORE="disabled"
+  COSMOS_CHAT_ENDPOINT=""
+  COSMOS_CHAT_DATABASE="planetary-explorer"
+  COSMOS_CHAT_CONTAINER="chat-history"
+  CHAT_ARTIFACT_BLOB_ENDPOINT=""
+  CHAT_ARTIFACT_CONTAINER="chat-artifacts"
+  COSMOS_CHAT_ACCOUNT=""
+  STORAGE_CHAT_ACCOUNT=""
+
+  if [[ "${DEPLOY_CHAT_HISTORY}" != "true" || "${PUBLIC_DEMO_MODE}" == "true" ]]; then
+    return
+  fi
+
+  COSMOS_CHAT_ACCOUNT=$(az cosmosdb list \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query "[?tags.\"azd-env-name\"=='${PROJECT_NAME}'].name | [0]" \
+    --output tsv 2>/dev/null || echo "")
+  if [[ -z "${COSMOS_CHAT_ACCOUNT}" ]]; then
+    COSMOS_CHAT_ACCOUNT=$(az cosmosdb list \
+      --resource-group "${RESOURCE_GROUP}" \
+      --query "[0].name" \
+      --output tsv 2>/dev/null || echo "")
+  fi
+  STORAGE_CHAT_ACCOUNT=$(az storage account list \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query "[?tags.\"azd-env-name\"=='${PROJECT_NAME}'].name | [0]" \
+    --output tsv 2>/dev/null || echo "")
+  if [[ -z "${STORAGE_CHAT_ACCOUNT}" ]]; then
+    STORAGE_CHAT_ACCOUNT=$(az storage account list \
+      --resource-group "${RESOURCE_GROUP}" \
+      --query "[0].name" \
+      --output tsv 2>/dev/null || echo "")
+  fi
+  if [[ -z "${COSMOS_CHAT_ACCOUNT}" || -z "${STORAGE_CHAT_ACCOUNT}" ]]; then
+    echo "  WARNING: Chat history resources were not found; history stays disabled."
+    return
+  fi
+
+  if ! az cosmosdb sql container show \
+    --account-name "${COSMOS_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --database-name "${COSMOS_CHAT_DATABASE}" \
+    --name "${COSMOS_CHAT_CONTAINER}" \
+    --output none 2>/dev/null; then
+    echo "  WARNING: Chat history Cosmos container was not found; history stays disabled."
+    return
+  fi
+  local storage_id
+  storage_id=$(az storage account show \
+    --name "${STORAGE_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query id \
+    --output tsv)
+  if ! az resource show \
+    --ids "${storage_id}/blobServices/default/containers/${CHAT_ARTIFACT_CONTAINER}" \
+    --api-version 2023-01-01 \
+    --output none 2>/dev/null; then
+    echo "  WARNING: Chat artifact Blob container was not found; history stays disabled."
+    return
+  fi
+
+  COSMOS_CHAT_ENDPOINT=$(az cosmosdb show \
+    --name "${COSMOS_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query documentEndpoint \
+    --output tsv)
+  CHAT_ARTIFACT_BLOB_ENDPOINT=$(az storage account show \
+    --name "${STORAGE_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query primaryEndpoints.blob \
+    --output tsv)
+  CHAT_HISTORY_ENABLED="true"
+  CHAT_HISTORY_STORE="cosmos"
+  CHAT_ARTIFACT_STORE="blob"
+}
+
+grant_chat_history_roles() {
+  local ca_name="$1"
+  if [[ "${CHAT_HISTORY_ENABLED}" != "true" ]]; then
+    return
+  fi
+  local principal_id storage_id blob_scope cosmos_scope cosmos_assignment blob_assignment
+  principal_id=$(az containerapp show \
+    --name "${ca_name}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query identity.principalId \
+    --output tsv)
+  storage_id=$(az storage account show \
+    --name "${STORAGE_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query id \
+    --output tsv)
+  blob_scope="${storage_id}/blobServices/default/containers/${CHAT_ARTIFACT_CONTAINER}"
+  cosmos_scope="/dbs/${COSMOS_CHAT_DATABASE}/colls/${COSMOS_CHAT_CONTAINER}"
+
+  cosmos_assignment=$(az cosmosdb sql role assignment list \
+    --account-name "${COSMOS_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query "[?principalId=='${principal_id}' && scope=='${cosmos_scope}' && contains(roleDefinitionId, '00000000-0000-0000-0000-000000000002')].id | [0]" \
+    --output tsv)
+  if [[ -z "${cosmos_assignment}" ]]; then
+    az cosmosdb sql role assignment create \
+      --account-name "${COSMOS_CHAT_ACCOUNT}" \
+      --resource-group "${RESOURCE_GROUP}" \
+      --scope "${cosmos_scope}" \
+      --principal-id "${principal_id}" \
+      --role-definition-id "00000000-0000-0000-0000-000000000002" \
+      --output none
+  fi
+  blob_assignment=$(az role assignment list \
+    --scope "${blob_scope}" \
+    --query "[?principalId=='${principal_id}' && roleDefinitionName=='Storage Blob Data Contributor'].id | [0]" \
+    --output tsv)
+  if [[ -z "${blob_assignment}" ]]; then
+    az role assignment create \
+      --assignee-object-id "${principal_id}" \
+      --assignee-principal-type ServicePrincipal \
+      --role "Storage Blob Data Contributor" \
+      --scope "${blob_scope}" \
+      --output none
+  fi
+
+  cosmos_assignment=$(az cosmosdb sql role assignment list \
+    --account-name "${COSMOS_CHAT_ACCOUNT}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query "[?principalId=='${principal_id}' && scope=='${cosmos_scope}' && contains(roleDefinitionId, '00000000-0000-0000-0000-000000000002')].id | [0]" \
+    --output tsv)
+  blob_assignment=$(az role assignment list \
+    --scope "${blob_scope}" \
+    --query "[?principalId=='${principal_id}' && roleDefinitionName=='Storage Blob Data Contributor'].id | [0]" \
+    --output tsv)
+  if [[ -z "${cosmos_assignment}" || -z "${blob_assignment}" ]]; then
+    echo "ERROR: Chat history data roles could not be verified." >&2
+    return 1
+  fi
+}
+
 # When MI is the auth path we deliberately do NOT pass an OpenAI API key, so
 # the app's MI branch is the only code path that can succeed. Sets
 # OPENAI_KEY_ENV_PAIR -- pass it through to --set-env-vars / --env-vars.
@@ -237,12 +421,15 @@ update_container_app() {
   resolve_openai
   resolve_maps
   resolve_geocatalog
+  resolve_chat_history
+  resolve_cors_origins
   configure_maps_secret "$CA_NAME"
 
   CA_FQDN=$(az containerapp show --name "$CA_NAME" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "")
   API_PUBLIC_BASE_URL="${CA_FQDN:+https://$CA_FQDN}"
 
   grant_openai_role "$CA_NAME"
+  grant_chat_history_roles "$CA_NAME"
   compute_openai_key_pair
 
   az containerapp update \
@@ -255,7 +442,7 @@ update_container_app() {
       "MPC_PRO_STAC_URL=${MPC_PRO_STAC_URL}" \
       "DEFAULT_STAC_MODE=${DEFAULT_STAC_MODE}" \
       "API_PUBLIC_BASE_URL=${API_PUBLIC_BASE_URL}" \
-      "CORS_ORIGINS=*" \
+      "CORS_ORIGINS=${CORS_ORIGINS}" \
       "AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}" \
       "${OPENAI_KEY_ENV_PAIR}" \
       "AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}" \
@@ -263,7 +450,27 @@ update_container_app() {
       "AZURE_OPENAI_AVAILABLE_MODELS=${AZURE_OPENAI_AVAILABLE_MODELS}" \
       "USE_MANAGED_IDENTITY=${USE_MANAGED_IDENTITY}" \
       "AZURE_MAPS_SUBSCRIPTION_KEY=${MAPS_ENV_VALUE}" \
+      "PE_FEATURE_CHAT_HISTORY=${CHAT_HISTORY_ENABLED}" \
+      "CHAT_HISTORY_STORE=${CHAT_HISTORY_STORE}" \
+      "COSMOS_CHAT_ENDPOINT=${COSMOS_CHAT_ENDPOINT}" \
+      "COSMOS_CHAT_DATABASE=${COSMOS_CHAT_DATABASE}" \
+      "COSMOS_CHAT_CONTAINER=${COSMOS_CHAT_CONTAINER}" \
+      "CHAT_ARTIFACT_STORE=${CHAT_ARTIFACT_STORE}" \
+      "CHAT_ARTIFACT_BLOB_ENDPOINT=${CHAT_ARTIFACT_BLOB_ENDPOINT}" \
+      "CHAT_ARTIFACT_CONTAINER=${CHAT_ARTIFACT_CONTAINER}" \
       "ENABLE_PIPELINE_V2=true" \
+    --output none
+
+  local app_id
+  app_id=$(az containerapp show \
+    --name "${CA_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --query id \
+    --output tsv)
+  az tag update \
+    --resource-id "${app_id}" \
+    --operation Merge \
+    --tags azd-service-name=api "azd-env-name=${PROJECT_NAME}" \
     --output none
 
   echo "Ensuring ingress port is correct (8080)..."
@@ -281,11 +488,13 @@ update_container_app() {
 # ------------------------------------------------------------------------------
 create_container_app() {
   echo "Creating new Container App..."
-  CA_NAME="ca-${PROJECT_NAME}-api"
+  CA_NAME="${CA_NAME:-ca-${PROJECT_NAME}-api}"
 
   resolve_openai
   resolve_maps
   resolve_geocatalog
+  resolve_chat_history
+  resolve_cors_origins
   compute_openai_key_pair
 
   echo "Creating Container App with placeholder image..."
@@ -293,20 +502,21 @@ create_container_app() {
     --name "$CA_NAME" \
     --resource-group "$RESOURCE_GROUP" \
     --environment "$CAE_NAME" \
-    --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" \
-    --target-port 8080 \
+    --image "mcr.microsoft.com/k8se/quickstart:latest" \
+    --target-port 80 \
     --ingress external \
     --cpu 1.0 \
     --memory 2.0Gi \
     --min-replicas 1 \
     --max-replicas 3 \
     --system-assigned \
+    --tags azd-service-name=api "azd-env-name=${PROJECT_NAME}" \
     --env-vars \
       "PORT=8080" \
       "STAC_API_URL=https://planetarycomputer.microsoft.com/api/stac/v1" \
       "MPC_PRO_STAC_URL=${MPC_PRO_STAC_URL}" \
       "DEFAULT_STAC_MODE=${DEFAULT_STAC_MODE}" \
-      "CORS_ORIGINS=*" \
+      "CORS_ORIGINS=${CORS_ORIGINS}" \
       "AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}" \
       "${OPENAI_KEY_ENV_PAIR}" \
       "AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME}" \
@@ -314,20 +524,23 @@ create_container_app() {
       "AZURE_OPENAI_AVAILABLE_MODELS=${AZURE_OPENAI_AVAILABLE_MODELS}" \
       "USE_MANAGED_IDENTITY=${USE_MANAGED_IDENTITY}" \
       "AZURE_MAPS_SUBSCRIPTION_KEY=${AZURE_MAPS_KEY}" \
+      "PE_FEATURE_CHAT_HISTORY=false" \
+      "CHAT_HISTORY_STORE=disabled" \
+      "COSMOS_CHAT_ENDPOINT=" \
+      "COSMOS_CHAT_DATABASE=${COSMOS_CHAT_DATABASE}" \
+      "COSMOS_CHAT_CONTAINER=${COSMOS_CHAT_CONTAINER}" \
+      "CHAT_ARTIFACT_STORE=disabled" \
+      "CHAT_ARTIFACT_BLOB_ENDPOINT=" \
+      "CHAT_ARTIFACT_CONTAINER=${CHAT_ARTIFACT_CONTAINER}" \
       "ENABLE_PIPELINE_V2=true" \
     --output none
 
   echo "Container App created with placeholder image: $CA_NAME"
 
-  echo "Setting ingress target port to 8080..."
-  az containerapp ingress update \
-    --name "$CA_NAME" \
-    --resource-group "$RESOURCE_GROUP" \
-    --target-port 8080 \
-    --output none
-
   CA_IDENTITY=$(az containerapp show --name "$CA_NAME" --resource-group "$RESOURCE_GROUP" --query "identity.principalId" -o tsv)
   echo "Managed Identity Principal ID: $CA_IDENTITY"
+
+  grant_chat_history_roles "$CA_NAME"
 
   if [ "$USE_MANAGED_IDENTITY" = "true" ] && [ -n "$AZURE_OPENAI_NAME" ]; then
     echo "Configuring managed identity for Azure OpenAI..."
@@ -404,6 +617,21 @@ create_container_app() {
     --set-env-vars \
       "AZURE_MAPS_SUBSCRIPTION_KEY=${MAPS_ENV_VALUE}" \
       "API_PUBLIC_BASE_URL=${API_PUBLIC_BASE_URL}" \
+      "PE_FEATURE_CHAT_HISTORY=${CHAT_HISTORY_ENABLED}" \
+      "CHAT_HISTORY_STORE=${CHAT_HISTORY_STORE}" \
+      "COSMOS_CHAT_ENDPOINT=${COSMOS_CHAT_ENDPOINT}" \
+      "COSMOS_CHAT_DATABASE=${COSMOS_CHAT_DATABASE}" \
+      "COSMOS_CHAT_CONTAINER=${COSMOS_CHAT_CONTAINER}" \
+      "CHAT_ARTIFACT_STORE=${CHAT_ARTIFACT_STORE}" \
+      "CHAT_ARTIFACT_BLOB_ENDPOINT=${CHAT_ARTIFACT_BLOB_ENDPOINT}" \
+      "CHAT_ARTIFACT_CONTAINER=${CHAT_ARTIFACT_CONTAINER}" \
+    --output none
+
+  echo "Setting ingress target port to 8080 for the API image..."
+  az containerapp ingress update \
+    --name "$CA_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --target-port 8080 \
     --output none
 
   echo "Container App updated with image: ${ACR_LOGIN_SERVER}/${PROJECT_NAME}-api:${IMAGE_TAG}"
@@ -417,6 +645,18 @@ if [ "$CA_EXISTS" = "true" ]; then
 else
   create_container_app
 fi
+
+python ../../scripts/configure_api_postdeploy.py \
+  --profile api \
+  --name "$CA_NAME" \
+  --resource-group "$RESOURCE_GROUP"
+
+echo "Enabling sticky sessions for in-process conversation continuity..."
+az containerapp ingress sticky-sessions set \
+  --name "$CA_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --affinity sticky \
+  --output none
 
 # Emit outputs for downstream steps when running under GitHub Actions.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

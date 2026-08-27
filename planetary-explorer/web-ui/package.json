@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --mode production",
+    "build": "vite build --mode production && node scripts/prepare-deployment.cjs",
     "build:dev": "vite build --mode development",
     "preview": "vite preview --port 5173",
     "build:analyze": "vite build --mode production && npx vite-bundle-analyzer dist",
     "clean": "rimraf dist",
     "test": "vitest",
+    "test:deployment": "node --test deployment/server.test.cjs",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"
@@ -18,6 +19,7 @@
   "dependencies": {
     "@tanstack/react-query": "^5.51.9",
     "axios": "^1.7.7",
+    "lucide-react": "^0.468.0",
     "modern-normalize": "^2.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

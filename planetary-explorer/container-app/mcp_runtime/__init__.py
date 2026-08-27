@@ -26,6 +26,7 @@ from .traced_client import (
     TraceEntry,
     TracedMcpClient,
     classify_tool,
+    redact_sensitive_value,
 )
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "get_registry",
     "pending_count",
     "request_confirmation",
+    "redact_sensitive_value",
     "reset_confirm_bus_for_tests",
     "reset_listener",
     "resolve_confirmation",

@@ -1,11 +1,14 @@
-# Planetary Explorer Infrastructure Deployment
+---
+title: Planetary Explorer Infrastructure Deployment
+description: Azure infrastructure deployment reference for Planetary Explorer
+---
 
 This directory contains Bicep templates for deploying the complete Planetary Explorer infrastructure to Azure.
 
 ## 🏗️ What Gets Deployed
 
 ### Core Services
-- **Azure AI Foundry** - GPT-4o and GPT-5 models for AI queries
+- **Azure AI Foundry** - GPT-4o, GPT-5, and GPT-5.6 Sol, Terra, and Luna models for AI queries
 - **Azure Maps** - Geocoding and location services
 - **Azure Container Registry** - Docker image storage
 - **ACR Agent Pool** (`buildpool`) - VNet-integrated build agents for private image builds (when private endpoints enabled)
@@ -46,6 +49,8 @@ The script will:
 3. Run `az deployment sub validate` (catches region/SKU/quota errors before
    any resource is created).
 4. Provision the stack into `rg-planetaryexplorer`.
+5. When GeoFM is enabled, build and publish both GeoFM images and verify the
+  MCP revision plus worker scale-to-zero configuration.
 
 ### Override via environment variables (CI / one-click deploy friendly)
 
@@ -53,7 +58,8 @@ The script will:
 $env:MPC_PRO = 'true'      # surface MPC Pro toggle in the UI
 $env:PRIVATE = 'true'      # private endpoints + VNet
 $env:FABRIC  = 'true'      # provision Microsoft Fabric capacity
-$env:LOCATION = 'eastus2'  # pin a region, skip preflight
+$env:DEPLOY_GEOFM = 'true' # PlanAura control plane + serverless T4 worker
+$env:LOCATION = 'eastus2'  # pin a region; required services and quota are still validated
 .\deploy-infrastructure.ps1
 ```
 
@@ -106,7 +112,8 @@ Edit `main.parameters.json` or pass as command-line arguments:
 | `environmentName` | Name prefix for all resources | `planetaryexplorer` |
 | `location` | Azure region | `eastus` |
 | `deployAISearch` | Include Azure AI Search | `false` |
-| `deployModels` | Deploy GPT-4o/GPT-5 models | `true` |
+| `deployGpt5` | Deploy the GPT-5 model | `false` |
+| `deployGpt56` | Deploy GPT-5.6 Sol, Terra, and Luna models | `false` |
 | `enableAuthentication` | Enable Entra ID auth | `false` |
 
 ### Resource Naming

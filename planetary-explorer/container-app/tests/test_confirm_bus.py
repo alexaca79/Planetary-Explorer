@@ -74,6 +74,30 @@ async def test_timeout_is_denial():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_request_removes_pending_confirmation():
+    from mcp_runtime import pending_count, request_confirmation
+    from mcp_runtime import reset_confirm_bus_for_tests
+
+    await reset_confirm_bus_for_tests()
+    task = asyncio.create_task(
+        request_confirmation(
+            trace_id="trace-cancelled",
+            server_id="geofm",
+            tool="geofm_compare_epochs",
+            args={},
+            tier="write",
+            timeout=5.0,
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert pending_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_request_emits_trace_event():
     from mcp_runtime import (
         request_confirmation,

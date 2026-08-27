@@ -27,6 +27,12 @@ param(
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipFrontend = $false,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$SkipAgentService = $false,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentProjectName = 'planetary-explorer-agents',
     
     [Parameter(Mandatory=$false)]
     [switch]$ShowDetails = $false
@@ -79,11 +85,12 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
     
     $groups = az group list --query "[?contains(name, 'planetaryexplorer') || contains(name, 'planetary-explorer')].name" -o tsv 2>$null
     
-    if ($groups) {
-        $ResourceGroup = ($groups -split "`n")[0].Trim()
+    $groupMatches = @($groups -split "`n" | Where-Object { $_.Trim() })
+    if ($groupMatches.Count -eq 1) {
+        $ResourceGroup = $groupMatches[0].Trim()
         Write-Host "[OK] Found resource group: $ResourceGroup" -ForegroundColor Green
     } else {
-        Write-Host "[ERROR] Could not find Planetary Explorer resource group." -ForegroundColor Red
+        Write-Host "[ERROR] Expected exactly one Planetary Explorer resource group, found $($groupMatches.Count)." -ForegroundColor Red
         Write-Host "   Please specify -ResourceGroup parameter or create infrastructure first." -ForegroundColor Yellow
         exit 1
     }
@@ -91,25 +98,62 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
     Write-Host "[OK] Using provided resource group: $ResourceGroup" -ForegroundColor Green
 }
 
+$targetResolver = Join-Path (Split-Path -Parent $ScriptDir) 'scripts/resolve_deployment_targets.py'
+$resolverArgs = @(
+    $targetResolver,
+    '--resource-group', $ResourceGroup,
+    '--environment-name', ($ResourceGroup -replace '^rg-', '')
+)
+if ($ContainerAppName) { $resolverArgs += @('--api-name', $ContainerAppName) }
+if ($AppServiceName) { $resolverArgs += @('--web-name', $AppServiceName) }
+$resolvedTargetsJson = & python @resolverArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host '[ERROR] Existing deployment target resolution failed.' -ForegroundColor Red
+    exit 1
+}
+$resolvedTargets = $resolvedTargetsJson | ConvertFrom-Json
+if (-not $ContainerAppName) {
+    $ContainerAppName = $resolvedTargets.api_container_app_name
+}
+if (-not $AppServiceName) {
+    $AppServiceName = $resolvedTargets.frontend_web_app_name
+}
+
 # Find Container App if not provided
 if ([string]::IsNullOrEmpty($ContainerAppName)) {
     Write-Host "   Looking for Container App in $ResourceGroup..." -ForegroundColor Gray
     
-    $containerApps = az containerapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
-    
-    if ($containerApps) {
-        $appList = $containerApps -split "`n"
-        $apiApp = $appList | Where-Object { $_ -match "api" } | Select-Object -First 1
-        if ($apiApp) {
-            $ContainerAppName = $apiApp.Trim()
-        } else {
-            $ContainerAppName = $appList[0].Trim()
+    $canonicalApiName = if ($ResourceGroup.StartsWith('rg-')) {
+        "ca-$($ResourceGroup.Substring(3))-api"
+    } else {
+        ''
+    }
+    if ($canonicalApiName) {
+        az containerapp show --resource-group $ResourceGroup --name $canonicalApiName `
+            --output none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $ContainerAppName = $canonicalApiName
         }
-        Write-Host "[OK] Found Container App: $ContainerAppName" -ForegroundColor Green
+    }
+    if (-not $ContainerAppName) {
+        $containerApps = @(az containerapp list --resource-group $ResourceGroup `
+            --output json 2>$null | ConvertFrom-Json)
+        $apiApps = @(
+            $containerApps | Where-Object {
+                $_.tags.'azd-service-name' -in @('api', 'web') -or
+                $_.name -like 'ca-web-*'
+            }
+        )
+        if ($apiApps.Count -eq 1) {
+            $ContainerAppName = $apiApps[0].name
+        }
+    }
+    if ($ContainerAppName) {
+        Write-Host "[OK] Found API Container App: $ContainerAppName" -ForegroundColor Green
     } else {
         Write-Host "[WARN] Could not find Container App in resource group '$ResourceGroup'." -ForegroundColor Yellow
         if ($Target -eq "backend" -or $Target -eq "both") {
-            Write-Host "   Backend deployment will fail without Container App." -ForegroundColor Yellow
+            Write-Host "   Pass -ContainerAppName or tag exactly one app with azd-service-name=api." -ForegroundColor Yellow
         }
     }
 } else {
@@ -120,15 +164,20 @@ if ([string]::IsNullOrEmpty($ContainerAppName)) {
 if ([string]::IsNullOrEmpty($AppServiceName)) {
     Write-Host "   Looking for App Service in $ResourceGroup..." -ForegroundColor Gray
     
-    $appServices = az webapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
-    
-    if ($appServices) {
-        $AppServiceName = ($appServices -split "`n")[0].Trim()
+    $appServices = @(az webapp list --resource-group $ResourceGroup `
+        --output json 2>$null | ConvertFrom-Json)
+    $frontendApps = @(
+        $appServices | Where-Object {
+            $_.tags.'azd-service-name' -eq 'web'
+        }
+    )
+    if ($frontendApps.Count -eq 1) {
+        $AppServiceName = $frontendApps[0].name
         Write-Host "[OK] Found App Service: $AppServiceName" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] Could not find App Service in resource group '$ResourceGroup'." -ForegroundColor Yellow
+        Write-Host "[WARN] Expected exactly one App Service tagged azd-service-name=web, found $($frontendApps.Count)." -ForegroundColor Yellow
         if ($Target -eq "frontend" -or $Target -eq "both") {
-            Write-Host "   Frontend deployment will fail without App Service." -ForegroundColor Yellow
+            Write-Host "   Pass -AppServiceName explicitly." -ForegroundColor Yellow
         }
     }
 } else {
@@ -174,6 +223,12 @@ if (-not $deployBackend -and -not $deployFrontend) {
     exit 0
 }
 
+if ($deployBackend -and [string]::IsNullOrEmpty($ContainerAppName)) {
+    Write-Host "[ERROR] Backend deployment requires an exact API Container App target." -ForegroundColor Red
+    Write-Host "   Provision the API with -ContainerImage or pass -ContainerAppName explicitly." -ForegroundColor Yellow
+    exit 1
+}
+
 Write-Host " Deployment Plan:" -ForegroundColor Cyan
 if ($deployBackend) {
     Write-Host "   [OK] Backend [Container App]" -ForegroundColor Green
@@ -211,6 +266,7 @@ if ($deployBackend) {
         $params = @{
             ResourceGroup = $ResourceGroup
             ContainerAppName = $ContainerAppName
+            AppServiceName = $AppServiceName
             Registry = $Registry
         }
         
@@ -246,6 +302,29 @@ if ($deployBackend) {
     }
 }
 
+if ($backendSuccess -and -not $SkipAgentService) {
+    $foundryAccounts = @(az cognitiveservices account list `
+        --resource-group $ResourceGroup `
+        --query "[?kind=='AIServices']" -o json | ConvertFrom-Json)
+    if ($foundryAccounts.Count -gt 1) {
+        throw "Expected at most one AI Foundry account, found $($foundryAccounts.Count)."
+    }
+    if ($foundryAccounts.Count -eq 1) {
+        $agentServiceScript = Join-Path (
+            Split-Path -Parent $ScriptDir
+        ) 'scripts/enable-agent-service.ps1'
+        & $agentServiceScript `
+            -ResourceGroup $ResourceGroup `
+            -AccountName $foundryAccounts[0].name `
+            -ProjectName $AgentProjectName `
+            -ContainerAppName $ContainerAppName
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Agent Service reconciliation failed.'
+        }
+        Write-Host "[OK] Agent Service and Foundry RBAC reconciled" -ForegroundColor Green
+    }
+}
+
 # Deploy Frontend
 if ($deployFrontend) {
     Write-Host ""
@@ -265,6 +344,7 @@ if ($deployFrontend) {
         $params = @{
             ResourceGroup = $ResourceGroup
             AppServiceName = $AppServiceName
+            ContainerAppName = $ContainerAppName
         }
         
         if ($SkipBuild) {

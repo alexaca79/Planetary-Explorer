@@ -5,20 +5,27 @@ Plain in-process dict wrapper that holds per-session routing/render state
 (last_bbox, last_location, last_collections, last_stac_items, query_count,
 has_rendered_map, has_screenshot, pending_clarification, ...).
 
-Was previously bolted onto `RouterAgentTools.session_contexts` when the
-router was a Semantic Kernel agent. Wave 4 retires that SK agent; this
-module is the single source of truth so both the legacy router shim and
-the new pipeline executors can read/write the same state without
-depending on Semantic Kernel.
+This module is the single source of truth so both the router compatibility
+surface and pipeline executors can read and write the same state.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def scope_session_id(owner_id: str, client_session_id: str | None) -> str:
+    """Return a stable internal key isolated by authenticated owner."""
+    conversation_id = client_session_id or "anonymous"
+    digest = hashlib.sha256(
+        f"{owner_id}\0{conversation_id}".encode("utf-8")
+    ).hexdigest()
+    return f"session-{digest}"
 
 
 class SessionContextStore:

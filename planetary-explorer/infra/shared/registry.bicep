@@ -11,7 +11,7 @@ param acrAgentSubnetId string = ''
 @description('Name of the ACR agent pool for VNet-integrated builds. Users with an existing pool can override this.')
 param acrAgentPoolName string = 'buildpool'
 
-@description('Number of always-on agent VMs (1 = ready for builds, 0 = scale-from-zero but slower first build)')
+@description('Number of always-on agent VMs. Set 0 to omit the optional pool.')
 param acrAgentPoolCount int = 1
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
@@ -51,7 +51,7 @@ output id string = registry.id
 // inside the VNet, avoiding any need to open the ACR firewall.
 // ═══════════════════════════════════════════════════════════════════
 
-resource agentPool 'Microsoft.ContainerRegistry/registries/agentPools@2019-06-01-preview' = if (enablePrivateEndpoints && !empty(acrAgentSubnetId)) {
+resource agentPool 'Microsoft.ContainerRegistry/registries/agentPools@2019-06-01-preview' = if (enablePrivateEndpoints && !empty(acrAgentSubnetId) && acrAgentPoolCount > 0) {
   parent: registry
   name: acrAgentPoolName
   location: location
@@ -63,4 +63,4 @@ resource agentPool 'Microsoft.ContainerRegistry/registries/agentPools@2019-06-01
   }
 }
 
-output agentPoolName string = enablePrivateEndpoints && !empty(acrAgentSubnetId) ? agentPool.name : ''
+output agentPoolName string = enablePrivateEndpoints && !empty(acrAgentSubnetId) && acrAgentPoolCount > 0 ? agentPool.name : ''

@@ -1,7 +1,4 @@
-"""
-Terrain analyzer — wraps the existing TerrainAgent (Semantic Kernel agent
-with DEM/slope/aspect/flat-area tools + GPT-5 Vision).
-"""
+"""Terrain analyzer for the Agent Service terrain toolchain."""
 
 from __future__ import annotations
 

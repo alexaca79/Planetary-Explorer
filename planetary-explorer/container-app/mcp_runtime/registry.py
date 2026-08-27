@@ -1,9 +1,8 @@
 """MCP server + tool registry.
 
 A single :class:`McpRegistry` instance per process holds the configured
-MCP servers and (lazily) the tool schemas they advertise. Today only
-the MPC Pro sidecar is registered; this is the seam where future
-servers (Foundry-hosted MCPs, internal tool servers, etc.) plug in.
+MCP servers and (lazily) the tool schemas they advertise. MPC Pro,
+GeoFM, and web search use this registry; future servers plug in here.
 
 The registry **does not perform tool calls** — that's the job of
 :class:`TracedMcpClient` (see ``traced_client.py``). Keeping discovery
@@ -61,6 +60,40 @@ class McpRegistry:
                     url=url,
                     enabled=True,
                     api_key_env="MPC_MCP_API_KEY",
+                )
+            )
+        geofm_url = (os.getenv("GEOFM_MCP_URL") or "").strip()
+        geofm_enabled = (os.getenv("GEOFM_ENABLED") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if geofm_url and geofm_enabled:
+            servers.append(
+                McpServerSpec(
+                    server_id="geofm",
+                    display_name="Geospatial Foundation Models",
+                    url=geofm_url,
+                    enabled=True,
+                    api_key_env="GEOFM_MCP_API_KEY",
+                )
+            )
+        web_search_url = (os.getenv("WEB_SEARCH_MCP_URL") or "").strip()
+        web_search_enabled = (os.getenv("WEB_SEARCH_ENABLED") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if web_search_url and web_search_enabled:
+            servers.append(
+                McpServerSpec(
+                    server_id="web_search",
+                    display_name="Web Search",
+                    url=web_search_url,
+                    enabled=True,
+                    api_key_env="WEB_SEARCH_MCP_API_KEY",
                 )
             )
         logger.info(

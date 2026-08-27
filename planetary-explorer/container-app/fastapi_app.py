@@ -1,7 +1,7 @@
 # FastAPI Planetary Explorer API - Complete Implementation
 # Containerized version with full Planetary Explorer functionality ported from Azure Functions
-# Wave 5: Semantic Kernel retired; routing handled by RouterAgent (Microsoft Agent
-# Framework) with deterministic pre-checks + AsyncAzureOpenAI classifier.
+# Routing uses RouterAgent with Microsoft Agent Framework, deterministic
+# pre-checks, and an AsyncAzureOpenAI classifier.
 
 from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -44,6 +44,7 @@ from quickstart_cache import (
     get_quickstart_stats
 )  # [LAUNCH] Pre-computed cache for demo queries
 from cloud_config import cloud_cfg  # [CLOUD] Cloud environment configuration (Commercial/Government)
+from connectors.geofm import get_health_snapshot
 
 # Microsoft Teams Bot integration (optional — requires botbuilder-core)
 try:
@@ -348,15 +349,41 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(title="Planetary Explorer API", version="1.0.0")
 
+from chat_history_api import router as chat_history_router
+
+app.include_router(chat_history_router)
+
 # Configure CORS origins from environment variable
-cors_origins_str = os.environ.get("CORS_ORIGINS", "*")
-cors_origins = [origin.strip() for origin in cors_origins_str.split(",")] if cors_origins_str != "*" else ["*"]
+cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
+cors_origin_tokens = [
+    origin.strip()
+    for origin in cors_origins_str.split(",")
+    if origin.strip()
+]
+cors_is_wildcard = "*" in cors_origin_tokens
+public_demo_mode = os.environ.get("DISABLE_AUTH", "false").casefold() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if cors_is_wildcard and (not public_demo_mode or len(cors_origin_tokens) != 1):
+    raise RuntimeError(
+        "CORS_ORIGINS must list explicit origins unless DISABLE_AUTH=true "
+        "and the only configured origin is '*'."
+    )
+cors_origins = (
+    cors_origin_tokens
+    if not cors_is_wildcard
+    else []
+)
 logger.info(f"[LOCK] CORS configured for origins: {cors_origins}")
 
 # Add CORS middleware (must be outermost — runs first on requests, last on responses)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https?://.*" if cors_is_wildcard else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -365,12 +392,10 @@ app.add_middleware(
 # Add Entra ID JWT auth middleware (validates Bearer tokens on protected routes)
 # Registered AFTER CORSMiddleware so CORS headers are always added, even on 401.
 # Open paths (/api/health, /docs, etc.) are excluded from auth.
-try:
-    from auth_middleware import EntraAuthMiddleware
-    app.add_middleware(EntraAuthMiddleware)
-    logger.info("[AUTH] Entra ID auth middleware registered")
-except ImportError as e:
-    logger.warning(f"[AUTH] Auth middleware not available — all routes are open: {e}")
+from auth_middleware import EntraAuthMiddleware
+
+app.add_middleware(EntraAuthMiddleware)
+logger.info("[AUTH] Entra ID auth middleware registered")
 
 # Mount static files for React frontend (if static directory exists)
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -560,7 +585,7 @@ def _apply_stac_mode_override(stac_endpoint: str, req_body: Dict[str, Any] | Non
     return stac_endpoint
 
 # Feature availability flags
-SEMANTIC_KERNEL_AVAILABLE = True  # Will be updated in startup
+AGENT_FRAMEWORK_AVAILABLE = True  # Will be updated in startup
 
 
 def _split_id_tokens(s: str) -> List[str]:
@@ -1149,7 +1174,7 @@ async def _prewarm_collection_index():
 @app.on_event("startup")
 async def startup_event():
     """Initialize the application components"""
-    global semantic_translator, global_translator, SEMANTIC_KERNEL_AVAILABLE, router_agent
+    global semantic_translator, global_translator, AGENT_FRAMEWORK_AVAILABLE, router_agent
     global terrain_analyzer, mobility_classifier, los_calculator, geoint_utils, GEOINT_AVAILABLE
     
     logger.info("[LAUNCH] PLANETARY EXPLORER CONTAINER STARTING UP")
@@ -1183,15 +1208,17 @@ async def startup_event():
                     model_name=azure_openai_deployment,
                     azure_credential=credential  # Pass credential for managed identity
                 )
+                if not await semantic_translator.initialize_agent_runtime():
+                    raise RuntimeError("Microsoft Agent Framework provider initialization failed")
                 global_translator = semantic_translator  # For session management
-                SEMANTIC_KERNEL_AVAILABLE = True
+                AGENT_FRAMEWORK_AVAILABLE = True
                 logger.info("[OK] Planetary Explorer API initialized successfully with Semantic Translator (Managed Identity)")
             except Exception as e:
                 logger.error(f"[FAIL] Failed to initialize with managed identity: {e}")
                 logger.warning("[WARN] Running in limited mode - no Azure OpenAI access")
                 semantic_translator = None
                 global_translator = None
-                SEMANTIC_KERNEL_AVAILABLE = False
+                AGENT_FRAMEWORK_AVAILABLE = False
         # API-key fallback (only when MI is explicitly disabled)
         elif azure_openai_endpoint and azure_openai_api_key:
             semantic_translator = SemanticQueryTranslator(
@@ -1199,14 +1226,16 @@ async def startup_event():
                 azure_openai_api_key=azure_openai_api_key,
                 model_name=azure_openai_deployment
             )
+            if not await semantic_translator.initialize_agent_runtime():
+                raise RuntimeError("Microsoft Agent Framework provider initialization failed")
             global_translator = semantic_translator  # For session management
-            SEMANTIC_KERNEL_AVAILABLE = True
+            AGENT_FRAMEWORK_AVAILABLE = True
             logger.info("[OK] Planetary Explorer API initialized successfully with Semantic Translator (API Key)")
         else:
             logger.warning("[WARN] Azure OpenAI credentials not provided - running in limited mode")
             semantic_translator = None
             global_translator = None
-            SEMANTIC_KERNEL_AVAILABLE = False
+            AGENT_FRAMEWORK_AVAILABLE = False
             
         # GEOINT endpoints use lazy imports - no initialization needed here
         logger.info("[OK] GEOINT endpoints ready (lazy import mode)")
@@ -1281,7 +1310,7 @@ async def startup_event():
         semantic_translator = None
         global_translator = None
         router_agent = None
-        SEMANTIC_KERNEL_AVAILABLE = False
+        AGENT_FRAMEWORK_AVAILABLE = False
 
 # Helper functions ported from Router Function App
 def detect_collections(query: str) -> List[str]:
@@ -2483,9 +2512,20 @@ async def health_check():
 
         # 1. Azure OpenAI — config check only (no billable test call)
         endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        deployment = _resolve_chat_deployment(None)
+        available_models = _configured_chat_deployments()
         has_auth = bool(os.getenv("AZURE_OPENAI_API_KEY")) or os.getenv("USE_MANAGED_IDENTITY", "").lower() == "true"
         if endpoint and has_auth:
-            checks["azure_openai"] = {"status": "configured", "endpoint": endpoint}
+            checks["azure_openai"] = {
+                "status": "configured",
+                "endpoint": endpoint,
+                "model": deployment,
+                "available_models": available_models,
+                "model_capabilities": {
+                    model: _reasoning_capability(model)
+                    for model in available_models
+                },
+            }
         else:
             checks["azure_openai"] = {"status": "misconfigured"}
             all_healthy = False
@@ -2507,8 +2547,21 @@ async def health_check():
             checks["azure_maps"] = {"status": "misconfigured"}
             all_healthy = False
 
+        # 4. Geospatial foundation models — live MCP discovery, fail-soft when disabled.
+        geofm_health = await get_health_snapshot()
+        checks["geospatial_foundation_models"] = geofm_health
+        if geofm_health["enabled"] and not geofm_health["connected"]:
+            all_healthy = False
+
         overall = "healthy" if all_healthy else "degraded"
-        logger.info(f"[BLDG] Health: {overall} | openai={checks['azure_openai']['status']} stac={checks['stac_api']['status']} maps={checks['azure_maps']['status']}")
+        logger.info(
+            "[BLDG] Health: %s | openai=%s stac=%s maps=%s geofm=%s",
+            overall,
+            checks["azure_openai"]["status"],
+            checks["stac_api"]["status"],
+            checks["azure_maps"]["status"],
+            geofm_health["status"],
+        )
 
         return JSONResponse(
             content={
@@ -2523,6 +2576,7 @@ async def health_check():
         return JSONResponse(content={"status": "unhealthy", "error": str(e)}, status_code=500)
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_GPT_56_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -2537,6 +2591,81 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in _TRUE_VALUES
+
+
+def _configured_chat_deployments() -> List[str]:
+    """Return configured chat deployments in stable preference order."""
+    primary = (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5").strip() or "gpt-5"
+    )
+    raw = os.getenv("AZURE_OPENAI_AVAILABLE_MODELS", "").strip()
+    configured: List[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw) if raw.startswith("[") else raw.split(",")
+        except json.JSONDecodeError:
+            parsed = raw.split(",")
+        if isinstance(parsed, list):
+            configured = [str(model).strip() for model in parsed if str(model).strip()]
+
+    excluded_kinds = ("embedding", "dall-e", "image", "sora", "tts", "whisper")
+    chat_models = [
+        model
+        for model in configured
+        if not any(kind in model.casefold() for kind in excluded_kinds)
+    ]
+    return list(dict.fromkeys([primary, *chat_models]))
+
+
+def _resolve_chat_deployment(requested_model: Optional[str]) -> str:
+    """Resolve a requested model against configured chat deployments."""
+    configured_models = _configured_chat_deployments()
+    if not requested_model or not requested_model.strip():
+        return configured_models[0]
+
+    requested = requested_model.strip()
+    if requested not in configured_models:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model deployment '{requested}' is unavailable. "
+                f"Available deployments: {', '.join(configured_models)}"
+            ),
+        )
+    return requested
+
+
+def _reasoning_capability(model: str) -> Dict[str, Any]:
+    """Describe the reasoning controls supported by one deployment."""
+    if model.casefold().startswith("gpt-5.6"):
+        return {
+            "reasoning_efforts": list(_GPT_56_REASONING_EFFORTS),
+            "default_reasoning_effort": "medium",
+        }
+    return {
+        "reasoning_efforts": ["none"],
+        "default_reasoning_effort": "none",
+    }
+
+
+def _resolve_reasoning_effort(model: str, requested_effort: Optional[str]) -> str:
+    """Validate and default the reasoning effort for a selected model."""
+    capability = _reasoning_capability(model)
+    effort = (
+        requested_effort.strip().casefold()
+        if isinstance(requested_effort, str) and requested_effort.strip()
+        else capability["default_reasoning_effort"]
+    )
+    if effort not in capability["reasoning_efforts"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Reasoning effort '{effort}' is unsupported for '{model}'. "
+                "Supported values: "
+                f"{', '.join(capability['reasoning_efforts'])}"
+            ),
+        )
+    return effort
 
 
 @app.get("/api/config")
@@ -2561,6 +2690,7 @@ async def get_config():
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
+            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
             # Forecast agent is "available" when at least one weather
             # provider endpoint is configured (real Foundry endpoint or
             # the CPU weather stub). With none of these set the
@@ -4363,6 +4493,26 @@ async def resilience_snapshot(
     )
 
 
+def _request_owner_id(request: Request, client_session_id: str | None) -> str:
+    """Resolve an opaque owner from trusted claims or explicit public mode."""
+    authenticated_user = getattr(request.state, "user", {}) or {}
+    authenticated_subject = (
+        authenticated_user.get("oid")
+        or authenticated_user.get("sub")
+        or authenticated_user.get(
+            "http://schemas.microsoft.com/identity/claims/objectidentifier"
+        )
+    )
+    authenticated_tenant = authenticated_user.get("tid")
+    if authenticated_subject:
+        return (
+            f"{authenticated_tenant}:{authenticated_subject}"
+            if authenticated_tenant
+            else str(authenticated_subject)
+        )
+    return f"session:{client_session_id or 'anonymous'}"
+
+
 @app.post("/api/query")
 async def unified_query_processor(request: Request):
     """
@@ -4386,9 +4536,24 @@ async def unified_query_processor(request: Request):
         
         # Support both 'query' and 'user_query' keys (frontend uses 'user_query')
         natural_query = req_body.get('query') or req_body.get('user_query') or 'No query provided'
-        session_id = req_body.get('session_id') or req_body.get('conversation_id')
+        raw_session_id = req_body.get('session_id') or req_body.get('conversation_id')
+        client_session_id = str(raw_session_id) if raw_session_id is not None else None
+        owner_id = _request_owner_id(request, client_session_id)
+        req_body["_authenticated_user_id"] = owner_id
+        from pipeline.session_store import scope_session_id
+        session_id = scope_session_id(owner_id, client_session_id)
+        req_body["session_id"] = session_id
         pin = req_body.get('pin') or req_body.get('vision_pin')  # Pin {lat, lng} (web-ui sends 'vision_pin')
-        selected_model = req_body.get('model', 'gpt-5')  # Model selection from frontend, default to gpt-5
+        selected_model = _resolve_chat_deployment(req_body.get('model'))
+        selected_reasoning_effort = _resolve_reasoning_effort(
+            selected_model,
+            req_body.get('reasoning_effort'),
+        )
+        req_body['model'] = selected_model
+        req_body['reasoning_effort'] = selected_reasoning_effort
+        is_foundation_change_turn = (
+            req_body.get('geoint_module') == 'foundation_change'
+        )
 
         # ================================================================
         # TOP-LEVEL GREETING / IDENTITY SHORT-CIRCUIT
@@ -4444,7 +4609,11 @@ async def unified_query_processor(request: Request):
             # should run the normal pipeline.
             _has_pin_top = bool(pin)
             _has_shot_top = bool(req_body.get("imagery_base64"))
-            if (_is_greet_top or _is_thanks_top or _is_identity_top) and not (_has_pin_top or _has_shot_top):
+            if (
+                not is_foundation_change_turn
+                and (_is_greet_top or _is_thanks_top or _is_identity_top)
+                and not (_has_pin_top or _has_shot_top)
+            ):
                 logger.info(
                     f"[GREETING] Top-level short-circuit: '{natural_query}' "
                     f"-> LLM ClarifierAgent reply"
@@ -4502,7 +4671,7 @@ async def unified_query_processor(request: Request):
                     "target_route": None,
                     "missing_slot": "intent",
                     "processing_type": "clarification",
-                    "session_id": session_id,
+                    "session_id": client_session_id,
                     "timestamp": datetime.utcnow().isoformat(),
                 }
         except Exception as _greet_outer_err:
@@ -4511,10 +4680,7 @@ async def unified_query_processor(request: Request):
         
         logger.info(f"[BOT] Selected Model: {selected_model}")
         
-        # Set the active model on the semantic translator before processing
-        if semantic_translator:
-            semantic_translator.set_model(selected_model)
-        else:
+        if not semantic_translator:
             logger.warning("[WARN] semantic_translator is None - AI functionality disabled")
         
         # [MICRO] Generate unique pipeline session ID for tracing
@@ -4559,7 +4725,11 @@ async def unified_query_processor(request: Request):
         try:
             _splitter_enabled = os.getenv("ENABLE_SEQUENTIAL_PARTS", "false").lower() == "true"
             _is_sub_part = bool(req_body.get("part_of_split"))
-            if _splitter_enabled and not _is_sub_part:
+            if (
+                _splitter_enabled
+                and not _is_sub_part
+                and not is_foundation_change_turn
+            ):
                 from agents.query_splitter import get_query_splitter
                 _split = await get_query_splitter().split(natural_query)
                 if _split.is_multi_part and len(_split.parts) >= 2:
@@ -4574,7 +4744,7 @@ async def unified_query_processor(request: Request):
                         "user_response": _split.intro,
                         "parts": [p.model_dump() for p in _split.parts],
                         "processing_type": "sequential_parts",
-                        "session_id": session_id,
+                        "session_id": client_session_id,
                         "timestamp": datetime.utcnow().isoformat(),
                     }
         except Exception as _split_err:
@@ -4640,7 +4810,9 @@ async def unified_query_processor(request: Request):
             req_body.get("stac_mode") or os.getenv("DEFAULT_STAC_MODE") or "public"
         ).lower()
         _is_quickstart_turn = (
-            _qs_pipeline_mode != "pro" and is_quickstart_query(natural_query)
+            not is_foundation_change_turn
+            and _qs_pipeline_mode != "pro"
+            and is_quickstart_query(natural_query)
         )
         if _is_quickstart_turn:
             logger.info(
@@ -4670,7 +4842,7 @@ async def unified_query_processor(request: Request):
                         ),
                         "error": f"{type(_v2_err).__name__}: {_v2_err}",
                         "pipeline": "v2",
-                        "session_id": session_id,
+                        "session_id": client_session_id,
                         "timestamp": datetime.utcnow().isoformat(),
                     },
                 )
@@ -4751,17 +4923,18 @@ async def unified_query_processor(request: Request):
                 "target_route": "vision_analysis",
                 "processing_type": "clarification",
                 "pipeline": "v2",
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "timestamp": datetime.utcnow().isoformat(),
             }
         # ANALYZE / LOAD_AND_ANALYZE — v2 owns the answer end-to-end.
         if v2_result.get("action") in ("ANALYZE", "LOAD_AND_ANALYZE"):
             return JSONResponse(content={
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "sources": v2_result.get("sources", []),
                 "visualizations": v2_result.get("visualizations", []),
+                "map_data": v2_result.get("map_data"),
                 "structured": v2_result.get("structured", {}),
                 "pipeline": "v2",
                 "action": v2_result.get("action"),
@@ -4802,7 +4975,7 @@ async def unified_query_processor(request: Request):
                 logger.warning(f"[PIPELINE-V2] NAVIGATE: agent returned no navigate_to payload for {location_display!r}")
 
             return JSONResponse(content={
-                "session_id": session_id,
+                "session_id": client_session_id,
                 "success": True,
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
@@ -5332,7 +5505,7 @@ async def unified_query_processor(request: Request):
                                     "target_route": _clarify_action.get("target_route"),
                                     "missing_slot": _clarify_action.get("missing_slot"),
                                     "processing_type": "clarification",
-                                    "session_id": session_id,
+                                    "session_id": client_session_id,
                                     "timestamp": datetime.utcnow().isoformat(),
                                 }
                 except Exception as _clarify_resume_err:
@@ -5459,7 +5632,7 @@ async def unified_query_processor(request: Request):
                                 "target_route": _ca.get("target_route"),
                                 "missing_slot": _ca.get("missing_slot"),
                                 "processing_type": "clarification",
-                                "session_id": session_id,
+                                "session_id": client_session_id,
                                 "timestamp": datetime.utcnow().isoformat(),
                             }
 
@@ -5532,7 +5705,7 @@ async def unified_query_processor(request: Request):
                                     "target_route": _decision.target_route,
                                     "missing_slot": _decision.missing_slot or "intent",
                                     "processing_type": "clarification",
-                                    "session_id": session_id,
+                                    "session_id": client_session_id,
                                     "timestamp": datetime.utcnow().isoformat(),
                                 }
                         except Exception as _clarifier_err:
@@ -5589,7 +5762,7 @@ async def unified_query_processor(request: Request):
                                 "target_route": _ca.get("target_route"),
                                 "missing_slot": _ca.get("missing_slot"),
                                 "processing_type": "clarification",
-                                "session_id": session_id,
+                                "session_id": client_session_id,
                                 "timestamp": datetime.utcnow().isoformat(),
                             }
                 except Exception as _clarify_validate_err:
@@ -5952,8 +6125,8 @@ async def unified_query_processor(request: Request):
                     "router_action": router_action
                 }
         
-        logger.info(f"[SEARCH] SEMANTIC_KERNEL_AVAILABLE: {SEMANTIC_KERNEL_AVAILABLE}")
-        if SEMANTIC_KERNEL_AVAILABLE and global_translator:
+        logger.info(f"[SEARCH] AGENT_FRAMEWORK_AVAILABLE: {AGENT_FRAMEWORK_AVAILABLE}")
+        if AGENT_FRAMEWORK_AVAILABLE and global_translator:
             try:
                 translator = global_translator
                 
@@ -6442,8 +6615,8 @@ async def unified_query_processor(request: Request):
                 logger.info(f"[SKIP] Skipping collection mapping for {intent_type} query (no STAC search needed)")
         
         if not skip_collection_mapping:
-            if not SEMANTIC_KERNEL_AVAILABLE:
-                logger.warning("[WARN] Semantic Kernel not available, using fallback processing")
+            if not AGENT_FRAMEWORK_AVAILABLE:
+                logger.warning("[WARN] Agent Framework translator not available, using fallback processing")
                 
                 # Fallback: Simple collection detection (like Router Function App)
                 collections = detect_collections(natural_query)
@@ -6457,7 +6630,7 @@ async def unified_query_processor(request: Request):
                     stac_query = build_stac_query(stac_params)
                     logger.info(f"[TOOL] Built fallback STAC query: {json.dumps(stac_query, indent=2)}")
                 
-            elif SEMANTIC_KERNEL_AVAILABLE and translator:
+            elif AGENT_FRAMEWORK_AVAILABLE and translator:
                 try:
                     logger.info(f"[BOT] Starting multi-agent pipeline — query='{natural_query}' pin={pin}")
                     
@@ -6836,7 +7009,7 @@ async def unified_query_processor(request: Request):
                     # 2. Ensuring "NO GAPS in spatial coverage" (explicit in GPT prompt)
                     # 3. Using context-aware tile limits (5-50 based on AOI size)
                     # Pre-filtering with geometric overlap could remove tiles Agent 3 needs for seamless coverage
-                    if SEMANTIC_KERNEL_AVAILABLE and translator and raw_features and stac_query.get("bbox"):
+                    if AGENT_FRAMEWORK_AVAILABLE and translator and raw_features and stac_query.get("bbox"):
                         requested_bbox = stac_query.get("bbox")
                         
                         # Pass ALL tiles to Agent 3 for intelligent selection
@@ -7042,7 +7215,7 @@ async def unified_query_processor(request: Request):
         logger.info(f"[SEARCH] RESPONSE GENERATION DEBUG:")
         logger.info(f"   - features count: {len(features) if features else 0}")
         logger.info(f"   - stac_response features: {len(stac_response.get('results', {}).get('features', []))}")
-        logger.info(f"   - SEMANTIC_KERNEL_AVAILABLE: {SEMANTIC_KERNEL_AVAILABLE}")
+        logger.info(f"   - AGENT_FRAMEWORK_AVAILABLE: {AGENT_FRAMEWORK_AVAILABLE}")
         logger.info(f"   - translator: {translator is not None}")
         logger.info(f"   - stac_query: {stac_query is not None}")
         
@@ -7055,7 +7228,7 @@ async def unified_query_processor(request: Request):
             features = stac_response_features
             search_diagnostics["final_count"] = len(features)
         
-        if SEMANTIC_KERNEL_AVAILABLE and translator and features:
+        if AGENT_FRAMEWORK_AVAILABLE and translator and features:
             try:
                 logger.info("[NOTE] Generating contextual response message...")
                 
@@ -7115,7 +7288,7 @@ async def unified_query_processor(request: Request):
             except Exception as e:
                 logger.error(f"[FAIL] Response generation failed: {e}")
                 response_message = generate_fallback_response(natural_query, features, stac_query.get("collections", []) if stac_query else [])
-        elif not features and stac_query and SEMANTIC_KERNEL_AVAILABLE and translator:
+        elif not features and stac_query and AGENT_FRAMEWORK_AVAILABLE and translator:
             # [NEW] ENHANCED: Use GPT to generate context-aware response for empty results
             # GPT analyzes the specific failure point and provides intelligent, actionable suggestions
             try:
@@ -7136,7 +7309,7 @@ async def unified_query_processor(request: Request):
                     search_diagnostics
                 )
         elif not features and stac_query:
-            # Fallback: Use rule-based response if Semantic Kernel not available
+            # Fallback: Use a rule-based response when Agent Framework is unavailable.
             logger.info(f"ℹ️ No features found - using rule-based diagnostic response (failure stage: {search_diagnostics.get('failure_stage')})")
             response_message = generate_contextual_empty_response(
                 natural_query, 
@@ -7157,7 +7330,7 @@ async def unified_query_processor(request: Request):
         requested_collections = stac_query.get("collections", []) if stac_query else []
 
         # GROUND-TRUTH COLLECTION RESOLUTION.
-        # The semantic-kernel translator emits canonical public-PC ids
+        # The agent translator emits canonical public-PC ids
         # (e.g. ``sentinel-2-l2a``) even when the user named a private
         # collection (``sentinel2-fire``). ``execute_direct_stac_search``
         # then fuzzy-remaps to the actual Pro id internally, but only
@@ -7613,7 +7786,7 @@ async def unified_query_processor(request: Request):
             "debug": {
                 "stac_routing": _stac_routing_debug,
                 "semantic_translator": {
-                    "available": SEMANTIC_KERNEL_AVAILABLE,
+                    "available": AGENT_FRAMEWORK_AVAILABLE,
                     "selected_collections": stac_query.get("collections", []) if stac_query else [],
                     "location_info": {
                         "bbox": stac_query.get("bbox") if stac_query else None,
@@ -7687,6 +7860,50 @@ async def unified_query_processor(request: Request):
         logger.error(f"[FAIL] Unified query processor error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
+
+@app.post("/api/query/stream")
+async def unified_query_processor_stream(request: Request):
+    """Stream a standard query together with MCP trace and approval events.
+
+    The terminal ``query_result`` payload is byte-for-byte equivalent to the
+    buffered ``/api/query`` response body. This wrapper exists so normal
+    AnalystAgent turns can surface WRITE/DESTRUCTIVE confirmation cards.
+    """
+    from fastapi.responses import StreamingResponse
+    from _framework import merge_with_trace
+
+    # StreamingResponse runs its iterator after the endpoint returns. Cache the
+    # request body now, while the ASGI receive channel is still available, so
+    # unified_query_processor can safely call request.json() inside the stream.
+    await request.body()
+
+    async def _source():
+        result = await unified_query_processor(request)
+        if isinstance(result, JSONResponse):
+            payload = json.loads(result.body.decode("utf-8"))
+        elif isinstance(result, dict):
+            payload = result
+        else:
+            body = getattr(result, "body", b"")
+            payload = json.loads(body.decode("utf-8")) if body else {"response": str(result)}
+        yield {"type": "query_result", "payload": payload}
+
+    async def _sse():
+        try:
+            async for event in merge_with_trace(_source()):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[QUERY.stream] failed")
+            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 @app.post("/api/stac-search")
 async def stac_search(request: Request):
@@ -7932,30 +8149,41 @@ async def session_reset(request: Request):
         # Parse request body
         try:
             request_data = await request.json()
-            conversation_id = request_data.get("session_id") or request_data.get("conversation_id")
-        except:
+            client_conversation_id = request_data.get("session_id") or request_data.get("conversation_id")
+        except Exception:
             # Try query parameters if JSON parsing fails
-            conversation_id = request.query_params.get("session_id") or request.query_params.get("conversation_id")
+            client_conversation_id = request.query_params.get("session_id") or request.query_params.get("conversation_id")
         
-        if not conversation_id:
+        if not client_conversation_id:
             raise HTTPException(
                 status_code=400,
                 detail="Missing session_id or conversation_id. Please provide a session_id to reset."
             )
+        client_conversation_id = str(client_conversation_id)
+        owner_id = _request_owner_id(request, client_conversation_id)
+        from pipeline.session_store import get_session_store, scope_session_id
+        conversation_id = scope_session_id(owner_id, client_conversation_id)
+
+        get_session_store().delete(conversation_id)
+        from agents.analyst_agent import get_analyst_agent
+        await get_analyst_agent().reset_session(conversation_id)
         
         # Reset conversation context if translator is available
-        if SEMANTIC_KERNEL_AVAILABLE and global_translator:
+        if AGENT_FRAMEWORK_AVAILABLE and global_translator:
             global_translator.reset_conversation_context(conversation_id)
-            message = f"Session {conversation_id} reset successfully"
+            message = f"Session {client_conversation_id} reset successfully"
         else:
-            message = f"Session reset requested for {conversation_id} (semantic translator not available)"
+            message = (
+                f"Session reset requested for {client_conversation_id} "
+                "(semantic translator not available)"
+            )
         
         logger.info(f"[SYNC] {message}")
         
         return {
             "status": "success",
             "message": message,
-            "session_id": conversation_id,
+            "session_id": client_conversation_id,
             "timestamp": datetime.utcnow().isoformat()
         }
         

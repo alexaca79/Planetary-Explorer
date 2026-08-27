@@ -9,7 +9,6 @@ otherwise prod gets a silently widened audience list.
 from __future__ import annotations
 
 import importlib
-import os
 
 import pytest
 
@@ -18,6 +17,7 @@ import pytest
 def _clean_env(monkeypatch):
     # Strip any leaked test state
     monkeypatch.delenv("M365_APP_CLIENT_ID", raising=False)
+    monkeypatch.setenv("AZURE_AD_CLIENT_ID", "ui-client-id")
     # The middleware reads env at import time, so each test re-imports.
     yield
 
@@ -43,11 +43,10 @@ def test_m365_audience_added_when_env_set(monkeypatch):
     assert "api://11111111-2222-3333-4444-555555555555" in mod.VALID_AUDIENCES
 
 
-def test_original_audiences_preserved_when_m365_set(monkeypatch):
+def test_application_audiences_remain_restricted_when_m365_set(monkeypatch):
     monkeypatch.setenv("M365_APP_CLIENT_ID", "11111111-2222-3333-4444-555555555555")
     mod = _reload_middleware()
-    # The five non-m365 base audiences are still present
     assert mod.CLIENT_ID in mod.VALID_AUDIENCES
     assert f"api://{mod.CLIENT_ID}" in mod.VALID_AUDIENCES
-    assert mod.FABRIC_API_CLIENT_ID in mod.VALID_AUDIENCES
-    assert mod.GRAPH_APP_ID in mod.VALID_AUDIENCES
+    assert "00000003-0000-0000-c000-000000000000" not in mod.VALID_AUDIENCES
+    assert "https://graph.microsoft.com" not in mod.VALID_AUDIENCES

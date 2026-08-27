@@ -2,7 +2,7 @@
 Shared Azure OpenAI client factory for the v2 pipeline.
 
 Centralises endpoint/credential setup so routers, synthesizer, analyzers,
-and the (Wave-4) Semantic-Kernel-free RouterAgent all use the same auth
+and RouterAgent all use the same auth
 path.
 """
 

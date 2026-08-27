@@ -29,12 +29,14 @@ class Source(BaseModel):
       - "dataset" -> STAC collection (link to PC explorer)
       - "raster"  -> Specific raster URL/COG used for a measurement
       - "api"     -> External authoritative API response (NOAA, USGS, ...)
+    - "web"     -> Public web result returned by the current-information tool
+    - "calculation" -> Deterministic local or service-side calculation
     """
 
     title: str
     uri: Optional[str] = None
     excerpt: Optional[str] = None
-    kind: Literal["doc", "dataset", "raster", "api"] = "doc"
+    kind: Literal["doc", "dataset", "raster", "api", "web", "calculation"] = "doc"
     score: Optional[float] = None
 
 
@@ -63,6 +65,9 @@ class AnalysisRequest(BaseModel):
 
     question: str
     session_id: str
+    # Opaque owner derived by the authenticated API boundary. Never accept
+    # this value directly from an untrusted client field.
+    authenticated_user_id: Optional[str] = None
 
     # Spatial context
     bbox: Optional[Tuple[float, float, float, float]] = None  # WGS84 minx,miny,maxx,maxy
@@ -101,6 +106,10 @@ class AnalysisRequest(BaseModel):
 
     # Hint from the AnalysisRouter (e.g. "methodology", "compute_anomaly")
     hint: Optional[str] = None
+    geoint_module: Optional[str] = None
+    geofm_context: Optional[dict[str, Any]] = None
+    model: Optional[str] = None
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
 
     # ------------------------------------------------------------------
     # Per-request UI toggles (mirrored from chat-request body)

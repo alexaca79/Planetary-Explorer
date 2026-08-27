@@ -34,15 +34,52 @@ if ([string]::IsNullOrEmpty($SubscriptionId)) {
 }
 
 if ([string]::IsNullOrEmpty($AccountName)) {
-    $AccountName = az cognitiveservices account list --resource-group $ResourceGroup --query "[?kind=='AIServices'].name | [0]" -o tsv
+    $accounts = @(az cognitiveservices account list --resource-group $ResourceGroup `
+        --query "[?kind=='AIServices']" -o json | ConvertFrom-Json)
+    if ($accounts.Count -ne 1) {
+        throw "Expected exactly one AI Foundry account, found $($accounts.Count). Pass -AccountName."
+    }
+    $AccountName = $accounts[0].name
     Write-Host "Discovered AI Foundry account: $AccountName" -ForegroundColor Cyan
 }
 
+$account = az cognitiveservices account show --name $AccountName `
+    --resource-group $ResourceGroup -o json | ConvertFrom-Json
+if (-not $account) {
+    throw "AI Foundry account '$AccountName' was not found in '$ResourceGroup'."
+}
+
 if ([string]::IsNullOrEmpty($ContainerAppName)) {
-    $ContainerAppName = az containerapp list --resource-group $ResourceGroup --query "[0].name" -o tsv
-    Write-Host "Discovered Container App: $ContainerAppName" -ForegroundColor Cyan
+    $canonicalApiName = if ($ResourceGroup.StartsWith('rg-')) {
+        "ca-$($ResourceGroup.Substring(3))-api"
+    } else {
+        ''
+    }
+    if ($canonicalApiName) {
+        az containerapp show --resource-group $ResourceGroup --name $canonicalApiName `
+            --output none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $ContainerAppName = $canonicalApiName
+        }
+    }
+    if (-not $ContainerAppName) {
+        $containerApps = @(az containerapp list --resource-group $ResourceGroup `
+            --output json | ConvertFrom-Json)
+        $apiApps = @(
+            $containerApps | Where-Object {
+                $_.tags.'azd-service-name' -in @('api', 'web') -or
+                $_.name -like 'ca-web-*'
+            }
+        )
+        if ($apiApps.Count -ne 1) {
+            throw "Expected exactly one API Container App tagged azd-service-name=api, found $($apiApps.Count). Pass -ContainerAppName."
+        }
+        $ContainerAppName = $apiApps[0].name
+    }
+    Write-Host "Discovered API Container App: $ContainerAppName" -ForegroundColor Cyan
 }
 $baseUrl = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.CognitiveServices/accounts/$AccountName"
+$scope = $account.id
 
 function Wait-ForProvisioning {
     param([string]$Url, [int]$TimeoutSeconds = 120)
@@ -58,33 +95,62 @@ function Wait-ForProvisioning {
     throw "Provisioning timed out after $TimeoutSeconds seconds"
 }
 
+function Ensure-RoleAssignment {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PrincipalId,
+        [Parameter(Mandatory=$true)]
+        [string]$Role,
+        [Parameter(Mandatory=$true)]
+        [string]$Scope
+    )
+
+    $assignmentId = az role assignment list `
+        --assignee-object-id $PrincipalId `
+        --role $Role `
+        --scope $Scope `
+        --include-inherited `
+        --fill-principal-name false `
+        --query '[0].id' -o tsv
+    if (-not $assignmentId) {
+        az role assignment create `
+            --assignee-object-id $PrincipalId `
+            --assignee-principal-type ServicePrincipal `
+            --role $Role `
+            --scope $Scope `
+            -o none
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to assign required role '$Role' to '$PrincipalId'."
+        }
+        $assignmentId = az role assignment list `
+            --assignee-object-id $PrincipalId `
+            --role $Role `
+            --scope $Scope `
+            --include-inherited `
+            --fill-principal-name false `
+            --query '[0].id' -o tsv
+    }
+    if (-not $assignmentId) {
+        throw "Required role '$Role' was not verified for '$PrincipalId'."
+    }
+}
+
 # Step 1: Enable allowProjectManagement
 Write-Host "`n=== Step 1: Enable allowProjectManagement ===" -ForegroundColor Cyan
-$body = @{
-    location = "eastus2"
-    kind = "AIServices"
-    sku = @{ name = "S0" }
-    identity = @{ type = "SystemAssigned" }
-    properties = @{
-        allowProjectManagement = $true
-        customSubDomainName = $AccountName
-        publicNetworkAccess = "Enabled"
-        disableLocalAuth = $true
-        networkAcls = @{ defaultAction = "Allow" }
-    }
-} | ConvertTo-Json -Depth 3
-$bodyFile = [System.IO.Path]::GetTempFileName()
-$body | Set-Content -Path $bodyFile -Encoding utf8
-
-$result = az rest --method put --url "$baseUrl`?api-version=$ApiVersion" --body "@$bodyFile" --query "properties.allowProjectManagement" -o tsv 2>&1
-Write-Host "  allowProjectManagement: $result"
+az resource update `
+    --ids $account.id `
+    --api-version $ApiVersion `
+    --set properties.allowProjectManagement=true properties.disableLocalAuth=true `
+    --output none
+if ($LASTEXITCODE -ne 0) {
+    throw 'Failed to enable Agent Service account management.'
+}
 Wait-ForProvisioning -Url $baseUrl
-Remove-Item $bodyFile
 
 # Step 2: Create CogSvc project sub-resource
 Write-Host "`n=== Step 2: Create CogSvc project '$ProjectName' ===" -ForegroundColor Cyan
 $projectBody = @{
-    location = "eastus2"
+    location = $account.location
     identity = @{ type = "SystemAssigned" }
     properties = @{
         description = "Planetary Explorer GEOINT Agent Project"
@@ -99,6 +165,14 @@ $result = az rest --method put --url "$projectUrl`?api-version=$ApiVersion" --bo
 Write-Host "  Project state: $result"
 if ($result -ne "Succeeded") { Wait-ForProvisioning -Url $projectUrl }
 Remove-Item $projectFile
+
+$projectPrincipalId = az rest --method get `
+    --url "$projectUrl`?api-version=$ApiVersion" `
+    --query identity.principalId -o tsv
+if (-not $projectPrincipalId) {
+    throw "Agent Service project '$ProjectName' has no managed identity principal."
+}
+Ensure-RoleAssignment -PrincipalId $projectPrincipalId -Role 'Foundry User' -Scope $scope
 
 # Step 3: Create account-level capability host
 Write-Host "`n=== Step 3: Create account capability host ===" -ForegroundColor Cyan
@@ -128,11 +202,10 @@ Write-Host "`n=== Step 5: Assign roles to container app MI ===" -ForegroundColor
 $principalId = az containerapp show -n $ContainerAppName -g $ResourceGroup --query "identity.principalId" -o tsv 2>$null
 Write-Host "  Container app MI: $principalId"
 
-$scope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.CognitiveServices/accounts/$AccountName"
-$roles = @("Azure AI User", "Cognitive Services OpenAI Contributor")
+$roles = @("Foundry User", "Cognitive Services OpenAI Contributor")
 foreach ($role in $roles) {
     Write-Host "  Assigning: $role"
-    az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role $role --scope $scope -o none 2>$null
+    Ensure-RoleAssignment -PrincipalId $principalId -Role $role -Scope $scope
 }
 
 # Step 6: Update container app env var
@@ -140,6 +213,15 @@ Write-Host "`n=== Step 6: Update AZURE_AI_PROJECT_ENDPOINT ===" -ForegroundColor
 $endpoint = "https://$AccountName.services.ai.azure.com/api/projects/$ProjectName"
 Write-Host "  Endpoint: $endpoint"
 az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "AZURE_AI_PROJECT_ENDPOINT=$endpoint" -o none 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw 'Failed to update AZURE_AI_PROJECT_ENDPOINT.'
+}
+$configuredEndpoint = az containerapp show -n $ContainerAppName -g $ResourceGroup `
+    --query "properties.template.containers[0].env[?name=='AZURE_AI_PROJECT_ENDPOINT'].value | [0]" `
+    -o tsv
+if ($configuredEndpoint -ne $endpoint) {
+    throw 'AZURE_AI_PROJECT_ENDPOINT verification failed.'
+}
 
 # Step 7: Verify
 Write-Host "`n=== Verification ===" -ForegroundColor Green
@@ -149,6 +231,7 @@ try {
     Write-Host "  Agent Service API: SUCCESS (agents: $($r.data.Count))" -ForegroundColor Green
 } catch {
     Write-Host "  Agent Service API: FAILED - $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 
 Write-Host "`nDone! Agent Service is enabled." -ForegroundColor Green

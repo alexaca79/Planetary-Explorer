@@ -1,0 +1,1 @@
+"""Azure Web Search MCP service for Planetary Explorer."""

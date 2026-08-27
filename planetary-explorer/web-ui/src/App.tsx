@@ -8,6 +8,7 @@ import LandingPage from './components/LandingPage';
 import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
+import type { ChatHistoryContext } from './services/api';
 
 const queryClient = new QueryClient();
 
@@ -29,12 +30,14 @@ interface DeploymentFeatures {
   mpcPublic: boolean;
   mpcPro: boolean;
   fabric: boolean;
+  chatHistory: boolean;
 }
 
 const DEFAULT_FEATURES: DeploymentFeatures = {
   mpcPublic: true,
   mpcPro: false,
   fabric: false,
+  chatHistory: false,
 };
 
 function App() {
@@ -48,9 +51,12 @@ function App() {
   });
 
   const [geointMode, setGeointMode] = useState<boolean>(false);
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    // Load from localStorage, default to gpt-5
-    return localStorage.getItem('planetaryexplorer-model') || 'gpt-5';
+  // ModelSelector reconciles the saved preference against live health before
+  // publishing it here. Until then, requests omit model and let the API choose
+  // its configured default.
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
+    return localStorage.getItem('planetaryexplorer-reasoning-effort') || 'none';
   });
   const [stacMode, setStacMode] = useState<'public' | 'pro'>('public');
   // Note: stacMode intentionally does NOT read from localStorage. Product
@@ -68,7 +74,9 @@ function App() {
   // we don't poll or refetch.
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_BASE_URL}/api/config`, { credentials: 'include' })
+    fetch(`${API_BASE_URL}/api/config`, {
+      credentials: import.meta.env.DEV ? 'omit' : 'include',
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data || !data.features) return;
@@ -76,6 +84,7 @@ function App() {
           mpcPublic: data.features.mpcPublic !== false,
           mpcPro: !!data.features.mpcPro,
           fabric: !!data.features.fabric,
+          chatHistory: !!data.features.chatHistory,
         };
         setFeatures(next);
         // If Pro is locked out by this deployment but the user had it
@@ -94,6 +103,11 @@ function App() {
     console.log(' App: Model changed to:', modelId);
     setSelectedModel(modelId);
     localStorage.setItem('planetaryexplorer-model', modelId);
+  };
+
+  const handleReasoningEffortChange = (effort: string) => {
+    setReasoningEffort(effort);
+    localStorage.setItem('planetaryexplorer-reasoning-effort', effort);
   };
 
   const handleStacModeChange = (next: 'public' | 'pro') => {
@@ -142,6 +156,20 @@ function App() {
     setAppState(prev => ({ ...prev, selectedDataset: dataset, chatMode: true }));
   };
 
+  const handleRestoreChatContext = (context: ChatHistoryContext) => {
+    if (context.selectedModel) handleModelChange(context.selectedModel);
+    if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
+    if (context.stacMode) handleStacModeChange(context.stacMode);
+    setAppState(prev => ({
+      ...prev,
+      selectedDataset: context.selectedDataset
+        ? { ...context.selectedDataset, description: context.selectedDataset.description || '' }
+        : null,
+      chatMode: true,
+      initialQuery: undefined,
+    }));
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <GlobalStyles />
@@ -149,6 +177,10 @@ function App() {
         {!appState.entered ? (
           <LandingPage
             onEnter={handleEnterApp}
+            onModelChange={handleModelChange}
+            selectedModel={selectedModel}
+            onReasoningEffortChange={handleReasoningEffortChange}
+            selectedReasoningEffort={reasoningEffort}
             stacMode={stacMode}
             onStacModeChange={handleStacModeChange}
             proEnabled={features.mpcPro}
@@ -160,6 +192,8 @@ function App() {
               onRestartSession={handleRestartSession}
               onModelChange={handleModelChange}
               selectedModel={selectedModel}
+              onReasoningEffortChange={handleReasoningEffortChange}
+              selectedReasoningEffort={reasoningEffort}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
               proEnabled={features.mpcPro}
@@ -172,6 +206,9 @@ function App() {
               geointMode={geointMode}
               onGeointToggle={setGeointMode}
               selectedModel={selectedModel}
+              reasoningEffort={reasoningEffort}
+              chatHistoryEnabled={features.chatHistory}
+              onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
             />

@@ -4,7 +4,7 @@ GEOINT (Geospatial Intelligence) Module
 This module provides geospatial intelligence analysis capabilities through agent-based architecture.
 
 Available Agents:
-- TerrainAgent - Real SK agent with memory, tools, and multi-turn chat (NEW)
+- TerrainAgent - Azure AI Agent Service agent with memory, tools, and multi-turn chat (NEW)
 - ComparisonAgent - Temporal before/after comparison with dual STAC queries (NEW)
 - terrain_analysis_agent - Visual terrain feature analysis using GPT-5 Vision (legacy)
 - mobility_analysis_agent - Pixel-based terrain trafficability assessment
@@ -23,7 +23,7 @@ Available Tools (for TerrainAgent):
 
 Architecture:
 All GEOINT functionality now follows agent-based pattern for consistency.
-The new TerrainAgent uses Semantic Kernel with proper tool calling and memory.
+The TerrainAgent uses Azure AI Agent Service with tool calling and memory.
 Each legacy agent function returns Dict[str, Any] with "agent" key.
 
 IMPORTANT: Lazy imports are used throughout to avoid loading heavy dependencies

@@ -2,13 +2,21 @@
 // Licensed under the MIT license.
 
 import React, { useState, useRef, useEffect } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { apiService, Dataset, ChatMessage, MapContext } from '../services/api';
+import { useMutation } from '@tanstack/react-query';
+import { History } from 'lucide-react';
+import { apiService, ChatHistoryContext, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
 import { enhanceMessageForMapVisualization, hasVisualizableData } from './PlanetaryExplorerMapIntegration';
 import vedaSearchService from '../services/vedaSearchService';
 import SourceChips from './SourceChips';
 import { TraceDrawer, ConfirmationCard, useToolTrace } from './trace';
 import type { PendingConfirm } from './trace';
+import ChatHistoryDrawer from './ChatHistoryDrawer';
+import {
+  chatHistoryFingerprint,
+  createChatHistorySaveQueue,
+  persistedChatMessages,
+  restoreChatMessages,
+} from '../utils/chatHistory';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -210,6 +218,9 @@ interface ChatProps {
   onClearVisionSession?: () => void; // Callback to clear vision session
   onComparisonResult?: (result: any) => void; // Callback for comparison analysis results (before/after data)
   selectedModel?: string; // Selected AI model (gpt-5)
+  reasoningEffort?: string; // Selected GPT-5.6 reasoning effort
+  chatHistoryEnabled?: boolean; // Durable Cosmos-backed chat archive
+  onRestoreContext?: (context: ChatHistoryContext) => void;
   stacMode?: 'public' | 'pro'; // Public MPC vs MPC Pro (private GeoCatalog) for STAC routing
 }
 
@@ -235,6 +246,9 @@ const Chat: React.FC<ChatProps> = ({
   onClearVisionSession,
   onComparisonResult,
   selectedModel,
+  reasoningEffort,
+  chatHistoryEnabled = false,
+  onRestoreContext,
   stacMode,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -253,6 +267,61 @@ const Chat: React.FC<ChatProps> = ({
     },
     [],
   );
+  const createQueryStreamContext = () => {
+    const rows: any[] = [];
+    return {
+      rows,
+      handlers: {
+        onTrace: (event: any) => {
+          activeTrace.ingest(event);
+          if (event?.type === 'tool_call') {
+            rows.push({
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+              status: 'pending',
+            });
+          } else if (event?.type === 'tool_result') {
+            const index = rows.findIndex((row) => row.traceId === event.trace_id);
+            const merged = {
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+              status: event.error === 'denied_by_user' ? 'denied' : event.ok ? 'ok' : 'error',
+              latencyMs: event.latency_ms,
+              responseSummary: event.response_summary,
+              error: event.error,
+            };
+            if (index >= 0) rows[index] = merged;
+            else rows.push(merged);
+          }
+        },
+        onConfirmRequest: (event: any) => {
+          setPendingConfirms((previous) => previous.some(
+            (pending) => pending.traceId === event.trace_id
+          ) ? previous : [
+            ...previous,
+            {
+              traceId: event.trace_id,
+              serverId: event.server_id,
+              tool: event.tool,
+              tier: event.tier,
+              args: event.args || {},
+            },
+          ]);
+        },
+        onConfirmResolved: (event: any) => {
+          setPendingConfirms((previous) => previous.filter(
+            (pending) => pending.traceId !== event.trace_id
+          ));
+        },
+      },
+    };
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Tracks whether the user clicked Stop on the current in-flight chat turn.
   // We can't cancel the in-flight HTTP request through TanStack mutations
@@ -264,11 +333,24 @@ const Chat: React.FC<ChatProps> = ({
   // AND calls abort() so the HTTP request is genuinely terminated end-to-end
   // (axios honors the signal and the backend connection drops).
   const chatAbortRef = useRef<AbortController | null>(null);
+  const [partsPending, setPartsPending] = useState(false);
   const [hasProcessedInitialQuery, setHasProcessedInitialQuery] = useState(false);
   const initialQueryRef = useRef(false);
   const [lastResponse, setLastResponse] = useState<string>('');
   // Add conversation ID to maintain context across messages
-  const [conversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [conversationId, setConversationId] = useState(() => `web-session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySaveState, setHistorySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const lastSavedSnapshotRef = useRef('');
+  const queuedSnapshotRef = useRef('');
+  const historyRevisionRef = useRef(0);
+  const historyGenerationRef = useRef(0);
+  const historySaveQueueRef = useRef(
+    createChatHistorySaveQueue((sessionId, snapshot) => (
+      apiService.saveChatSession(sessionId, snapshot)
+    )),
+  );
+  const restoringHistoryRef = useRef(false);
   
   //  Local vision session ID tracking (for first message -> follow-ups)
   const [localVisionSessionId, setLocalVisionSessionId] = useState<string | null>(null);
@@ -310,6 +392,7 @@ const Chat: React.FC<ChatProps> = ({
 
   // Add injection message when dataset is selected
   useEffect(() => {
+    if (restoringHistoryRef.current) return;
     if (selectedDataset && chatMode) {
       const injectionMessage: ChatMessage = {
         role: 'assistant',
@@ -414,7 +497,8 @@ const Chat: React.FC<ChatProps> = ({
           const validationErrors: string[] = [];
 
           if (requiresStacData) {
-            const hasStacData = (currentMapContext?.tile_urls?.length > 0) || (currentMapContext?.stac_items?.length > 0);
+            const hasStacData = (currentMapContext?.tile_urls?.length ?? 0) > 0
+              || (currentMapContext?.stac_items?.length ?? 0) > 0;
             if (!hasStacData) {
               validationErrors.push('**No satellite data loaded.** Please run a STAC Search query (Step 1) first to load tiles on the map.');
             }
@@ -1785,10 +1869,27 @@ const Chat: React.FC<ChatProps> = ({
           vision_pin: freshMapContext?.vision_pin,
           bounds: freshMapContext?.bounds
         });
-        const result = await apiService.sendChatMessage(message, selectedDataset?.id, conversationId, messages, currentPin || undefined, geointMode, freshMapContext, selectedModel, false, stacMode, controller.signal);
+        activeTrace.clear();
+        const stream = createQueryStreamContext();
+        const result = await apiService.sendChatMessage(
+          message,
+          selectedDataset?.id,
+          conversationId,
+          messages,
+          currentPin || undefined,
+          geointMode,
+          freshMapContext,
+          selectedModel,
+          reasoningEffort,
+          selectedModule,
+          false,
+          stacMode,
+          controller.signal,
+          stream.handlers,
+        );
 
         // Return the complete response object for map integration
-        return result;
+        return { ...result, toolTrace: stream.rows };
       } catch (error) {
         const err = error as any;
         if (err?.message?.includes('Failed to fetch') || err?.code === 'ECONNREFUSED') {
@@ -1940,86 +2041,104 @@ const Chat: React.FC<ChatProps> = ({
         const partsList: Array<{ id: number; query: string; depends_on: number[] }> =
           responseData.parts;
         const freshMapCtxForParts = mapContextRef.current;
+        const partsController = new AbortController();
+        chatAbortRef.current = partsController;
+        setPartsPending(true);
 
         (async () => {
           const answers: Record<number, string> = {};
-          for (const part of partsList) {
-            // For dependent parts, prepend a compact context block so the
-            // backend agent has the prior answer available without needing
-            // a fresh tool call.
-            let queryText = part.query;
-            if (part.depends_on && part.depends_on.length > 0) {
-              const ctxLines = part.depends_on
-                .map((d) => answers[d] ? `Part ${d} answer:\n${answers[d]}` : '')
-                .filter(Boolean);
-              if (ctxLines.length > 0) {
-                queryText = `[Context from earlier parts]\n${ctxLines.join('\n\n')}\n\n[Now answer]\n${part.query}`;
+          try {
+            for (const part of partsList) {
+              if (partsController.signal.aborted) break;
+
+              // For dependent parts, prepend a compact context block so the
+              // backend agent has the prior answer available without needing
+              // a fresh tool call.
+              let queryText = part.query;
+              if (part.depends_on && part.depends_on.length > 0) {
+                const ctxLines = part.depends_on
+                  .map((d) => answers[d] ? `Part ${d} answer:\n${answers[d]}` : '')
+                  .filter(Boolean);
+                if (ctxLines.length > 0) {
+                  queryText = `[Context from earlier parts]\n${ctxLines.join('\n\n')}\n\n[Now answer]\n${part.query}`;
+                }
+              }
+
+              // Show a "Working on part N of M…" thinking bubble.
+              setMessages(prev => ([
+                ...prev,
+                {
+                  role: 'assistant',
+                  content: `Working on part ${part.id} of ${partsList.length}…`,
+                  timestamp: new Date(),
+                  isThinking: true,
+                },
+              ]));
+
+              try {
+                const partStream = createQueryStreamContext();
+                const partResult = await apiService.sendChatMessage(
+                  queryText,
+                  selectedDataset?.id,
+                  sharedSessionId,
+                  messages,
+                  currentPin || undefined,
+                  geointMode,
+                  freshMapCtxForParts,
+                  selectedModel,
+                  reasoningEffort,
+                  selectedModule,
+                  true, // partOfSplit — prevents recursive splitting
+                  stacMode,
+                  partsController.signal,
+                  partStream.handlers,
+                );
+
+                const partText =
+                  partResult?.response ||
+                  partResult?.user_response ||
+                  partResult?.message ||
+                  'No response received for this part.';
+                answers[part.id] = typeof partText === 'string' ? partText : String(partText);
+
+                // Replace the trailing thinking bubble with the actual answer.
+                setMessages(prev => {
+                  const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
+                  return [
+                    ...filtered,
+                    {
+                      role: 'assistant',
+                      content: answers[part.id],
+                      timestamp: new Date(),
+                      toolTrace: partStream.rows,
+                    },
+                  ];
+                });
+
+                if (onResponseReceived) {
+                  onResponseReceived(partResult);
+                }
+              } catch (err: any) {
+                if (partsController.signal.aborted) break;
+                console.error(' Chat: Sequential part failed:', err);
+                setMessages(prev => {
+                  const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
+                  return [
+                    ...filtered,
+                    {
+                      role: 'assistant',
+                      content: `Part ${part.id} failed: ${err?.message || 'unknown error'}. Continuing with remaining parts.`,
+                      timestamp: new Date(),
+                    },
+                  ];
+                });
               }
             }
-
-            // Show a "Working on part N of M…" thinking bubble.
-            setMessages(prev => ([
-              ...prev,
-              {
-                role: 'assistant',
-                content: `Working on part ${part.id} of ${partsList.length}…`,
-                timestamp: new Date(),
-                isThinking: true,
-              },
-            ]));
-
-            try {
-              const partResult = await apiService.sendChatMessage(
-                queryText,
-                selectedDataset?.id,
-                sharedSessionId,
-                messages,
-                currentPin || undefined,
-                geointMode,
-                freshMapCtxForParts,
-                selectedModel,
-                true, // partOfSplit — prevents recursive splitting
-                stacMode,
-                controller.signal,
-              );
-
-              const partText =
-                partResult?.response ||
-                partResult?.user_response ||
-                partResult?.message ||
-                'No response received for this part.';
-              answers[part.id] = typeof partText === 'string' ? partText : String(partText);
-
-              // Replace the trailing thinking bubble with the actual answer.
-              setMessages(prev => {
-                const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
-                return [
-                  ...filtered,
-                  {
-                    role: 'assistant',
-                    content: answers[part.id],
-                    timestamp: new Date(),
-                  },
-                ];
-              });
-
-              if (onResponseReceived) {
-                onResponseReceived(partResult);
-              }
-            } catch (err: any) {
-              console.error(' Chat: Sequential part failed:', err);
-              setMessages(prev => {
-                const filtered = prev.filter((m, idx) => !(idx === prev.length - 1 && m.isThinking));
-                return [
-                  ...filtered,
-                  {
-                    role: 'assistant',
-                    content: `Part ${part.id} failed: ${err?.message || 'unknown error'}. Continuing with remaining parts.`,
-                    timestamp: new Date(),
-                  },
-                ];
-              });
-            }
+          } finally {
+            setPartsPending(false);
+            if (chatAbortRef.current === partsController) chatAbortRef.current = null;
+            cancelledRef.current = false;
+            setMessages(prev => prev.filter(msg => !msg.isThinking));
           }
         })();
 
@@ -2370,6 +2489,8 @@ const Chat: React.FC<ChatProps> = ({
       console.warn(' Chat: abort() threw (non-fatal):', e);
     }
     chatAbortRef.current = null;
+    setPartsPending(false);
+    setPendingConfirms([]);
     // Drop any pending "Thinking..." bubbles so the chat returns to a
     // clean state. Same filter used by mobility/geoint cancel paths.
     setMessages(prev => prev.filter(msg => !msg.isThinking));
@@ -2385,6 +2506,132 @@ const Chat: React.FC<ChatProps> = ({
     // This ensures users always see the most recent chat response
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (
+      !chatHistoryEnabled ||
+      chatMutation.isPending ||
+      privateSearchMutation.isPending ||
+      partsPending
+    ) {
+      return;
+    }
+
+    const persistedMessages = persistedChatMessages(messages);
+    if (!persistedMessages.some((message) => message.role === 'user')) {
+      return;
+    }
+    const snapshot = {
+      messages: persistedMessages,
+      context: {
+        selectedModel: selectedModel || undefined,
+        reasoningEffort: reasoningEffort || undefined,
+        selectedModule: selectedModule || undefined,
+        selectedDataset: selectedDataset
+          ? {
+              id: selectedDataset.id,
+              title: selectedDataset.title,
+              description: selectedDataset.description,
+            }
+          : undefined,
+        stacMode,
+        pin: currentPin || undefined,
+        map: mapContext
+          ? {
+              bounds: mapContext.bounds,
+              current_collection: mapContext.current_collection,
+              has_satellite_data: mapContext.has_satellite_data,
+              imagery_url: mapContext.imagery_url,
+              tile_urls: mapContext.tile_urls?.slice(0, 20),
+              vision_mode: mapContext.vision_mode,
+              vision_pin: mapContext.vision_pin,
+            }
+          : undefined,
+      },
+    };
+    const fingerprint = chatHistoryFingerprint(snapshot);
+    if (
+      fingerprint === lastSavedSnapshotRef.current ||
+      fingerprint === queuedSnapshotRef.current
+    ) return;
+
+    setHistorySaveState('saving');
+    const timer = window.setTimeout(async () => {
+      const revision = historyRevisionRef.current + 1;
+      const generation = historyGenerationRef.current;
+      historyRevisionRef.current = revision;
+      queuedSnapshotRef.current = fingerprint;
+      try {
+        const saved = await historySaveQueueRef.current(conversationId, {
+          ...snapshot,
+          clientRevision: revision,
+        });
+        if (
+          generation !== historyGenerationRef.current ||
+          revision !== historyRevisionRef.current
+        ) return;
+        historyRevisionRef.current = saved.clientRevision || revision;
+        lastSavedSnapshotRef.current = fingerprint;
+        queuedSnapshotRef.current = '';
+        setHistorySaveState('saved');
+      } catch (error) {
+        console.error(' Chat: Failed to save chat history:', error);
+        if (
+          generation !== historyGenerationRef.current ||
+          revision !== historyRevisionRef.current
+        ) return;
+        queuedSnapshotRef.current = '';
+        setHistorySaveState('error');
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    chatHistoryEnabled,
+    chatMutation.isPending,
+    conversationId,
+    currentPin,
+    mapContext,
+    messages,
+    partsPending,
+    privateSearchMutation.isPending,
+    reasoningEffort,
+    selectedDataset,
+    selectedModel,
+    selectedModule,
+    stacMode,
+  ]);
+
+  const handleLoadHistorySession = (session: ChatHistorySession) => {
+    if (chatMutation.isPending || privateSearchMutation.isPending || partsPending || historySaveState === 'saving') {
+      return;
+    }
+    const restoredMessages = restoreChatMessages(session.messages);
+    historyGenerationRef.current += 1;
+    historyRevisionRef.current = session.clientRevision || 0;
+    queuedSnapshotRef.current = '';
+    restoringHistoryRef.current = true;
+    onRestoreContext?.(session.context);
+    lastSavedSnapshotRef.current = chatHistoryFingerprint({
+      messages: restoredMessages,
+      context: session.context,
+    });
+    setConversationId(session.sessionId);
+    setMessages(restoredMessages);
+    setPendingConfirms([]);
+    setFeedback({});
+    setHistorySaveState('saved');
+    window.setTimeout(() => {
+      restoringHistoryRef.current = false;
+    }, 0);
+  };
+
+  const historyBusy = (
+    chatMutation.isPending ||
+    privateSearchMutation.isPending ||
+    partsPending ||
+    historySaveState === 'saving'
+  );
 
   const getPlanetaryComputerExamples = (dataset: Dataset | null): string[] => {
     const defaultExamples = [
@@ -2484,8 +2731,38 @@ const Chat: React.FC<ChatProps> = ({
     <div className="right">
       <div className="chat chat-container">
         <div className="header">
-          <span>Planetary Explorer Agent</span>
+          <span className="chat-header-title">Planetary Explorer Agent</span>
+          {chatHistoryEnabled && (
+            <div className="chat-history-toolbar">
+              <span className={`chat-save-state ${historySaveState}`} aria-live="polite">
+                {historySaveState === 'saving' && 'Saving'}
+                {historySaveState === 'saved' && 'Saved'}
+                {historySaveState === 'error' && 'Save failed'}
+              </span>
+              <button
+                type="button"
+                className="chat-history-trigger"
+                onClick={() => setHistoryOpen(true)}
+                disabled={historyBusy}
+                aria-label="Open saved chat sessions"
+                title="Saved chat sessions"
+              >
+                <History size={17} aria-hidden="true" />
+                <span>History</span>
+              </button>
+            </div>
+          )}
         </div>
+
+        <ChatHistoryDrawer
+          activeSessionId={conversationId}
+          enabled={chatHistoryEnabled}
+          busy={historyBusy}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onLoad={handleLoadHistorySession}
+          onActiveSessionDeleted={onRestartSession}
+        />
 
         <div className="messages">
           {/* Examples removed to prevent flash on page load */}
@@ -2511,7 +2788,7 @@ const Chat: React.FC<ChatProps> = ({
                   <div className="msg">
                     <div className="loading-indicator">
                       <span></span>
-                      <span>Thinking...</span>
+                      <span>{message.content || 'Thinking...'}</span>
                     </div>
                   </div>
                 ) : (
@@ -2599,9 +2876,9 @@ const Chat: React.FC<ChatProps> = ({
                   ? `Ask about ${selectedDataset.title}...`
                   : "Ask about Earth data..."
               }
-              disabled={chatMutation.isPending}
+              disabled={chatMutation.isPending || partsPending}
             />
-            {chatMutation.isPending ? (
+            {(chatMutation.isPending || partsPending) ? (
               <button
                 className="btn send"
                 onClick={handleStopMessage}

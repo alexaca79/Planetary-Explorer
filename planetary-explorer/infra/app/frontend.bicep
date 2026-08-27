@@ -12,8 +12,8 @@ param enablePrivateEndpoints bool = false
 param vnetSubnetId string = ''
 
 param sku object = {
-  name: 'B1'
-  tier: 'Basic'
+  name: 'F1'
+  tier: 'Free'
 }
 
 // Private endpoints require Standard tier or higher for VNet integration
@@ -38,7 +38,7 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
 resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   name: webAppName
   location: location
-  tags: tags
+  tags: union(tags, { 'azd-service-name': 'web' })
   kind: 'app,linux'
   identity: {
     type: 'SystemAssigned'
@@ -48,7 +48,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
     httpsOnly: true
     virtualNetworkSubnetId: !empty(vnetSubnetId) ? vnetSubnetId : null
     siteConfig: {
-      linuxFxVersion: 'NODE|20-lts'
+      linuxFxVersion: 'NODE|22-lts'
       alwaysOn: enablePrivateEndpoints  // Supported on Standard+ only
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
@@ -56,7 +56,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
       appSettings: [
         {
           name: 'WEBSITE_NODE_DEFAULT_VERSION'
-          value: '~20'
+          value: '~22'
         }
         {
           name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'

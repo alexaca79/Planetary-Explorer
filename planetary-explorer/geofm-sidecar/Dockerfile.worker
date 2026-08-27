@@ -1,0 +1,35 @@
+FROM python:3.10-slim-bookworm
+
+ARG PLANAURA_RUNTIME_REVISION=a880b26ce08a545b35d6afa431bace39842dd19d
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu116 \
+    PYTHONPATH=/opt/planaura/src \
+    HF_HOME=/tmp/huggingface \
+    GEOFM_CHECKPOINT_PATH=/opt/models/Planaura-1.0-HLS.pth
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN python -m pip install --no-cache-dir \
+        torch==1.12.0+cu116 torchvision==0.13.0+cu116 \
+    && python -m pip install --no-cache-dir ".[worker]" \
+    && python -c "import geofm_service.worker" \
+    && git clone --filter=blob:none https://github.com/NRCan/planaura.git /opt/planaura \
+    && git -C /opt/planaura checkout "${PLANAURA_RUNTIME_REVISION}" \
+    && test "$(git -C /opt/planaura rev-parse HEAD)" = "${PLANAURA_RUNTIME_REVISION}" \
+    && mkdir -p /opt/models \
+    && python -m geofm_service.download_checkpoint "${GEOFM_CHECKPOINT_PATH}" \
+    && useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app /opt/models /tmp/huggingface
+
+USER appuser
+
+CMD ["python", "-m", "geofm_service.worker"]

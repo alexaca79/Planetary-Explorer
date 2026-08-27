@@ -21,6 +21,7 @@ from typing import Any
 
 from .bootstrap import build_default_pipeline
 from .contracts import AnalysisRequest
+from .action_router import is_explicit_web_request
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +97,19 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
     if not pins_list and pin_tuple:
         pins_list = [pin_tuple]
 
-    bbox = body.get("bbox")
+    bbox = body.get("bbox") or body.get("map_bounds")
     bbox_tuple = None
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+    if isinstance(bbox, dict):
+        try:
+            bbox_tuple = (
+                float(bbox["west"]),
+                float(bbox["south"]),
+                float(bbox["east"]),
+                float(bbox["north"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            bbox_tuple = None
+    elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         try:
             bbox_tuple = (
                 float(bbox[0]),
@@ -163,11 +174,19 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
     if _stac_mode not in ("public", "pro"):
         _stac_mode = "public"
 
+    geoint_module_raw = body.get("geoint_module")
+    geoint_module = (
+        geoint_module_raw.strip()
+        if isinstance(geoint_module_raw, str) and geoint_module_raw.strip()
+        else None
+    )
+
     return AnalysisRequest(
         question=(body.get("query") or body.get("user_query") or "").strip(),
         session_id=str(
             body.get("session_id") or body.get("conversation_id") or "anon"
         ),
+        authenticated_user_id=body.get("_authenticated_user_id"),
         bbox=bbox_tuple,
         location_name=body.get("location_name"),
         pin=pin_tuple,
@@ -181,6 +200,10 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         history=list(history) if isinstance(history, list) else [],
         stac_items=list(stac_items),
         tile_urls=list(tile_urls),
+        hint="foundation_change" if geoint_module == "foundation_change" else None,
+        geoint_module=geoint_module,
+        model=body.get("model"),
+        reasoning_effort=str(body.get("reasoning_effort") or "none"),
         stac_mode=_stac_mode,
     )
 
@@ -299,7 +322,30 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
                 _q[:60],
             )
     decision: ActionDecision
-    if clarifier_route in _route_to_action:
+    if request.geoint_module == "foundation_change":
+        decision = ActionDecision(
+            action="ANALYZE",
+            analysis_question=request.question,
+            reasoning="foundation_change_module",
+            confidence=1.0,
+        )
+        logger.info(
+            "[PIPELINE-V2] foundation_change module -> ANALYZE "
+            "(skipped clarifier route and ActionRouter)"
+        )
+    elif is_explicit_web_request(request.question):
+        decision = ActionDecision(
+            action="ANALYZE",
+            analysis_question=request.question,
+            reasoning="explicit_web_search",
+            confidence=1.0,
+        )
+        logger.info(
+            "[PIPELINE-V2] explicit web search -> ANALYZE "
+            "(overrode clarifier route %r)",
+            clarifier_route,
+        )
+    elif clarifier_route in _route_to_action:
         decision = ActionDecision(
             action=_route_to_action[clarifier_route],  # type: ignore[arg-type]
             location=body.get("location_name"),

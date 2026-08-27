@@ -5,11 +5,23 @@ param tags object = {}
 param containerAppsEnvironmentName string
 param containerRegistryName string
 param imageName string = ''
-param frontendUrl string = '' // Frontend Web App URL for CORS
+@description('Container ingress and application listening port.')
+param targetPort int = 8080
+@description('Enable API-specific liveness and readiness probes.')
+param enableHealthProbes bool = true
+@description('Exact HTTPS frontend origin allowed by credentialed CORS.')
+@minLength(1)
+param frontendUrl string
 
 @secure()
 param azureOpenAiApiKey string = ''
 param azureOpenAiEndpoint string = ''
+@description('Primary Azure OpenAI deployment name used when a request does not select a model.')
+param azureOpenAiDeploymentName string
+@description('Fast Azure OpenAI deployment name used for routing and extraction.')
+param azureOpenAiFastDeployment string
+@description('Comma-separated deployed chat model names advertised by the health endpoint.')
+param azureOpenAiAvailableModels string
 @secure()
 param openAiApiKey string = ''
 @secure()
@@ -40,8 +52,32 @@ param microsoftBotAppPassword string = ''
 // only for parameter-file compatibility; they currently only gate a secret entry, not an
 // authConfig resource.
 param enableAuthentication bool = false
+@description('Explicitly expose protected API routes without authentication for development or demos.')
+param publicDemoMode bool = false
+@description('Microsoft Entra tenant ID used by in-process bearer-token validation.')
+param microsoftEntraTenantId string = ''
+@description('Microsoft Entra application client ID used as the API token audience.')
+param microsoftEntraClientId string = ''
 @secure()
 param microsoftEntraClientSecret string = ''
+
+@description('Enable durable per-user chat history and downloadable test artifacts.')
+param enableChatHistory bool = false
+
+@description('Keyless Cosmos DB endpoint for chat history.')
+param cosmosChatEndpoint string = ''
+
+@description('Cosmos DB database containing chat sessions.')
+param cosmosChatDatabase string = 'planetary-explorer'
+
+@description('Cosmos DB container containing user-partitioned chat sessions.')
+param cosmosChatContainer string = 'chat-history'
+
+@description('Blob service endpoint for private chat artifact files.')
+param chatArtifactBlobEndpoint string = ''
+
+@description('Private Blob container containing chat artifact files.')
+param chatArtifactContainer string = 'chat-artifacts'
 
 // Cloud environment
 @description('Cloud environment: Commercial or Government')
@@ -54,6 +90,30 @@ param mpcMcpUrl string = ''
 @description('Feature flag toggling MCP-first catalog inventory in pro_stac_client.get_pro_collection_ids. ``false`` leaves the backend on the legacy direct-STAC path even when mpcMcpUrl is set (safe default).')
 @allowed(['true', 'false'])
 param useMpcMcp string = 'false'
+
+@description('Internal URL of the GeoFM MCP control plane. Empty disables GeoFM calls.')
+param geoFmMcpUrl string = ''
+
+@description('Enable GeoFM tools in the AnalystAgent when the internal endpoint is deployed.')
+param enableGeoFm bool = false
+
+@secure()
+@description('Shared API key for backend-to-GeoFM MCP calls. Empty disables key authentication.')
+param geoFmMcpApiKey string = ''
+
+@secure()
+@description('HMAC key used to sign authenticated GeoFM run-owner operations.')
+param geoFmOwnerSigningKey string = ''
+
+@description('Internal URL of the Azure Web Search MCP service. Empty disables current-web tools.')
+param webSearchMcpUrl string = ''
+
+@description('Enable current-date and web-search MCP tools in the AnalystAgent.')
+param enableWebSearch bool = false
+
+@secure()
+@description('Shared API key for backend-to-Web Search MCP calls.')
+param webSearchMcpApiKey string = ''
 
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
@@ -117,7 +177,7 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' e
 resource app 'Microsoft.App/containerApps@2023-05-01' = {
   name: name
   location: location
-  tags: union(tags, { 'azd-service-name': 'web' })
+  tags: union(tags, { 'azd-service-name': 'api' })
   identity: {
     type: 'SystemAssigned'
   }
@@ -126,8 +186,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 8080
+        targetPort: targetPort
         allowInsecure: false
+        stickySessions: {
+          affinity: 'sticky'
+        }
         traffic: [
           {
             latestRevision: true
@@ -166,6 +229,21 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
           name: 'microsoft-client-secret'
           value: microsoftEntraClientSecret
         }
+      ] : [], !empty(geoFmMcpApiKey) ? [
+        {
+          name: 'geofm-mcp-api-key'
+          value: geoFmMcpApiKey
+        }
+      ] : [], !empty(geoFmOwnerSigningKey) ? [
+        {
+          name: 'geofm-owner-signing-key'
+          value: geoFmOwnerSigningKey
+        }
+      ] : [], !empty(webSearchMcpApiKey) ? [
+        {
+          name: 'web-search-mcp-api-key'
+          value: webSearchMcpApiKey
+        }
       ] : [],
       // Forecast Agent provider URLs sourced from Key Vault via system MI.
       // The vault must already hold these secrets and grant Key Vault
@@ -203,8 +281,68 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: '8080'
             }
             {
+              name: 'DISABLE_AUTH'
+              value: publicDemoMode && !enableAuthentication ? 'true' : 'false'
+            }
+            {
+              name: 'TRUST_EASYAUTH_HEADER'
+              value: 'false'
+            }
+            {
+              name: 'AZURE_AD_TENANT_ID'
+              value: microsoftEntraTenantId
+            }
+            {
+              name: 'AZURE_AD_CLIENT_ID'
+              value: microsoftEntraClientId
+            }
+            {
+              name: 'PE_FEATURE_CHAT_HISTORY'
+              value: enableChatHistory ? 'true' : 'false'
+            }
+            {
+              name: 'CHAT_HISTORY_STORE'
+              value: enableChatHistory ? 'cosmos' : 'disabled'
+            }
+            {
+              name: 'COSMOS_CHAT_ENDPOINT'
+              value: cosmosChatEndpoint
+            }
+            {
+              name: 'COSMOS_CHAT_DATABASE'
+              value: cosmosChatDatabase
+            }
+            {
+              name: 'COSMOS_CHAT_CONTAINER'
+              value: cosmosChatContainer
+            }
+            {
+              name: 'CHAT_ARTIFACT_STORE'
+              value: enableChatHistory ? 'blob' : 'disabled'
+            }
+            {
+              name: 'CHAT_ARTIFACT_BLOB_ENDPOINT'
+              value: chatArtifactBlobEndpoint
+            }
+            {
+              name: 'CHAT_ARTIFACT_CONTAINER'
+              value: chatArtifactContainer
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
+            }
+            {
+              name: 'AZURE_OPENAI_DEPLOYMENT_NAME'
+              value: azureOpenAiDeploymentName
+            }
+            {
+              name: 'AZURE_OPENAI_FAST_DEPLOYMENT'
+              value: azureOpenAiFastDeployment
+            }
+            {
+              name: 'AZURE_OPENAI_AVAILABLE_MODELS'
+              value: azureOpenAiAvailableModels
             }
             {
               // CRITICAL: Enable Managed Identity authentication for Azure OpenAI
@@ -224,7 +362,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'CORS_ORIGINS'
-              value: '*'  // Allow all origins - can be restricted to specific domains in production
+              value: frontendUrl
             }
             {
               // MPC Pro MCP sidecar URL (internal Container Apps FQDN). Empty
@@ -236,6 +374,22 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'USE_MPC_MCP'
               value: useMpcMcp
+            }
+            {
+              name: 'GEOFM_ENABLED'
+              value: enableGeoFm ? 'true' : 'false'
+            }
+            {
+              name: 'GEOFM_MCP_URL'
+              value: geoFmMcpUrl
+            }
+            {
+              name: 'WEB_SEARCH_ENABLED'
+              value: enableWebSearch ? 'true' : 'false'
+            }
+            {
+              name: 'WEB_SEARCH_MCP_URL'
+              value: webSearchMcpUrl
             }
             {
               // UI feature flags. Read by the backend's /api/config
@@ -328,6 +482,21 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'OPENAI_API_KEY'
               secretRef: 'openai-api-key'
             }
+          ] : [], !empty(geoFmMcpApiKey) ? [
+            {
+              name: 'GEOFM_MCP_API_KEY'
+              secretRef: 'geofm-mcp-api-key'
+            }
+          ] : [], !empty(geoFmOwnerSigningKey) ? [
+            {
+              name: 'GEOFM_OWNER_SIGNING_KEY'
+              secretRef: 'geofm-owner-signing-key'
+            }
+          ] : [], !empty(webSearchMcpApiKey) ? [
+            {
+              name: 'WEB_SEARCH_MCP_API_KEY'
+              secretRef: 'web-search-mcp-api-key'
+            }
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the
           // secrets[] entries above; secretRef name must match secret name).
@@ -353,11 +522,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             cpu: json('1.0')
             memory: '2Gi'
           }
-          probes: [
+          probes: enableHealthProbes ? [
             {
               type: 'Liveness'
               httpGet: {
-                path: '/health'
+                path: '/api/health'
                 port: 8080
               }
               initialDelaySeconds: 30
@@ -368,7 +537,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/health'
+                path: '/api/health'
                 port: 8080
               }
               initialDelaySeconds: 10
@@ -376,7 +545,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               timeoutSeconds: 3
               failureThreshold: 3
             }
-          ]
+          ] : []
         }
       ]
       scale: {

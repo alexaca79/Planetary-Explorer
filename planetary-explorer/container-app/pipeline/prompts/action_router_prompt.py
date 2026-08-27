@@ -42,6 +42,12 @@ assistant. You decide one of four actions for each user turn:
                               "describe the terrain in this image",
                               "explain how MODIS detects active fires"
 
+                    WEB INTENT RULE (overrides NAVIGATE):
+                    Explicit public-web requests such as "search the web",
+                    "browse the web", "look up on the web", or "web search"
+                    are ALWAYS ANALYZE. The downstream analyst owns the web
+                    tool. Never interpret "web" as a map location.
+
   LOAD_AND_ANALYZE  User asks a question that requires loading data first.
                     Examples: "load Sentinel-2 over Athens and tell me what
                               vegetation looks like",

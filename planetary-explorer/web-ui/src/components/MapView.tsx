@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Dataset, API_BASE_URL } from '../services/api';
 import { authenticatedFetch } from '../services/authHelper';
+import { getGeoFmMapFeatures } from '../utils/geofmOverlay';
 // TileUrlGenerator removed - using backend-only tile URL generation (MPC best practice)
 import { getCollectionVisualization, getCollectionConfig } from '../config/collectionConfig';
 import { getCollectionConfig as getRenderingConfig } from '../utils/renderingConfig';
@@ -177,6 +178,12 @@ const MapView: React.FC<MapViewProps> = ({
   
   // Resilience module: facility markers (region-scoped, no pin needed)
   const resilienceMarkersRef = useRef<any[]>([]);
+  const geofmOverlayRef = useRef<{
+    signature: string;
+    map: any;
+    provider: 'azure' | 'leaflet';
+    remove: () => void;
+  } | null>(null);
 
   // Mobility two-pin A->B state
   const [mobilityPinA, setMobilityPinA] = useState<{ lat: number; lng: number; marker: any } | null>(null);
@@ -1538,6 +1545,98 @@ const MapView: React.FC<MapViewProps> = ({
       console.error('Error parsing satellite data:', error);
     }
   }, [lastChatResponse, map]);
+
+  // GeoFM status responses can contain vectors without new satellite data.
+  // Render that existing top-level map_data contract independently so polling
+  // a completed PlanAura run updates the map without retriggering STAC layers.
+  useEffect(() => {
+    const features = getGeoFmMapFeatures(lastChatResponse);
+    if (!map || !mapLoaded) {
+      return;
+    }
+    if (
+      features === null
+      || features.length === 0
+      || selectedModule !== 'foundation_change'
+    ) {
+      geofmOverlayRef.current?.remove();
+      geofmOverlayRef.current = null;
+      return;
+    }
+
+    const signature = JSON.stringify(features);
+    if (
+      geofmOverlayRef.current?.signature === signature
+      && geofmOverlayRef.current.map === map
+      && geofmOverlayRef.current.provider === mapProvider
+    ) {
+      return;
+    }
+    geofmOverlayRef.current?.remove();
+    geofmOverlayRef.current = null;
+
+    if (mapProvider === 'azure' && window.atlas) {
+      const dataSource = new window.atlas.source.DataSource(`geofm-change-${Date.now()}`);
+      map.sources.add(dataSource);
+      dataSource.add(features);
+
+      const polygonLayer = new window.atlas.layer.PolygonLayer(
+        dataSource,
+        `geofm-polygons-${Date.now()}`,
+        {
+          fillColor: '#ef4444',
+          fillOpacity: 0.34,
+        }
+      );
+      const lineLayer = new window.atlas.layer.LineLayer(
+        dataSource,
+        `geofm-outlines-${Date.now()}`,
+        {
+          strokeColor: '#7f1d1d',
+          strokeWidth: 2,
+        }
+      );
+      map.layers.add([polygonLayer, lineLayer]);
+      geofmOverlayRef.current = {
+        signature,
+        map,
+        provider: 'azure',
+        remove: () => {
+          try { map.layers.remove(polygonLayer); } catch (_) { /* already removed */ }
+          try { map.layers.remove(lineLayer); } catch (_) { /* already removed */ }
+          try { map.sources.remove(dataSource); } catch (_) { /* already removed */ }
+        },
+      };
+      return;
+    }
+
+    if (mapProvider === 'leaflet' && window.L) {
+      const layer = window.L.geoJSON(
+        { type: 'FeatureCollection', features },
+        {
+          style: {
+            color: '#7f1d1d',
+            weight: 2,
+            fillColor: '#ef4444',
+            fillOpacity: 0.34,
+          },
+        }
+      ).addTo(map);
+      geofmOverlayRef.current = {
+        signature,
+        map,
+        provider: 'leaflet',
+        remove: () => {
+          try { layer.remove(); } catch (_) { /* already removed */ }
+        },
+      };
+    }
+  }, [lastChatResponse, map, mapLoaded, mapProvider, selectedModule]);
+
+  useEffect(() => () => {
+    geofmOverlayRef.current?.remove();
+    geofmOverlayRef.current = null;
+  }, [map, mapProvider]);
 
   // Add map update function for bounding box
   // minZoom parameter enforces a minimum zoom level (e.g., 10 for MODIS 1km data)
@@ -4669,6 +4768,21 @@ const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
+    if (module === 'foundation_change') {
+      console.log('MapView: Foundation Change module selected - chat-driven flow');
+      setPinMode(false);
+      setVisionMode(false);
+      if (onModuleSelected) onModuleSelected(module);
+      if (onGeointAnalysis) {
+        onGeointAnalysis({
+          type: 'module_selected',
+          message: '**Foundation Change selected.** Load two HLS epochs, then ask what changed. The GeoFM registry is checked on every turn; PlanAura GPU work still requires approval.'
+        });
+      }
+      setShowModulesMenu(false);
+      return;
+    }
+
     // Handle comparison module - pin-first workflow like other GEOINT modules
     if (module === 'comparison') {
       console.log('MapView: Comparison module selected - enabling pin mode for location selection');
@@ -6144,6 +6258,36 @@ const MapView: React.FC<MapViewProps> = ({
 
                 {/* Site Audit Module */}
                 <div
+                  onClick={() => handleModuleSelect('foundation_change')}
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    border: selectedModule === 'foundation_change' ? '2px solid #0f766e' : '1px solid rgba(0, 0, 0, 0.1)',
+                    background: selectedModule === 'foundation_change' ? 'rgba(15, 118, 110, 0.1)' : 'white',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedModule !== 'foundation_change') {
+                      e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedModule !== 'foundation_change') {
+                      e.currentTarget.style.background = 'white';
+                    }
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f2937', marginBottom: '4px' }}>
+                    Foundation Change
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                    PlanAura contextual change over two loaded HLS epochs
+                  </div>
+                </div>
+
+                {/* Site Audit Module */}
+                <div
                   onClick={() => handleModuleSelect('site_audit')}
                   style={{
                     padding: '12px',
@@ -6342,6 +6486,7 @@ const MapView: React.FC<MapViewProps> = ({
                      selectedModule === 'forecast' ? 'Forecast' :
                      selectedModule === 'site_audit' ? 'Site Intel' :
                      selectedModule === 'resilience' ? 'Resilience' :
+                     selectedModule === 'foundation_change' ? 'Foundation Change' :
                      selectedModule} selected
                 </div>
               )}

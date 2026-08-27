@@ -36,7 +36,9 @@ is exactly one source of truth per action.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -44,6 +46,16 @@ from typing import Any, Dict, Optional
 from .contracts import ActionDecision, AnalysisRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _consume_detached_task(task: asyncio.Task) -> None:
+    """Consume a detached task result after response-path cancellation."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("[LOAD_AND_ANALYZE] detached analysis task failed")
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +381,6 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
         reason: str,
     ) -> Dict[str, Any]:
         loc = decision.location or "the requested area"
-        sq = decision.stac_query or request.question
         return {
             "pipeline_v2": True,
             "action": "LOAD",
@@ -398,6 +409,18 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 # 3) AnalyzeAgent — delegates to the Layer-2 multi-agent set.
 # ---------------------------------------------------------------------------
+
+
+def _has_model_backed_geofm_evidence(structured: Dict[str, Any]) -> bool:
+    """Return whether a GeoFM tool produced completed model evidence."""
+    for tool_name in ("compare_with_geofm", "get_geofm_run"):
+        payload = structured.get(tool_name)
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        result = payload.get("structured")
+        if isinstance(result, dict) and result.get("status") == "complete":
+            return True
+    return False
 
 
 class AnalyzeAgent(Executor):  # type: ignore[misc]
@@ -481,8 +504,23 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
         _tools_used = (
             [s.analyzer for s in plan.steps] if plan else []
         )
-        _data_source = (
+        _catalog_source = (
             "MPC Pro" if getattr(request, "stac_mode", "public") == "pro" else "Public PC"
+        )
+        _data_source = (
+            f"PlanAura + {_catalog_source}"
+            if _has_model_backed_geofm_evidence(response.structured or {})
+            else _catalog_source
+        )
+        _visualizations = [v.model_dump() for v in response.visualizations]
+        _map_data = next(
+            (
+                visualization.get("spec", {}).get("data")
+                for visualization in _visualizations
+                if visualization.get("kind") == "vector_layer"
+                and isinstance(visualization.get("spec", {}).get("data"), dict)
+            ),
+            None,
         )
         return {
             "pipeline_v2": True,
@@ -491,7 +529,8 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
             "plan": plan.model_dump() if plan else None,
             "answer": response.answer,
             "sources": [s.model_dump() for s in response.sources],
-            "visualizations": [v.model_dump() for v in response.visualizations],
+            "visualizations": _visualizations,
+            "map_data": _map_data,
             "structured": {
                 **response.structured,
                 "layer2_engine": "analyst_agent",
@@ -547,6 +586,11 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         self.id = id
         self._load = load_agent
         self._analyze = analyze_agent
+        self._background_tasks: set[asyncio.Task] = set()
+        self._analysis_timeout_seconds = max(
+            1.0,
+            float(os.getenv("LOAD_AND_ANALYZE_TIMEOUT_SECONDS", "45")),
+        )
 
     async def run(
         self,
@@ -577,7 +621,61 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
                 update={"hint": f"load_agent_stac_query:{load_stac_query}"}
             )
 
-        analyze_result = await self._analyze.run(decision, enriched_request, body)
+        analysis_task = asyncio.create_task(
+            self._analyze.run(
+                decision,
+                enriched_request,
+                body,
+            )
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {analysis_task},
+                timeout=self._analysis_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            analysis_task.cancel()
+            self._track_background_analysis(analysis_task)
+            raise
+
+        if analysis_task not in done:
+            analysis_task.cancel()
+            self._track_background_analysis(analysis_task)
+            analysis_status = {
+                "status": "timeout",
+                "timeout_seconds": self._analysis_timeout_seconds,
+            }
+            return self._preserve_load_result(
+                load_result,
+                started,
+                analysis_status,
+            )
+
+        if analysis_task.cancelled():
+            return self._preserve_load_result(
+                load_result,
+                started,
+                {"status": "error", "error_type": "CancelledError"},
+            )
+        try:
+            analyze_result = analysis_task.result()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("AnalyzeAgent raised after LOAD completed")
+            return self._preserve_load_result(
+                load_result,
+                started,
+                {"status": "error", "error_type": type(exc).__name__},
+            )
+
+        analyst_status = (
+            (analyze_result.get("structured") or {}).get("analyst_status") or {}
+        )
+        if analyst_status.get("status") in {"timeout", "error"}:
+            return self._preserve_load_result(
+                load_result,
+                started,
+                analyst_status,
+            )
 
         # ------------------------------------------------------------------
         # G4-FOLLOWUP: LOAD succeeded but ANALYZE wants to clarify.
@@ -648,6 +746,45 @@ class LoadAndAnalyzeAgent(Executor):  # type: ignore[misc]
         analyze_result["structured"] = merged_structured
         analyze_result["elapsed_ms"] = int((time.time() - started) * 1000)
         return analyze_result
+
+    def _track_background_analysis(self, task: asyncio.Task) -> None:
+        """Strongly retain detached analysis until its result is consumed."""
+        self._background_tasks.add(task)
+
+        def finish(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            _consume_detached_task(completed)
+
+        task.add_done_callback(finish)
+
+    @staticmethod
+    def _preserve_load_result(
+        load_result: Dict[str, Any],
+        started: float,
+        analysis_status: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        status = analysis_status.get("status", "error")
+        logger.warning(
+            "[LOAD_AND_ANALYZE] analysis ended with status=%s; "
+            "continuing with deterministic LOAD",
+            status,
+        )
+        load_summary = (load_result.get("answer") or "").strip()
+        note = (
+            "The deeper severity analysis took too long, but the requested "
+            "imagery is still being loaded."
+            if status == "timeout"
+            else "The deeper severity analysis was unavailable, but the "
+            "requested imagery is still being loaded."
+        )
+        load_result["answer"] = (
+            f"{load_summary}\n\n{note}" if load_summary else note
+        )
+        structured = dict(load_result.get("structured") or {})
+        structured["analysis_status"] = dict(analysis_status)
+        load_result["structured"] = structured
+        load_result["elapsed_ms"] = int((time.time() - started) * 1000)
+        return load_result
 
     if _AGENT_FRAMEWORK_AVAILABLE:
         @handler  # type: ignore

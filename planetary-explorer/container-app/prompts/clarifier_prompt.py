@@ -82,6 +82,10 @@ short. Do NOT clarify these:
     here?", "Are there any floods?", "Describe this scene".
   - Well-formed educational questions: "What is NDVI?",
     "How do hurricanes form?", "Tell me about the Amazon rainforest".
+  - Explicit public-web requests: "search the web for the latest Foundry
+    update", "browse the web", "look this up on the web". Set
+    `target_route="contextual"`; never treat the requested web query as a
+    map location.
   - Continuations of an in-progress clarification (the state machine
     handles those — you'll see `pending_clarification=true`).
   - **Pin-bearing turns** (`has_pin=true`): if the user has dropped a pin

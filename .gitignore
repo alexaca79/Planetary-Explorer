@@ -103,6 +103,7 @@ Generated\ Files/
 # NUnit
 *.VisualState.xml
 TestResult.xml
+/testResults.xml
 nunit-*.xml
 
 # Approval Tests result files

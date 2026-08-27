@@ -10,6 +10,7 @@ import { getAuthToken, refreshAuthToken } from './authHelper';
 // But we use it intelligently with a fallback chain
 
 const isDevelopment = import.meta.env.DEV;
+const apiCredentials: RequestCredentials = isDevelopment ? 'omit' : 'include';
 
 // Determine API base URL with intelligent fallback chain:
 // 1. Development: Use localhost backend
@@ -89,6 +90,52 @@ export interface ChatMessage {
   }>;
 }
 
+export interface ChatHistoryAttachment {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+  createdAt: string;
+}
+
+export interface ChatHistorySummary {
+  sessionId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  attachments: ChatHistoryAttachment[];
+}
+
+export interface ChatHistorySession extends ChatHistorySummary {
+  schemaVersion: number;
+  clientRevision: number;
+  messages: ChatMessage[];
+  context: ChatHistoryContext;
+}
+
+export interface ChatHistoryContext {
+  selectedModel?: string;
+  reasoningEffort?: string;
+  selectedModule?: string;
+  selectedDataset?: {
+    id: string;
+    title: string;
+    description?: string;
+  };
+  stacMode?: 'public' | 'pro';
+  pin?: { lat: number; lng: number };
+  map?: Partial<MapContext>;
+}
+
+export interface ChatHistorySnapshot {
+  title?: string;
+  clientRevision?: number;
+  messages: ChatMessage[];
+  context: ChatHistoryContext;
+}
+
 export interface MapContext {
   bounds?: {
     north: number;
@@ -143,6 +190,7 @@ class ApiService {
       this.api = axios.create({
         baseURL: API_BASE || undefined,
         timeout: 300000, // 5 minutes — extreme weather queries via chat can be slow (NetCDF sampling)
+        withCredentials: !isDevelopment,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -418,11 +466,20 @@ class ApiService {
     geointMode?: boolean,
     mapContext?: MapContext,
     selectedModel?: string,
+    reasoningEffort?: string,
+    geointModule?: string,
     partOfSplit?: boolean,
     stacMode?: 'public' | 'pro',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    streamHandlers?: {
+      onTrace?: (evt: any) => void;
+      onConfirmRequest?: (evt: any) => void;
+      onConfirmResolved?: (evt: any) => void;
+      onProgress?: (evt: any) => void;
+      onError?: (err: Error) => void;
+    },
   ): Promise<any> {
-    debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, partOfSplit, stacMode, hasAbortSignal: !!signal });
+    debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, reasoningEffort, geointModule, partOfSplit, stacMode, hasAbortSignal: !!signal });
 
     if (!this.api) {
       console.error('API instance is not initialized');
@@ -436,7 +493,9 @@ class ApiService {
       // Use the QueryRequest format for /query endpoint
       const requestData: any = {
         query: message,
-        model: selectedModel || 'gpt-5',  // Default to GPT-5
+        ...(selectedModel && { model: selectedModel }),
+        ...(selectedModel && reasoningEffort && { reasoning_effort: reasoningEffort }),
+        ...(geointModule && { geoint_module: geointModule }),
         preferences: {
           interface_type: 'planetary_explorer',
           data_source: 'planetary_computer',
@@ -542,6 +601,10 @@ class ApiService {
 
       debugLog('Making query request', { endpoint, requestData });
 
+      if (streamHandlers) {
+        return await this.streamQuery(requestData, streamHandlers, signal);
+      }
+
       const response = await this.api.post(endpoint, requestData, { signal });
       debugLog('Query response received', { status: response.status, dataKeys: Object.keys(response.data || {}) });
 
@@ -563,7 +626,7 @@ class ApiService {
     } catch (error: any) {
       // If the caller aborted via AbortController, surface that as a
       // distinct error so the UI can drop the result silently.
-      if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
+      if (error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED' || error?.message === 'canceled') {
         const cancelErr: any = new Error('Request cancelled by user.');
         cancelErr.name = 'CanceledError';
         cancelErr.cancelled = true;
@@ -578,6 +641,97 @@ class ApiService {
 
       throw new Error('Failed to send message. Please try again.');
     }
+  }
+
+  private async streamQuery(
+    requestData: Record<string, any>,
+    handlers: {
+      onTrace?: (evt: any) => void;
+      onConfirmRequest?: (evt: any) => void;
+      onConfirmResolved?: (evt: any) => void;
+      onProgress?: (evt: any) => void;
+      onError?: (err: Error) => void;
+    },
+    signal?: AbortSignal,
+  ): Promise<any> {
+    const baseURL = this.api?.defaults.baseURL || '';
+    const url = `${baseURL.replace(/\/$/, '')}/api/query/stream`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = await getAuthToken().catch(() => null);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const body = JSON.stringify(requestData);
+    const send = () => fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal,
+        credentials: apiCredentials,
+      });
+
+    let response = await send();
+    if (response.status === 401) {
+      const refreshedToken = await refreshAuthToken();
+      if (refreshedToken) {
+        headers.Authorization = `Bearer ${refreshedToken}`;
+        response = await send();
+      }
+    }
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Query stream failed: HTTP ${response.status} ${detail}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: any = null;
+    let streamError: Error | null = null;
+
+    const flushEvent = (block: string) => {
+      const lines = block.split(/\r?\n/);
+      let eventName = 'message';
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (dataLines.length === 0) return;
+      const raw = dataLines.join('\n');
+      let payload: any;
+      try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+      if (eventName === 'error') {
+        streamError = new Error(payload?.error || raw);
+        handlers.onError?.(streamError);
+        return;
+      }
+      if (payload?.type === 'tool_call' || payload?.type === 'tool_result') {
+        handlers.onTrace?.(payload);
+      } else if (payload?.type === 'confirm_request') {
+        handlers.onConfirmRequest?.(payload);
+      } else if (payload?.type === 'confirm_resolved') {
+        handlers.onConfirmResolved?.(payload);
+      } else if (payload?.type === 'query_result') {
+        finalResult = payload.payload;
+      } else {
+        handlers.onProgress?.(payload);
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      let index: number;
+      while ((index = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        if (block.trim()) flushEvent(block);
+      }
+    }
+    if (buffer.trim()) flushEvent(buffer);
+    if (streamError) throw streamError;
+    if (!finalResult) throw new Error('Query stream ended without a final result.');
+    return finalResult;
   }
 
   async sendEnhancedChatMessage(
@@ -1017,6 +1171,79 @@ class ApiService {
       top_k: topK,
     });
     return res.data?.results || [];
+  }
+
+  async listChatSessions(): Promise<ChatHistorySummary[]> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get('/api/chat-history/sessions');
+    return response.data?.sessions || [];
+  }
+
+  async getChatSession(sessionId: string): Promise<ChatHistorySession> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return response.data;
+  }
+
+  async saveChatSession(
+    sessionId: string,
+    snapshot: ChatHistorySnapshot,
+  ): Promise<ChatHistorySession> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.put(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+      snapshot,
+    );
+    return response.data;
+  }
+
+  async deleteChatSession(sessionId: string): Promise<void> {
+    if (!this.api) throw new Error('API service not initialized');
+    await this.api.delete(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}`,
+    );
+  }
+
+  async uploadChatFile(sessionId: string, file: File): Promise<ChatHistoryAttachment> {
+    if (!this.api) throw new Error('API service not initialized');
+    const form = new FormData();
+    form.append('file', file);
+    const response = await this.api.post(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files`,
+      form,
+      { headers: { 'Content-Type': undefined } },
+    );
+    return response.data;
+  }
+
+  async downloadChatFile(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<Blob> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(attachmentId)}`,
+      { responseType: 'blob' },
+    );
+    return response.data;
+  }
+
+  async deleteChatFile(sessionId: string, attachmentId: string): Promise<void> {
+    if (!this.api) throw new Error('API service not initialized');
+    await this.api.delete(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(attachmentId)}`,
+    );
+  }
+
+  async exportChatSession(sessionId: string): Promise<Blob> {
+    if (!this.api) throw new Error('API service not initialized');
+    const response = await this.api.get(
+      `/api/chat-history/sessions/${encodeURIComponent(sessionId)}/export`,
+      { responseType: 'blob' },
+    );
+    return response.data;
   }
 
   // ------------------------------------------------------------------

@@ -3,31 +3,94 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "environmentName": {
-      "value": "planetaryexplorer"
+      "value": "${AZURE_ENV_NAME}"
     },
     "location": {
-      "value": "eastus2"
+      "value": "${AZURE_LOCATION}"
     },
     "cloudEnvironment": {
       "value": "Commercial"
     },
     "containerImage": {
-      "value": ""
+      "value": "${SERVICE_API_IMAGE_NAME=mcr.microsoft.com/k8se/quickstart:latest}"
+    },
+    "apiContainerAppName": {
+      "value": "${API_CONTAINER_APP_NAME=}"
+    },
+    "existingContainerAppsEnvironmentName": {
+      "value": "${EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME=}"
+    },
+    "deployApiContainer": {
+      "value": "${DEPLOY_API_CONTAINER=true}"
+    },
+    "existingApiUrl": {
+      "value": "${API_CONTAINER_APP_URL=}"
+    },
+    "frontendWebAppName": {
+      "value": "${AZURE_WEB_APP_NAME=}"
+    },
+    "frontendAppServicePlanName": {
+      "value": "${AZURE_APP_SERVICE_PLAN_NAME=}"
+    },
+    "frontendUrl": {
+      "value": "${FRONTEND_URL=}"
+    },
+    "deployFrontend": {
+      "value": "${DEPLOY_FRONTEND=true}"
     },
     "deployAIFoundry": {
       "value": true
+    },
+    "agentProjectName": {
+      "value": "${AGENT_PROJECT_NAME=planetary-explorer-agents}"
+    },
+    "deployGpt5": {
+      "value": false
+    },
+    "deployGpt56": {
+      "value": false
+    },
+    "deployEmbeddingModel": {
+      "value": true
+    },
+    "deployGeoFm": {
+      "value": "${DEPLOY_GEOFM=false}"
+    },
+    "deployGeoFmServices": {
+      "value": "${DEPLOY_GEOFM_SERVICES=true}"
+    },
+    "geoFmMcpApiKey": {
+      "value": "${GEOFM_MCP_API_KEY=}"
+    },
+    "geoFmOwnerSigningKey": {
+      "value": "${GEOFM_OWNER_SIGNING_KEY=}"
+    },
+    "deployWebSearchMcp": {
+      "value": "${DEPLOY_WEB_SEARCH_MCP=false}"
+    },
+    "webSearchFoundryAccountName": {
+      "value": "${WEB_SEARCH_FOUNDRY_ACCOUNT_NAME=}"
+    },
+    "webSearchFoundryProjectEndpoint": {
+      "value": "${WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT=}"
+    },
+    "webSearchMcpApiKey": {
+      "value": "${WEB_SEARCH_MCP_API_KEY=}"
     },
     "deployBotService": {
       "value": false
     },
     "enableAuthentication": {
-      "value": false
+      "value": "${ENABLE_AUTHENTICATION=false}"
+    },
+    "publicDemoMode": {
+      "value": "${PUBLIC_DEMO_MODE=false}"
     },
     "microsoftEntraClientId": {
-      "value": ""
+      "value": "${MICROSOFT_ENTRA_CLIENT_ID=}"
     },
     "microsoftEntraTenantId": {
-      "value": ""
+      "value": "${MICROSOFT_ENTRA_TENANT_ID=}"
     },
     "microsoftEntraClientSecret": {
       "value": ""

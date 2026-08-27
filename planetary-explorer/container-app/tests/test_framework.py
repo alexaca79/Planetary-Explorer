@@ -6,12 +6,12 @@ fakes for the MCP underlying client and a stub LLM. Hermetic.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 
 from _framework import FanOutExecutor, merge_with_trace
 from _framework.executors import CriticExecutor, CriticVerdict, PlannerExecutor
+from agents.analyst_agent.analyst_agent import _serialize_tool_result_for_model
 from mcp_runtime import (
     PermissionTier,
     TracedMcpClient,
@@ -37,6 +37,11 @@ from mcp_runtime.trace_bus import emit as emit_trace
         ("create_personal_stac_collection", PermissionTier.WRITE),
         ("configure_collection_mosaic_definitions", PermissionTier.WRITE),
         ("ingest_stac_item", PermissionTier.WRITE),
+        ("geofm_compare_epochs", PermissionTier.WRITE),
+        ("geofm_retry_run", PermissionTier.WRITE),
+        ("geofm_embed_aoi", PermissionTier.WRITE),
+        ("geofm_cancel_run", PermissionTier.DESTRUCTIVE),
+        ("geofm_get_run", PermissionTier.READ),
         ("list_mpc_stac_collections", PermissionTier.READ),
         ("get_personal_collection_details", PermissionTier.READ),
         ("search_stac_items", PermissionTier.READ),
@@ -105,6 +110,116 @@ async def test_traced_client_blocks_destructive_when_confirm_denies():
 
 
 @pytest.mark.asyncio
+async def test_given_denied_write_when_traced_then_terminal_result_is_emitted():
+    # Arrange
+    events: list[dict] = []
+
+    async def deny(_entry):
+        return False
+
+    async def listener(event):
+        events.append(event)
+
+    token = set_listener(listener)
+    client = TracedMcpClient(server_id="test", underlying=_FakeMpc(), confirm=deny)
+
+    # Act
+    try:
+        with pytest.raises(PermissionError):
+            await client.call("geofm_compare_epochs", {})
+    finally:
+        reset_listener(token)
+
+    # Assert
+    assert [event["type"] for event in events] == ["tool_call", "tool_result"]
+    assert events[-1]["error"] == "denied_by_user"
+    assert events[-1]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_given_signed_tool_call_when_traced_then_signature_is_redacted():
+    # Arrange
+    events: list[dict] = []
+    fake = _FakeMpc()
+
+    async def listener(event):
+        events.append(event)
+
+    token = set_listener(listener)
+    client = TracedMcpClient(server_id="test", underlying=fake)
+
+    # Act
+    try:
+        await client.call(
+            "geofm_get_run",
+            {"run_id": "run-1", "owner_signature": "signed-secret"},
+        )
+    finally:
+        reset_listener(token)
+
+    # Assert
+    assert events[0]["args"]["owner_signature"] == "<redacted>"
+    assert client.buffer[0].args["owner_signature"] == "<redacted>"
+    assert fake.calls[0][1]["owner_signature"] == "signed-secret"
+
+
+@pytest.mark.asyncio
+async def test_given_signed_artifact_when_traced_then_sas_query_is_redacted():
+    # Arrange
+    class SignedArtifactClient:
+        async def call_raw(self, _tool, _args):
+            return {
+                "uri": "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+            }
+
+    client = TracedMcpClient(server_id="test", underlying=SignedArtifactClient())
+
+    # Act
+    await client.call("geofm_get_run", {"run_id": "run-1"})
+
+    # Assert
+    assert "sig=secret" not in (client.buffer[0].response_summary or "")
+    assert "?<redacted>" in (client.buffer[0].response_summary or "")
+
+
+def test_given_signed_artifact_when_serialized_for_model_then_query_is_redacted():
+    # Arrange
+    signed_url = "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+
+    # Act
+    output = _serialize_tool_result_for_model(
+        {"artifacts": [{"kind": "raster", "uri": signed_url}]}
+    )
+
+    # Assert
+    assert "sig=secret" not in output
+    assert "?<redacted>" in output
+
+
+@pytest.mark.asyncio
+async def test_given_sas_in_arguments_or_error_when_traced_then_query_is_redacted():
+    # Arrange
+    signed_url = "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+
+    class FailingClient:
+        async def call_raw(self, _tool, _args):
+            raise RuntimeError(f"download failed for {signed_url}")
+
+    client = TracedMcpClient(server_id="test", underlying=FailingClient())
+
+    # Act
+    with pytest.raises(RuntimeError):
+        await client.call("geofm_get_run", {"artifact_uri": signed_url})
+
+    # Assert
+    entry = client.buffer[0]
+    assert "sig=secret" not in str(entry.args)
+    assert "sig=secret" not in (entry.error or "")
+    assert "?<redacted>" in entry.args["artifact_uri"]
+    assert "?<redacted>" in (entry.error or "")
+
+
+@pytest.mark.asyncio
 async def test_traced_client_allows_write_when_confirm_approves():
     fake = _FakeMpc()
     approvals = []
@@ -131,6 +246,39 @@ async def test_traced_client_records_error_and_propagates():
     entry = client.buffer[0]
     assert entry.ok is False
     assert "kaboom" in (entry.error or "")
+
+
+def test_traced_client_builds_geofm_client_when_enabled(monkeypatch):
+    # Arrange
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
+    # Act
+    client = TracedMcpClient.from_geofm(turn_id="turn-1")
+    second_client = TracedMcpClient.from_geofm(turn_id="turn-2")
+
+    # Assert
+    assert client is not None
+    assert second_client is not None
+    assert client.server_id == "geofm"
+    assert client.underlying is not second_client.underlying
+
+
+def test_registry_discovers_geofm_only_when_enabled(monkeypatch):
+    # Arrange
+    from mcp_runtime.registry import McpRegistry
+
+    monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
+    monkeypatch.setenv("GEOFM_ENABLED", "false")
+
+    # Act
+    disabled = McpRegistry.discover()
+    monkeypatch.setenv("GEOFM_ENABLED", "true")
+    enabled = McpRegistry.discover()
+
+    # Assert
+    assert disabled.get("geofm") is None
+    assert enabled.get("geofm") is not None
+    assert enabled.get("geofm").api_key_env == "GEOFM_MCP_API_KEY"
 
 
 # ---------------------------------------------------------------------------

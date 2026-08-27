@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import './HealthCheckInfo.css';
 import { authenticatedFetch } from '../services/authHelper';
+import type { FoundationModelsHealth } from './FoundationModelsInfo';
 
 interface HealthCheckData {
   status: string;
@@ -11,7 +12,7 @@ interface HealthCheckData {
   message?: string;
   version?: string;
   basic_checks?: {
-    semantic_kernel?: boolean;
+    agent_framework?: boolean;
     geoint?: boolean;
     azure_openai_endpoint?: boolean;
     azure_openai_api_key?: boolean;
@@ -24,11 +25,13 @@ interface HealthCheckData {
     azure_openai?: { status: string; endpoint?: string; model?: string; available_models?: string[] };
     stac_api?: { status: string; api_url?: string };
     azure_maps?: { status: string };
+    geospatial_foundation_models?: FoundationModelsHealth;
   };
   connectivity_tests?: {
     azure_openai?: { status: string; endpoint?: string; model?: string; available_models?: string[] };
     stac_api?: { status: string; api_url?: string };
     azure_maps?: { status: string };
+    geospatial_foundation_models?: FoundationModelsHealth;
   };
 }
 
@@ -169,10 +172,42 @@ const HealthCheckInfo: React.FC<HealthCheckInfoProps> = ({
                       {isServiceOk(svc.azure_maps?.status) ? 'Connected' : 'Disconnected'}
                     </span>
                   </div>
+
+                  <div className="health-status-item">
+                    <span className="health-label">GeoFM MCP:</span>
+                    <span className={`health-value ${svc.geospatial_foundation_models?.connected ? 'success' : svc.geospatial_foundation_models?.enabled ? 'error' : 'warning'}`}>
+                      {svc.geospatial_foundation_models?.connected ? 'Connected' : svc.geospatial_foundation_models?.enabled ? 'Disconnected' : 'Not enabled'}
+                    </span>
+                  </div>
                 </>
               );
             })()}
           </div>
+
+          {(() => {
+            const svc = healthData.checks || healthData.connectivity_tests || {};
+            const geofm = svc.geospatial_foundation_models;
+            if (!geofm?.enabled) return null;
+            return (
+              <div className="health-section">
+                <div className="health-section-title">Geospatial AI</div>
+                <div className="health-status-item">
+                  <span className="health-label">Models registered:</span>
+                  <span className={`health-value ${geofm.connected ? 'success' : 'error'}`}>{geofm.models.length}</span>
+                </div>
+                <div className="health-status-item">
+                  <span className="health-label">Analysis tools:</span>
+                  <span className={`health-value ${geofm.connected ? 'success' : 'error'}`}>{geofm.tool_count}</span>
+                </div>
+                {geofm.models.map((model) => (
+                  <div className="health-status-item" key={`${model.model_id}-${model.model_revision}`}>
+                    <span className="health-label">{model.model_id}:</span>
+                    <span className={`health-value ${geofm.connected ? 'success' : 'error'}`}>{geofm.connected ? 'Connected' : 'Disconnected'}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           <div className="health-section">
             <div className="health-section-title">Last Check</div>

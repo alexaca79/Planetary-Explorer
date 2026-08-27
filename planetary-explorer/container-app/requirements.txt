@@ -8,27 +8,17 @@ uvicorn[standard]>=0.24.0
 # here so every build picks it up regardless of which extras pull it in.
 python-multipart>=0.0.9
 
-# Semantic Kernel — RETIRED (Wave 5). Replaced by sk_shim.py, a minimal
-# AsyncAzureOpenAI-backed compatibility layer that mirrors the SK API
-# surface used by semantic_translator.py without the runtime dependency.
-# semantic-kernel>=1.0.0,<2.0.0
-
 # Azure SDK dependencies - Updated to stable versions
 azure-identity>=1.15.0
 azure-core>=1.29.0
 azure-ai-projects>=1.0.0
 azure-ai-agents>=1.1.0
+azure-cosmos>=4.9.0,<5.0.0
+azure-storage-blob>=12.24.0,<13.0.0
 
-# Microsoft Agent Framework — CORE ONLY (no [all] extras).
-# Used by the ClarifierDecider Executor (agents/clarifier_agent/Executors/) so
-# the routing pipeline can be composed into a WorkflowBuilder graph. We pin
-# the *core* package only because `agent-framework[all]` drags in dozens of
-# optional integrations (chatkit, openai-agents, mem0, redis, durabletask,
-# foundry-local, copilotstudio, …) which forces scipy backtracking and broke
-# the Docker build in commit 0e607a2. The container-app code paths only need
-# the Executor / WorkflowBuilder / handler primitives, all of which live in
-# agent-framework-core.
-agent-framework-core>=1.0.0b1
+# Microsoft Agent Framework. Keep core and the Azure OpenAI provider aligned.
+agent-framework-core==1.10.0
+agent-framework-openai==1.10.0
 
 # HTTP client libraries - Pinned versions for stability
 aiohttp>=3.9.0,<4.0.0
@@ -68,12 +58,11 @@ numpy>=1.24.0,<2.0.0
 
 # Data processing - Pydantic v2 for compatibility
 pydantic>=2.5.0,<3.0.0
-# Pin openai to 1.x — pipeline/_aoai.py uses azure_ad_token_provider which is
-# rejected by AsyncAzureOpenAI's credential validation in openai 2.x.
-openai>=1.30.0,<2.0.0
+# MAF 1.10 imports response types introduced in OpenAI 2.54.
+openai>=2.54.0,<3.0.0
 structlog>=23.2.0
 
-# Additional dependencies for SK 1.x and Azure Functions deployment
+# Additional dependencies for Agent Framework and Azure Functions deployment
 nest-asyncio>=1.5.0
 typing-extensions>=4.8.0
 scipy>=1.11.0,<2.0.0
@@ -83,8 +72,8 @@ cloudevents>=1.9.0
 defusedxml>=0.7.0
 jinja2>=3.1.0
 openapi-core>=0.18.0
-opentelemetry-api>=1.20.0
-opentelemetry-sdk>=1.20.0
+opentelemetry-api>=1.39.0,<2.0.0
+opentelemetry-sdk>=1.39.0,<2.0.0
 prance>=0.22.0
 pybars4>=0.9.0
 pydantic-settings>=2.0.0

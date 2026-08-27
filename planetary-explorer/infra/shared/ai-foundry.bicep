@@ -10,7 +10,13 @@ param sku object = {
 param deployModels bool = true
 
 @description('Deploy GPT-5 model (requires GlobalStandard SKU quota — set to false if unavailable in your region)')
-param deployGpt5 bool = true
+param deployGpt5 bool = false
+
+@description('Deploy all GPT-5.6 variants (requires GlobalStandard SKU quota — set to false if unavailable in your region)')
+param deployGpt56 bool = false
+
+@description('Deploy the text embedding model used by search and retrieval workloads')
+param deployEmbeddingModel bool = true
 
 @description('Deploy AI Agent Service (Hub + Project)')
 param deployAgentService bool = true
@@ -59,7 +65,7 @@ resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
     // Both privatelink.cognitiveservices.azure.com AND privatelink.openai.azure.com
     // DNS zones must exist for the PE to work (OpenAI SDK uses the openai subdomain).
     publicNetworkAccess: enablePrivateEndpoints ? 'Disabled' : 'Enabled'
-    disableLocalAuth: false  // listKeys() in main.bicep needs local auth; managed-identity path is TODO
+    disableLocalAuth: true
     networkAcls: {
       defaultAction: enablePrivateEndpoints ? 'Deny' : 'Allow'
     }
@@ -128,12 +134,75 @@ resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   ]
 }
 
+// GPT-5.6 reasoning models. Keep deployment names equal to model IDs so the
+// API can derive supported reasoning controls from live deployment names.
+resource gpt56SolDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployGpt56) {
+  parent: aiFoundry
+  name: 'gpt-5.6-sol'
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 10
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-5.6-sol'
+      version: '2026-07-09'
+    }
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+  }
+  dependsOn: [
+    gpt4oMiniDeployment
+    gpt5Deployment
+  ]
+}
+
+resource gpt56TerraDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployGpt56) {
+  parent: aiFoundry
+  name: 'gpt-5.6-terra'
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 10
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-5.6-terra'
+      version: '2026-07-09'
+    }
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+  }
+  dependsOn: [
+    gpt56SolDeployment
+  ]
+}
+
+resource gpt56LunaDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployGpt56) {
+  parent: aiFoundry
+  name: 'gpt-5.6-luna'
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 10
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-5.6-luna'
+      version: '2026-07-09'
+    }
+    versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
+  }
+  dependsOn: [
+    gpt56TerraDeployment
+  ]
+}
+
 // Deploy text-embedding-3-small for general vector embeddings (Fabric semantic search, retrieval).
 // Cheap (~$0.02/1M tokens).
 // IMPORTANT: ARM rejects parallel writes to children of the same Cognitive
 // Services account with RequestConflict. We serialize this on gpt5Deployment
 // (instead of gpt4oMiniDeployment) so embedding never races against gpt-5.
-resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployEmbeddingModel) {
   parent: aiFoundry
   name: 'text-embedding-3-small'
   sku: {
@@ -151,6 +220,7 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   dependsOn: [
     gpt4oMiniDeployment
     gpt5Deployment
+    gpt56LunaDeployment
   ]
 }
 // Additional models from Model Catalog (Llama, Phi, etc.) can be added as needed
@@ -263,6 +333,19 @@ resource agentProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-
   ]
 }
 
+resource agentProjectFoundryUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAgentService) {
+  name: guid(aiFoundry.id, agentProjectName, 'FoundryUser')
+  scope: aiFoundry
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+    )
+    principalId: agentProject.?identity.?principalId ?? ''
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Account-level capability host (enables Agent Service on the account)
 resource accountCapabilityHost 'Microsoft.CognitiveServices/accounts/capabilityHosts@2025-04-01-preview' = if (deployAgentService) {
   name: 'default'
@@ -272,6 +355,7 @@ resource accountCapabilityHost 'Microsoft.CognitiveServices/accounts/capabilityH
   }
   dependsOn: [
     agentProject
+    agentProjectFoundryUserRole
   ]
 }
 

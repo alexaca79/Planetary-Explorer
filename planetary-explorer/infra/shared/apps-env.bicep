@@ -11,11 +11,20 @@ param infrastructureSubnetId string = ''
 @description('Whether the Container Apps Environment uses internal-only ingress (no public IP)')
 param internal bool = false
 
+@description('Add a scale-to-zero serverless GPU workload profile for GeoFM inference.')
+param enableGeoFmGpu bool = false
+
+@description('Friendly workload profile name selected by the GeoFM worker Container App.')
+param geoFmGpuProfileName string = 'geofm-gpu'
+
+@description('Region-supported serverless GPU profile type. Validate with az containerapp env workload-profile list-supported before deployment.')
+param geoFmGpuProfileType string = 'Consumption-GPU-NC8as-T4'
+
 resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = {
   name: logAnalyticsWorkspaceName
 }
 
-resource appsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource appsEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' = {
   name: name
   location: location
   tags: tags
@@ -34,12 +43,17 @@ resource appsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
       infrastructureSubnetId: infrastructureSubnetId
       internal: internal
     } : null
-    workloadProfiles: [
+    workloadProfiles: concat([
       {
         name: 'Consumption'
         workloadProfileType: 'Consumption'
       }
-    ]
+    ], enableGeoFmGpu ? [
+      {
+        name: geoFmGpuProfileName
+        workloadProfileType: geoFmGpuProfileType
+      }
+    ] : [])
   }
 }
 
