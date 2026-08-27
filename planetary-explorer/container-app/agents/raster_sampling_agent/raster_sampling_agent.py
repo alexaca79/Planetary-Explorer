@@ -12,7 +12,9 @@ this agent so the surface area looks like every other Layer-2 agent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import time
 from typing import Optional
 
@@ -25,6 +27,29 @@ _KNOWN_DATA_TYPES = {
     "sst", "temperature", "elevation", "ndvi", "burn", "fire", "water",
     "snow", "sar", "biomass", "reflectance", "climate", "auto",
 }
+
+
+def _parse_numeric_sample(text: str) -> tuple[float | None, str | None, str | None]:
+    """Extract the first displayed value, metric, and unit from tool markdown."""
+    metric_matches = re.findall(r"\*\*([^*\n:]+(?:\s+\([^*\n]+\))?):\*\*", text)
+    metric = metric_matches[-1].strip() if metric_matches else None
+
+    ndvi_match = re.search(
+        r"\*\*NDVI Value:\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\*\*",
+        text,
+    )
+    if ndvi_match:
+        return float(ndvi_match.group(1)), metric or "NDVI", ""
+
+    value_match = re.search(
+        r"-\s*(?:Converted|Value|Class):\s*\*\*"
+        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*([^*\n]*)\*\*",
+        text,
+    )
+    if not value_match:
+        return None, metric, None
+    unit = value_match.group(2).strip() or None
+    return float(value_match.group(1)), metric, unit
 
 
 class RasterSamplingAgent:
@@ -69,14 +94,18 @@ class RasterSamplingAgent:
             data_type = "auto"
 
         try:
-            set_session_context(
-                screenshot_base64=payload.screenshot_b64,
-                map_bounds=bounds,
-                stac_items=list(payload.stac_items),
-                loaded_collections=list(payload.loaded_collections),
-                tile_urls=list(payload.tile_urls),
-            )
-            raw: str = sample_raster_value(data_type=data_type)
+            def run_sample() -> str:
+                set_session_context(
+                    screenshot_base64=payload.screenshot_b64,
+                    map_bounds=bounds,
+                    stac_items=list(payload.stac_items),
+                    loaded_collections=list(payload.loaded_collections),
+                    tile_urls=list(payload.tile_urls),
+                    stac_mode=payload.stac_mode,
+                )
+                return sample_raster_value(data_type=data_type)
+
+            raw = await asyncio.to_thread(run_sample)
         except Exception as exc:
             logger.warning("[RASTER_SAMPLING_AGENT] sample_raster_value failed: %s", exc)
             return RasterSamplingResult(
@@ -92,6 +121,7 @@ class RasterSamplingAgent:
         success = bool(text) and not text.lower().startswith("no ")
 
         sources = [{"title": cid, "kind": "raster"} for cid in payload.loaded_collections[:3]]
+        value, metric, unit = _parse_numeric_sample(text)
 
         return RasterSamplingResult(
             success=success,
@@ -105,6 +135,11 @@ class RasterSamplingAgent:
             structured={
                 "data_type": data_type,
                 "pin": list(payload.pin),
+                "lat": payload.pin[0],
+                "lng": payload.pin[1],
+                "value": value,
+                "metric": metric,
+                "unit": unit,
                 "loaded_collections": list(payload.loaded_collections),
             },
             elapsed_ms=int((time.time() - started) * 1000),

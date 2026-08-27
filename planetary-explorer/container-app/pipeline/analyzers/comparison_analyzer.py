@@ -83,24 +83,33 @@ async def _sample_pins_inline(
     if len(request.pins) < 2 or not request.loaded_collections:
         return [], None, None
     try:
-        from agents.vision_tools import sample_raster_value, set_session_context  # type: ignore
+        from agents.raster_sampling_agent import (
+            RasterSamplingInput,
+            get_raster_sampling_agent,
+        )
     except Exception as exc:  # pragma: no cover
-        logger.warning("[COMPARISON] vision_tools unavailable: %s", exc)
+        logger.warning("[COMPARISON] raster sampling agent unavailable: %s", exc)
         return [], None, None
 
     samples: list[dict[str, Any]] = []
     metric: str | None = None
     unit: str | None = None
+    agent = get_raster_sampling_agent()
     for lat, lng in request.pins[:5]:
         try:
-            set_session_context(
-                request.session_id,
-                map_bounds={"pin_lat": lat, "pin_lng": lng},
-                stac_items=request.stac_items,
-                tile_urls=request.tile_urls,
-            )
-            sampled = await sample_raster_value()  # type: ignore[misc]
-            if not isinstance(sampled, dict) or not sampled.get("success"):
+            result = await agent.run(RasterSamplingInput(
+                question=request.question,
+                pin=(lat, lng),
+                bbox=request.bbox,
+                stac_items=list(request.stac_items),
+                loaded_collections=list(request.loaded_collections),
+                tile_urls=list(request.tile_urls),
+                screenshot_b64=request.screenshot_b64,
+                stac_mode="pro" if request.stac_mode == "pro" else "public",
+                data_type="auto",
+            ))
+            sampled = result.structured
+            if not result.success:
                 continue
             val = sampled.get("value")
             if not isinstance(val, (int, float)):
@@ -113,7 +122,7 @@ async def _sample_pins_inline(
                     "value": float(val),
                 }
             )
-            metric = metric or sampled.get("metric") or sampled.get("asset_name")
+            metric = metric or sampled.get("metric")
             unit = unit or sampled.get("unit")
         except Exception as exc:  # noqa: BLE001
             logger.info("[COMPARISON] inline sample failed at %s,%s: %s", lat, lng, exc)

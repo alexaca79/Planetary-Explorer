@@ -8,9 +8,10 @@ This agent:
 1. Maintains conversation memory via AgentThread (persistent threads)
 2. Has access to 13 vision analysis tools via FunctionTool
 3. Uses LLM-driven tool selection (replaces forced keyword routing)
-4. Sets module-level session context for standalone tool functions
+4. Sets request-local session context for standalone tool functions
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -326,6 +327,7 @@ class VisionSession:
     loaded_collections: List[str] = field(default_factory=list)
     tile_urls: List[str] = field(default_factory=list)
     stac_items: List[Dict[str, Any]] = field(default_factory=list)
+    stac_mode: str = "public"
     last_analysis: Optional[str] = None
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -506,6 +508,9 @@ class EnhancedVisionAgent:
                 session.loaded_collections = collections
             if tile_urls:
                 session.tile_urls = tile_urls
+            requested_stac_mode = kwargs.get("stac_mode")
+            if requested_stac_mode in {"public", "pro"}:
+                session.stac_mode = requested_stac_mode
             if stac_items:
                 # Trim to 5 most relevant items (pin-covering first, then closest)
                 # to avoid slow iteration over 10+ tiles during raster sampling
@@ -534,6 +539,7 @@ class EnhancedVisionAgent:
                 stac_items=session.stac_items,
                 loaded_collections=session.loaded_collections,
                 tile_urls=session.tile_urls,
+                stac_mode=session.stac_mode,
             )
             clear_tool_calls()
 
@@ -566,7 +572,7 @@ class EnhancedVisionAgent:
 
                     try:
                         from agents.vision_tools import sample_raster_value as _sample_fn
-                        raw_result = _sample_fn(data_type=data_type)
+                        raw_result = await asyncio.to_thread(_sample_fn, data_type=data_type)
 
                         # Classify: did sampling actually return a value?
                         _fail_indicators = [

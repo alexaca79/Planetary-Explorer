@@ -107,6 +107,9 @@
     "mpcProStacUrl": {
       "value": ""
     },
+    "mpcProAssetHosts": {
+      "value": ""
+    },
     "enablePrivateEndpoints": {
       "value": false
     },

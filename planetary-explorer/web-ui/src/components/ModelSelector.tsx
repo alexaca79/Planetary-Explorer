@@ -82,6 +82,32 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     onReasoningEffortChangeRef.current = onReasoningEffortChange;
   }, [onReasoningEffortChange]);
 
+  useEffect(() => {
+    if (!selectedModel || models.length === 0) return;
+
+    const fallbackModel = models.find((model) => model.isDefault)?.id || models[0].id;
+    const nextModel = models.some((model) => model.id === selectedModel)
+      ? selectedModel
+      : fallbackModel;
+    const capability = capabilities[nextModel] || DEFAULT_CAPABILITY;
+    const nextEffort = selectedReasoningEffort
+      ? capability.reasoning_efforts.includes(selectedReasoningEffort)
+        ? selectedReasoningEffort
+        : capability.default_reasoning_effort
+      : capability.reasoning_efforts.includes(currentReasoningEffortRef.current)
+          ? currentReasoningEffortRef.current
+          : capability.default_reasoning_effort;
+
+    currentModelRef.current = nextModel;
+    currentReasoningEffortRef.current = nextEffort;
+    setCurrentModel(nextModel);
+    setCurrentReasoningEffort(nextEffort);
+    if (nextModel !== selectedModel) onModelChangeRef.current?.(nextModel);
+    if (nextEffort !== selectedReasoningEffort) {
+      onReasoningEffortChangeRef.current?.(nextEffort);
+    }
+  }, [capabilities, models, selectedModel, selectedReasoningEffort]);
+
   // Fetch available models from health endpoint
   useEffect(() => {
     const fetchAvailableModels = async () => {

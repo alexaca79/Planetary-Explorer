@@ -61,6 +61,24 @@ param microsoftEntraClientId string = ''
 @secure()
 param microsoftEntraClientSecret string = ''
 
+@description('Enable durable per-user chat history and downloadable test artifacts.')
+param enableChatHistory bool = false
+
+@description('Keyless Cosmos DB endpoint for chat history.')
+param cosmosChatEndpoint string = ''
+
+@description('Cosmos DB database containing chat sessions.')
+param cosmosChatDatabase string = 'planetary-explorer'
+
+@description('Cosmos DB container containing user-partitioned chat sessions.')
+param cosmosChatContainer string = 'chat-history'
+
+@description('Blob service endpoint for private chat artifact files.')
+param chatArtifactBlobEndpoint string = ''
+
+@description('Private Blob container containing chat artifact files.')
+param chatArtifactContainer string = 'chat-artifacts'
+
 // Cloud environment
 @description('Cloud environment: Commercial or Government')
 @allowed(['Commercial', 'Government'])
@@ -100,9 +118,11 @@ param enableMpcPro bool = false
 @description('STAC API base URL for the private GeoCatalog (MPC Pro). Surfaced to the API container as MPC_PRO_STAC_URL. Empty disables the Pro path even if enableMpcPro=true.')
 param mpcProStacUrl string = ''
 
+@description('Comma-separated exact Azure Storage FQDNs allowed to receive MPC Pro collection SAS tokens. Empty disables SAS signing.')
+param mpcProAssetHosts string = ''
+
 @description('Fabric workspace ID containing the lakehouse the backend queries. Surfaced as FABRIC_LAKEHOUSE_WORKSPACE_ID.')
 param fabricWorkspaceId string = ''
-
 @description('Fabric lakehouse ID inside ``fabricWorkspaceId``. Surfaced as FABRIC_LAKEHOUSE_ID.')
 param fabricLakehouseId string = ''
 
@@ -264,6 +284,38 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: microsoftEntraClientId
             }
             {
+              name: 'PE_FEATURE_CHAT_HISTORY'
+              value: enableChatHistory ? 'true' : 'false'
+            }
+            {
+              name: 'CHAT_HISTORY_STORE'
+              value: enableChatHistory ? 'cosmos' : 'disabled'
+            }
+            {
+              name: 'COSMOS_CHAT_ENDPOINT'
+              value: cosmosChatEndpoint
+            }
+            {
+              name: 'COSMOS_CHAT_DATABASE'
+              value: cosmosChatDatabase
+            }
+            {
+              name: 'COSMOS_CHAT_CONTAINER'
+              value: cosmosChatContainer
+            }
+            {
+              name: 'CHAT_ARTIFACT_STORE'
+              value: enableChatHistory ? 'blob' : 'disabled'
+            }
+            {
+              name: 'CHAT_ARTIFACT_BLOB_ENDPOINT'
+              value: chatArtifactBlobEndpoint
+            }
+            {
+              name: 'CHAT_ARTIFACT_CONTAINER'
+              value: chatArtifactContainer
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
             }
@@ -338,6 +390,10 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               // on the target catalog so the token request succeeds.
               name: 'MPC_PRO_STAC_URL'
               value: mpcProStacUrl
+            }
+            {
+              name: 'MPC_PRO_ASSET_HOSTS'
+              value: mpcProAssetHosts
             }
             {
               // Fabric lakehouse coordinates. Empty values are treated by

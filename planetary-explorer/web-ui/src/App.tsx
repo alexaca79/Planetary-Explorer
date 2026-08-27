@@ -8,6 +8,8 @@ import LandingPage from './components/LandingPage';
 import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
+import type { ChatHistoryContext } from './services/api';
+import { confirmFailedHistoryDiscard, restoredStacMode } from './utils/chatHistory';
 
 const queryClient = new QueryClient();
 
@@ -29,12 +31,14 @@ interface DeploymentFeatures {
   mpcPublic: boolean;
   mpcPro: boolean;
   fabric: boolean;
+  chatHistory: boolean;
 }
 
 const DEFAULT_FEATURES: DeploymentFeatures = {
   mpcPublic: true,
   mpcPro: false,
   fabric: false,
+  chatHistory: false,
 };
 
 function App() {
@@ -64,6 +68,7 @@ function App() {
   // the chat/map view.
 
   const [features, setFeatures] = useState<DeploymentFeatures>(DEFAULT_FEATURES);
+  const [hasUnsavedHistorySnapshot, setHasUnsavedHistorySnapshot] = useState(false);
 
   // Pull deployment feature flags once on mount. We treat any error as
   // "keep the defaults" so the UI stays functional even if the config
@@ -81,6 +86,7 @@ function App() {
           mpcPublic: data.features.mpcPublic !== false,
           mpcPro: !!data.features.mpcPro,
           fabric: !!data.features.fabric,
+          chatHistory: !!data.features.chatHistory,
         };
         setFeatures(next);
         // If Pro is locked out by this deployment but the user had it
@@ -131,10 +137,14 @@ function App() {
   };
 
   const handleReturnToLanding = () => {
+    if (!confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     setAppState({ entered: false, entryTarget: null, selectedDataset: null, chatMode: false, initialQuery: undefined });
   };
 
-  const handleRestartSession = () => {
+  const handleRestartSession = (discardConfirmed = false) => {
+    if (!discardConfirmed && !confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     // Clear chat and dataset selection but stay in the app
     // Force chat component to re-render by updating session key
     setAppState(prev => ({ 
@@ -150,6 +160,21 @@ function App() {
 
   const handleDatasetSelect = (dataset: any) => {
     setAppState(prev => ({ ...prev, selectedDataset: dataset, chatMode: true }));
+  };
+
+  const handleRestoreChatContext = (context: ChatHistoryContext) => {
+    if (context.selectedModel) handleModelChange(context.selectedModel);
+    if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
+    const allowedStacMode = restoredStacMode(context.stacMode, features.mpcPro);
+    if (allowedStacMode) handleStacModeChange(allowedStacMode);
+    setAppState(prev => ({
+      ...prev,
+      selectedDataset: context.selectedDataset
+        ? { ...context.selectedDataset, description: context.selectedDataset.description || '' }
+        : null,
+      chatMode: true,
+      initialQuery: undefined,
+    }));
   };
 
   return (
@@ -189,8 +214,12 @@ function App() {
               onGeointToggle={setGeointMode}
               selectedModel={selectedModel}
               reasoningEffort={reasoningEffort}
+              chatHistoryEnabled={features.chatHistory}
+              onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
+              onHistorySaveRiskChange={setHasUnsavedHistorySnapshot}
+              proEnabled={features.mpcPro}
             />
           </>
         )}
