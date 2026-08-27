@@ -25,7 +25,7 @@ from rasterio.vrt import WarpedVRT
 from rasterio.warp import Resampling, transform_geom
 from shapely.geometry import mapping, shape
 
-from .contracts import RunArtifact, RunRecord, RunStatus
+from .contracts import ClassifyAoiRequest, RunArtifact, RunRecord, RunStatus
 from .jobs import (
     BlobRunRepository,
     NoopDispatcher,
@@ -35,14 +35,42 @@ from .jobs import (
     RunRepositoryError,
     RunService,
 )
-from .model import PlanAuraAdapter, normalize_epochs
-from .policy import ModelDescriptor
+from .model import PlanAuraAdapter, normalize_epochs, normalize_frames
+from .policy import ModelDescriptor, get_class_scheme
 from .stac import StacItemSummary, get_catalog
 
 logger = logging.getLogger(__name__)
 GEOD = Geod(ellps="WGS84")
 UTC = timezone.utc
 ALLOWED_ASSET_HOST_SUFFIXES = (".blob.core.windows.net",)
+SENTINEL2_VALID_SCL_CLASSES = (4, 5, 6, 7, 11)
+SENTINEL3_INVALID_FLAG_MASK = np.uint32(0b0000_0000_0000_0000_1000_0011_0000_0011)
+KMEANS_MAX_ITERATIONS = 50
+OPTICAL_BAND_SEMANTICS = ("BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2")
+CLASSIFICATION_SEED = 20240601
+SPECTRAL_INDEX_BANDS = {
+    "ndvi": ("NIR_NARROW", "RED"),
+    "ndwi": ("GREEN", "NIR_NARROW"),
+    "nbr": ("NIR_NARROW", "SWIR_2"),
+}
+CLASS_NAMING_RULES = {
+    "water": lambda ndvi, ndwi, nbr: ndwi,
+    "open_water": lambda ndvi, ndwi, nbr: ndwi,
+    "water_regime": lambda ndvi, ndwi, nbr: ndwi,
+    "dense_vegetation": lambda ndvi, ndwi, nbr: ndvi,
+    "rough_vegetated": lambda ndvi, ndwi, nbr: ndvi,
+    "volume_scattering_forest": lambda ndvi, ndwi, nbr: ndvi,
+    "vegetated_land_regime": lambda ndvi, ndwi, nbr: ndvi,
+    "sparse_vegetation": lambda ndvi, ndwi, nbr: 0.35 - abs(ndvi - 0.25),
+    "bare_or_built": lambda ndvi, ndwi, nbr: -ndvi,
+    "smooth_bare": lambda ndvi, ndwi, nbr: -ndvi,
+    "bare_land_regime": lambda ndvi, ndwi, nbr: -ndvi,
+    "double_bounce_built": lambda ndvi, ndwi, nbr: -ndvi,
+    "snow_or_ice": lambda ndvi, ndwi, nbr: ndwi - ndvi,
+    "cool_thermal_regime": lambda ndvi, ndwi, nbr: ndwi - ndvi,
+    "burned_or_disturbed": lambda ndvi, ndwi, nbr: -nbr,
+    "warm_thermal_regime": lambda ndvi, ndwi, nbr: -nbr,
+}
 WORKER_ID = f"{os.getenv('HOSTNAME', 'geofm-worker')}:{uuid4()}"
 
 
@@ -268,6 +296,321 @@ def summarize_distance(
     }
 
 
+@dataclass(frozen=True)
+class PreparedScene:
+    """Single-date reflectance or backscatter stack on the fixed output grid."""
+
+    values: np.ndarray
+    reflectance: np.ndarray
+    valid: np.ndarray
+    transform: Affine
+    crs: object
+    aoi_mask: np.ndarray
+
+
+def quality_mask(strategy: str, values: np.ndarray) -> np.ndarray:
+    """Return the per-sensor valid-pixel mask for a quality asset."""
+    if strategy == "hls_fmask":
+        return valid_hls_fmask(values)
+    if strategy == "sentinel2_scl":
+        return valid_sentinel2_scl(values)
+    if strategy == "sentinel1_rtc_mask":
+        return valid_sentinel1_rtc_mask(values)
+    if strategy == "sentinel3_quality_flags":
+        return valid_sentinel3_flags(values)
+    raise WorkerError(f"Unsupported quality mask strategy '{strategy}'.")
+
+
+def valid_sentinel2_scl(values: np.ndarray) -> np.ndarray:
+    """Keep only Sentinel-2 scene classes that carry usable surface reflectance."""
+    keep = np.zeros(values.shape, dtype=bool)
+    for scene_class in SENTINEL2_VALID_SCL_CLASSES:
+        keep |= values == np.uint8(scene_class)
+    return keep
+
+
+def valid_sentinel1_rtc_mask(values: np.ndarray) -> np.ndarray:
+    """Keep Sentinel-1 RTC pixels flagged as valid terrain-corrected backscatter."""
+    return values == np.uint8(1)
+
+
+def valid_sentinel3_flags(values: np.ndarray) -> np.ndarray:
+    """Drop Sentinel-3 pixels carrying any invalid, cloud, or land/water flag."""
+    return (values.astype(np.uint32) & SENTINEL3_INVALID_FLAG_MASK) == 0
+
+
+def prepare_scene(
+    assets: dict[str, str],
+    geometry: dict,
+    recipe: PreprocessingRecipe,
+    descriptor: ModelDescriptor,
+) -> PreparedScene:
+    """Read one scene into the fixed model grid with its per-sensor quality mask."""
+    required = (*recipe.band_assets, recipe.quality_asset)
+    missing = sorted(set(required) - assets.keys())
+    if missing:
+        raise WorkerError(f"Signed STAC assets are incomplete: {', '.join(missing)}.")
+    for key in required:
+        validate_asset_url(assets[key])
+
+    with rasterio.open(assets[recipe.band_assets[0]]) as reference:
+        if reference.crs is None:
+            raise WorkerError("Reference raster has no coordinate reference system.")
+        target_transform, aoi_mask = build_fixed_grid(
+            reference.crs,
+            geometry,
+            resolution_m=recipe.target_resolution_m,
+            tile_size_pixels=recipe.tile_size_pixels,
+        )
+        reflectance, valid = _read_scene(assets, reference.crs, target_transform, recipe)
+        crs = reference.crs
+    raw_values = reflectance[None, :, None, :, :]
+    return PreparedScene(
+        values=normalize_frames(raw_values, descriptor, frames=1),
+        reflectance=reflectance,
+        valid=valid,
+        transform=target_transform,
+        crs=crs,
+        aoi_mask=aoi_mask,
+    )
+
+
+def _read_scene(
+    assets: dict[str, str],
+    target_crs: object,
+    target_transform: Affine,
+    recipe: PreprocessingRecipe,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Warp one scene's bands and quality asset onto the fixed grid."""
+    size = recipe.tile_size_pixels
+    bands: list[np.ma.MaskedArray] = []
+    for key in recipe.band_assets:
+        with (
+            rasterio.open(assets[key]) as source,
+            WarpedVRT(
+                source,
+                crs=target_crs,
+                transform=target_transform,
+                width=size,
+                height=size,
+                resampling=Resampling.bilinear,
+            ) as aligned,
+        ):
+            bands.append(aligned.read(1, masked=True).astype(np.float32))
+    with (
+        rasterio.open(assets[recipe.quality_asset]) as source,
+        WarpedVRT(
+            source,
+            crs=target_crs,
+            transform=target_transform,
+            width=size,
+            height=size,
+            resampling=Resampling.nearest,
+        ) as aligned,
+    ):
+        quality = aligned.read(1, masked=True)
+    valid = quality_mask(recipe.cloud_masking, quality.filled(0).astype(np.uint32))
+    valid &= ~np.ma.getmaskarray(quality)
+    for band in bands:
+        valid &= ~np.ma.getmaskarray(band)
+        valid &= np.asarray(band) != recipe.source_no_data_value
+    valid_fraction = float(np.count_nonzero(valid) / valid.size)
+    if valid_fraction < recipe.minimum_valid_fraction:
+        raise WorkerError(
+            f"Only {valid_fraction:.1%} of the model context is valid; "
+            f"{recipe.minimum_valid_fraction:.1%} is required."
+        )
+    reflectance = np.stack(
+        [
+            np.where(valid, np.asarray(band), recipe.source_no_data_value)
+            for band in bands
+        ],
+        axis=0,
+    ).astype(np.float32)
+    return reflectance, valid
+
+
+def sar_feature_stack(backscatter: np.ndarray) -> np.ndarray:
+    """Derive documented VV, VH, ratio and local-texture features from RTC bands."""
+    if backscatter.shape[0] < 2:
+        raise WorkerError("SAR fusion requires both VV and VH backscatter bands.")
+    vv, vh = backscatter[0], backscatter[1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(vh != 0, vv / vh, 0.0)
+    texture = _local_standard_deviation(vv)
+    return np.stack(
+        [vv, vh, np.nan_to_num(ratio, nan=0.0, posinf=0.0, neginf=0.0), texture],
+        axis=0,
+    ).astype(np.float32)
+
+
+def _local_standard_deviation(values: np.ndarray, window: int = 3) -> np.ndarray:
+    """Compute a fixed-window local standard deviation without extra dependencies."""
+    padded = np.pad(values, window // 2, mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (window, window))
+    return windows.std(axis=(-2, -1)).astype(np.float32)
+
+
+def cluster_embeddings(
+    features: np.ndarray,
+    valid: np.ndarray,
+    *,
+    max_classes: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assign each valid sample to a deterministic k-means cluster with a margin score."""
+    samples = features[:, valid].T.astype(np.float64)
+    if samples.shape[0] < max_classes:
+        raise WorkerError(
+            f"Only {samples.shape[0]} valid samples remain for {max_classes} classes."
+        )
+    finite = np.isfinite(samples).all(axis=1)
+    samples = samples[finite]
+    if samples.shape[0] < max_classes:
+        raise WorkerError("Too few finite samples remain after quality masking.")
+    centroids = _kmeans_plus_plus(samples, max_classes, seed)
+    assignments = np.zeros(samples.shape[0], dtype=np.int64)
+    for _ in range(KMEANS_MAX_ITERATIONS):
+        distances = _squared_distances(samples, centroids)
+        updated = distances.argmin(axis=1)
+        if np.array_equal(updated, assignments) and _ > 0:
+            assignments = updated
+            break
+        assignments = updated
+        for index in range(max_classes):
+            members = samples[assignments == index]
+            if members.size:
+                centroids[index] = members.mean(axis=0)
+    distances = _squared_distances(samples, centroids)
+    ordered = np.sort(distances, axis=1)
+    nearest = np.sqrt(np.maximum(ordered[:, 0], 0.0))
+    runner_up = np.sqrt(np.maximum(ordered[:, 1], 0.0)) if max_classes > 1 else nearest
+    with np.errstate(divide="ignore", invalid="ignore"):
+        margin = np.where(runner_up > 0, 1.0 - nearest / runner_up, 0.0)
+    confidence = np.clip(np.nan_to_num(margin, nan=0.0), 0.0, 1.0)
+
+    labels = np.full(valid.shape, -1, dtype=np.int64)
+    scores = np.zeros(valid.shape, dtype=np.float32)
+    positions = np.flatnonzero(valid.ravel())[finite]
+    labels.ravel()[positions] = assignments
+    scores.ravel()[positions] = confidence.astype(np.float32)
+    return labels, scores
+
+
+def _kmeans_plus_plus(samples: np.ndarray, clusters: int, seed: int) -> np.ndarray:
+    """Seed k-means deterministically so identical requests reproduce identical maps."""
+    generator = np.random.default_rng(seed)
+    centroids = np.empty((clusters, samples.shape[1]), dtype=np.float64)
+    centroids[0] = samples[generator.integers(samples.shape[0])]
+    closest = _squared_distances(samples, centroids[:1]).ravel()
+    for index in range(1, clusters):
+        total = float(closest.sum())
+        if total <= 0:
+            centroids[index] = samples[generator.integers(samples.shape[0])]
+        else:
+            centroids[index] = samples[
+                generator.choice(samples.shape[0], p=closest / total)
+            ]
+        closest = np.minimum(
+            closest,
+            _squared_distances(samples, centroids[index : index + 1]).ravel(),
+        )
+    return centroids
+
+
+def _squared_distances(samples: np.ndarray, centroids: np.ndarray) -> np.ndarray:
+    """Return the squared Euclidean distance from every sample to every centroid."""
+    return np.maximum(
+        (samples**2).sum(axis=1)[:, None]
+        - 2 * samples @ centroids.T
+        + (centroids**2).sum(axis=1)[None, :],
+        0.0,
+    )
+
+
+def spectral_signatures(reflectance: np.ndarray, semantics: tuple[str, ...]) -> dict:
+    """Compute per-pixel indices used to name clusters, keyed by band semantics."""
+    index_of = {name: position for position, name in enumerate(semantics)}
+    signatures: dict[str, np.ndarray] = {}
+
+    def normalized(first: str, second: str) -> np.ndarray | None:
+        if first not in index_of or second not in index_of:
+            return None
+        left = reflectance[index_of[first]].astype(np.float64)
+        right = reflectance[index_of[second]].astype(np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            value = (left - right) / (left + right)
+        return np.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+
+    for name, (first, second) in SPECTRAL_INDEX_BANDS.items():
+        value = normalized(first, second)
+        if value is not None:
+            signatures[name] = value
+    for name in semantics:
+        signatures[f"mean_{name.casefold()}"] = reflectance[index_of[name]].astype(
+            np.float64
+        )
+    return signatures
+
+
+def name_clusters(
+    labels: np.ndarray,
+    signatures: dict,
+    scheme_labels: tuple[dict, ...],
+) -> dict[int, dict]:
+    """Map each cluster to its closest published label using index signatures."""
+    available = list(scheme_labels)
+    named: dict[int, dict] = {}
+    for cluster in sorted({int(value) for value in np.unique(labels) if value >= 0}):
+        members = labels == cluster
+        profile = {
+            name: float(np.nanmean(values[members])) if members.any() else 0.0
+            for name, values in signatures.items()
+        }
+        choice = _closest_label(profile, available)
+        named[cluster] = {
+            "label": choice,
+            "signature": {
+                name: round(value, 4)
+                for name, value in profile.items()
+                if name in SPECTRAL_INDEX_BANDS
+            },
+        }
+    return named
+
+
+def _closest_label(profile: dict, scheme_labels: list[dict]) -> dict:
+    """Pick the published label whose documented rule best fits a cluster profile."""
+    ndvi = profile.get("ndvi", 0.0)
+    ndwi = profile.get("ndwi", 0.0)
+    nbr = profile.get("nbr", 0.0)
+    ranking: list[tuple[float, dict]] = []
+    for label in scheme_labels:
+        name = label["name"]
+        score = CLASS_NAMING_RULES.get(name, lambda *_: 0.0)(ndvi, ndwi, nbr)
+        ranking.append((score, label))
+    ranking.sort(key=lambda entry: entry[0], reverse=True)
+    return ranking[0][1]
+
+
+def execute_run(
+    record: RunRecord,
+    service: RunService,
+    container,
+    *,
+    adapter: PlanAuraAdapter | None = None,
+) -> RunRecord:
+    """Route a claimed run to the executor its request kind requires."""
+    executor = (
+        process_classification_run
+        if isinstance(record.request, ClassifyAoiRequest)
+        else process_run
+    )
+    if adapter is None:
+        return executor(record, service, container)
+    return executor(record, service, container, adapter=adapter)
+
+
 def process_run(
     record: RunRecord,
     service: RunService,
@@ -398,6 +741,398 @@ def process_run(
     )
 
 
+def process_classification_run(
+    record: RunRecord,
+    service: RunService,
+    container,
+    *,
+    adapter: PlanAuraAdapter | None = None,
+) -> RunRecord:
+    """Execute one persisted classification run and complete it with citable artefacts."""
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=5,
+        expected_worker_id=record.worker_id,
+    )
+    descriptor = ModelDescriptor.model_validate(record.selected_model)
+    recipe = PreprocessingRecipe.model_validate(record.preprocessing_recipe)
+    scheme = get_class_scheme(recipe.class_scheme_id or "")
+    catalog = get_catalog()
+    request = record.request
+    try:
+        summaries = [catalog.get_item_summary(item_id) for item_id in request.item_ids]
+        primary_id = next(
+            summary.item_id
+            for summary in summaries
+            if summary.collection == recipe.collection
+        )
+        prepared = prepare_scene(
+            catalog.get_signed_assets(
+                primary_id, (*recipe.band_assets, recipe.quality_asset)
+            ),
+            request.geometry,
+            recipe,
+            descriptor,
+        )
+        fusion = _prepare_fusion_scene(catalog, summaries, request, recipe, descriptor)
+    except WorkerError:
+        raise
+    except StopIteration as exc:
+        raise WorkerError("No source item matches the admitted collection.") from exc
+    except Exception as exc:
+        raise RetriableWorkerError("Source imagery could not be prepared.") from exc
+    if service.get(record.run_id).status is RunStatus.CANCELLED:
+        return service.get(record.run_id)
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=35,
+        expected_worker_id=record.worker_id,
+    )
+    try:
+        embeddings = (adapter or PlanAuraAdapter(descriptor)).embed(
+            (fusion or prepared).values
+        )
+    except WorkerError:
+        raise
+    except Exception as exc:
+        raise RetriableWorkerError("PlanAura inference could not start.") from exc
+
+    features = _build_feature_grid(embeddings, prepared, recipe, fusion)
+    analysable = prepared.valid & prepared.aoi_mask
+    labels, confidence = cluster_embeddings(
+        features,
+        analysable,
+        max_classes=recipe.max_classes or len(scheme.labels),
+        seed=CLASSIFICATION_SEED,
+    )
+    minimum_confidence = recipe.minimum_confidence or 0.0
+    labels = np.where(confidence >= minimum_confidence, labels, -1)
+    if service.get(record.run_id).status is RunStatus.CANCELLED:
+        return service.get(record.run_id)
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=75,
+        expected_worker_id=record.worker_id,
+    )
+
+    scheme_labels = tuple(label.model_dump(mode="json") for label in scheme.labels)
+    signatures = spectral_signatures(prepared.reflectance, recipe.band_semantics)
+    naming = name_clusters(labels, signatures, scheme_labels)
+    class_map = _apply_class_values(labels, naming, scheme.no_data_value)
+    statistics = summarize_classes(
+        class_map,
+        confidence,
+        naming,
+        scheme=scheme,
+        transform_value=prepared.transform,
+    )
+    vectors = vectorize_classes(
+        class_map,
+        confidence,
+        naming,
+        transform_value=prepared.transform,
+        crs=prepared.crs,
+        scheme=scheme,
+        max_features=getattr(request, "max_features", 25),
+        clip_geometry=request.geometry,
+    )
+    generated_at = datetime.now(UTC)
+    with tempfile.TemporaryDirectory() as temporary:
+        output_dir = Path(temporary)
+        class_map_path = output_dir / "class_map.tif"
+        polygons = output_dir / "class_polygons.geojson"
+        class_statistics = output_dir / "class_statistics.json"
+        stac_item = output_dir / "stac_item.json"
+        evidence_manifest = output_dir / "evidence_manifest.json"
+        _write_class_map(class_map_path, class_map, prepared, scheme)
+        _write_geojson(polygons, vectors)
+        class_statistics.write_text(
+            json.dumps(statistics, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        _write_output_stac(
+            stac_item,
+            record,
+            summaries[0],
+            summaries[-1],
+            statistics,
+            generated_at=generated_at,
+        )
+        manifest = build_evidence_manifest(
+            record,
+            summaries[0],
+            summaries[-1],
+            statistics,
+            {
+                "class_map": class_map_path,
+                "class_polygons": polygons,
+                "class_statistics": class_statistics,
+                "stac_item": stac_item,
+            },
+            generated_at=generated_at,
+            extra_sources=summaries,
+        )
+        evidence_manifest.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        artifacts = [
+            _upload_artifact(container, record, path, kind)
+            for path, kind in (
+                (class_map_path, "class_map"),
+                (polygons, "class_polygons"),
+                (class_statistics, "class_statistics"),
+                (stac_item, "stac_item"),
+                (evidence_manifest, "evidence_manifest"),
+            )
+        ]
+    return service.transition(
+        record.run_id,
+        RunStatus.COMPLETE,
+        artifacts=artifacts,
+        statistics=statistics,
+        features=vectors,
+        expected_worker_id=record.worker_id,
+    )
+
+
+def _prepare_fusion_scene(
+    catalog,
+    summaries: list[StacItemSummary],
+    request,
+    recipe: PreprocessingRecipe,
+    descriptor: ModelDescriptor,
+) -> PreparedScene | None:
+    """Read the co-located optical scene a SAR profile must fuse with."""
+    if not recipe.fusion_collection or not recipe.fusion_band_assets:
+        return None
+    fusion_id = next(
+        (
+            summary.item_id
+            for summary in summaries
+            if summary.collection == recipe.fusion_collection
+        ),
+        None,
+    )
+    if fusion_id is None:
+        raise WorkerError("SAR classification requires a co-located optical scene.")
+    fusion_recipe = recipe.model_copy(
+        update={
+            "collection": recipe.fusion_collection,
+            "band_assets": recipe.fusion_band_assets,
+            "band_semantics": OPTICAL_BAND_SEMANTICS,
+            "quality_asset": "SCL",
+            "cloud_masking": "sentinel2_scl",
+        }
+    )
+    return prepare_scene(
+        catalog.get_signed_assets(
+            fusion_id, (*fusion_recipe.band_assets, fusion_recipe.quality_asset)
+        ),
+        request.geometry,
+        fusion_recipe,
+        descriptor,
+    )
+
+
+def _build_feature_grid(
+    embeddings: np.ndarray,
+    prepared: PreparedScene,
+    recipe: PreprocessingRecipe,
+    fusion: PreparedScene | None,
+) -> np.ndarray:
+    """Upsample embeddings to the output grid and append SAR features when fusing."""
+    height, width = prepared.aoi_mask.shape
+    upsampled = _nearest_upsample(embeddings, height, width)
+    if fusion is None:
+        return upsampled
+    sar = sar_feature_stack(prepared.reflectance)
+    return np.concatenate([upsampled, _standardize(sar)], axis=0)
+
+
+def _nearest_upsample(values: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Repeat a coarse patch grid onto the full output grid without interpolation."""
+    rows = np.minimum((np.arange(height) * values.shape[1]) // height, values.shape[1] - 1)
+    columns = np.minimum((np.arange(width) * values.shape[2]) // width, values.shape[2] - 1)
+    return values[:, rows][:, :, columns]
+
+
+def _standardize(values: np.ndarray) -> np.ndarray:
+    """Zero-center and unit-scale each feature so fused inputs share a metric."""
+    flat = values.reshape(values.shape[0], -1)
+    mean = np.nanmean(flat, axis=1)[:, None, None]
+    deviation = np.nanstd(flat, axis=1)[:, None, None]
+    return np.nan_to_num((values - mean) / np.where(deviation > 0, deviation, 1.0))
+
+
+def _apply_class_values(
+    labels: np.ndarray,
+    naming: dict,
+    no_data_value: int,
+) -> np.ndarray:
+    """Translate cluster indices into the published class-scheme values."""
+    class_map = np.full(labels.shape, no_data_value, dtype=np.uint8)
+    for cluster, naming_entry in naming.items():
+        class_map[labels == cluster] = np.uint8(naming_entry["label"]["value"])
+    return class_map
+
+
+def summarize_classes(
+    class_map: np.ndarray,
+    confidence: np.ndarray,
+    naming: dict,
+    *,
+    scheme,
+    transform_value: Affine,
+) -> dict:
+    """Summarise per-class area, share, and mean confidence for the manifest."""
+    pixel_area_m2 = abs(transform_value.a * transform_value.e)
+    classified = class_map != scheme.no_data_value
+    classified_pixels = int(np.count_nonzero(classified))
+    by_value: dict[int, dict] = {}
+    for naming_entry in naming.values():
+        label = naming_entry["label"]
+        value = int(label["value"])
+        members = class_map == np.uint8(value)
+        pixels = int(np.count_nonzero(members))
+        if not pixels:
+            continue
+        existing = by_value.setdefault(
+            value,
+            {
+                "class_value": value,
+                "class_name": label["name"],
+                "pixels": 0,
+                "area_km2": 0.0,
+                "percent_of_classified": 0.0,
+                "mean_confidence": 0.0,
+            },
+        )
+        existing["pixels"] = pixels
+        existing["area_km2"] = round(pixels * pixel_area_m2 / 1_000_000, 6)
+        existing["percent_of_classified"] = (
+            round(100.0 * pixels / classified_pixels, 3) if classified_pixels else 0.0
+        )
+        existing["mean_confidence"] = round(float(confidence[members].mean()), 4)
+    return {
+        "class_scheme_id": scheme.scheme_id,
+        "class_scheme_title": scheme.title,
+        "classified_pixels": classified_pixels,
+        "unclassified_pixels": int(np.count_nonzero(~classified)),
+        "classified_area_km2": round(
+            classified_pixels * pixel_area_m2 / 1_000_000, 6
+        ),
+        "mean_confidence": (
+            round(float(confidence[classified].mean()), 4) if classified_pixels else 0.0
+        ),
+        "classes": [by_value[value] for value in sorted(by_value)],
+    }
+
+
+def vectorize_classes(
+    class_map: np.ndarray,
+    confidence: np.ndarray,
+    naming: dict,
+    *,
+    transform_value: Affine,
+    crs: object,
+    scheme,
+    max_features: int,
+    clip_geometry: dict | None = None,
+) -> list[dict]:
+    """Convert the class raster into ranked WGS84 polygons carrying confidence."""
+    if max_features <= 0:
+        return []
+    names = {
+        int(entry["label"]["value"]): entry["label"]["name"] for entry in naming.values()
+    }
+    colours = {int(label.value): label.colour for label in scheme.labels}
+    projected_clip = (
+        shape(transform_geom("EPSG:4326", crs, clip_geometry, precision=7))
+        if clip_geometry is not None
+        else None
+    )
+    simplification_tolerance = max(abs(transform_value.a), abs(transform_value.e)) / 2
+    candidates: list[tuple[float, int, dict]] = []
+    mask = class_map != np.uint8(scheme.no_data_value)
+    for index, (geometry, raw_value) in enumerate(
+        shapes(class_map, mask=mask, transform=transform_value)
+    ):
+        class_value = int(raw_value)
+        polygon = shape(geometry)
+        if projected_clip is not None:
+            polygon = polygon.intersection(projected_clip)
+        if polygon.is_empty:
+            continue
+        polygon = polygon.simplify(simplification_tolerance, preserve_topology=True)
+        if polygon.is_empty:
+            continue
+        members = (class_map == np.uint8(class_value)) & mask
+        wgs84 = shape(transform_geom(crs, "EPSG:4326", mapping(polygon), precision=7))
+        area_m2, _ = GEOD.geometry_area_perimeter(wgs84)
+        candidates.append(
+            (
+                abs(area_m2),
+                index,
+                {
+                    "type": "Feature",
+                    "geometry": mapping(wgs84),
+                    "properties": {
+                        "class_value": class_value,
+                        "class_name": names.get(class_value, "unnamed_cluster"),
+                        "class_colour": colours.get(class_value),
+                        "class_scheme_id": scheme.scheme_id,
+                        "area_km2": round(abs(area_m2) / 1_000_000, 6),
+                        "mean_confidence": round(
+                            float(confidence[members].mean()) if members.any() else 0.0,
+                            4,
+                        ),
+                    },
+                },
+            )
+        )
+    ranked = heapq.nlargest(max_features, candidates, key=lambda entry: (entry[0], -entry[1]))
+    return [feature for _, _, feature in ranked]
+
+
+def _write_class_map(
+    path: Path,
+    class_map: np.ndarray,
+    prepared: PreparedScene,
+    scheme,
+) -> None:
+    """Write the paletted single-band class COG with its published colour table."""
+    with rasterio.open(
+        path,
+        "w",
+        driver="COG",
+        width=class_map.shape[1],
+        height=class_map.shape[0],
+        count=1,
+        dtype="uint8",
+        crs=prepared.crs,
+        transform=prepared.transform,
+        compress="DEFLATE",
+        nodata=scheme.no_data_value,
+    ) as destination:
+        destination.write(class_map, 1)
+        destination.write_colormap(
+            1,
+            {
+                int(label.value): (
+                    int(label.colour[1:3], 16),
+                    int(label.colour[3:5], 16),
+                    int(label.colour[5:7], 16),
+                    255,
+                )
+                for label in scheme.labels
+            },
+        )
+
+
 def build_evidence_manifest(
     record: RunRecord,
     item_a: StacItemSummary,
@@ -406,8 +1141,10 @@ def build_evidence_manifest(
     outputs: dict[str, Path],
     *,
     generated_at: datetime,
+    extra_sources: list[StacItemSummary] | None = None,
 ) -> dict[str, object]:
     """Build a reproducible evidence record without raster bytes."""
+    sources = extra_sources if extra_sources is not None else [item_a, item_b]
     return {
         "schema_version": "planetary-explorer.geofm.evidence.v1",
         "run": {
@@ -417,21 +1154,26 @@ def build_evidence_manifest(
             "correlation_id": record.request.correlation_id,
             "requested_by": record.request.requested_by,
         },
-        "request": {
-            "geometry": record.request.geometry,
-            "threshold": record.request.threshold,
-            "max_features": record.request.max_features,
-            "profile": record.request.profile,
-        },
+        "request": record.request.model_dump(mode="json"),
         "sources": [
             {
                 "item_id": item.item_id,
                 "collection": item.collection,
                 "acquired_at": item.acquired_at.isoformat(),
             }
-            for item in (item_a, item_b)
+            for item in sources
         ],
         "model": record.selected_model,
+        "classifier_head": (
+            record.selected_model.get("classifier_head")
+            if isinstance(record.selected_model, dict)
+            else None
+        ),
+        "class_scheme_id": (
+            record.preprocessing_recipe.get("class_scheme_id")
+            if isinstance(record.preprocessing_recipe, dict)
+            else None
+        ),
         "preprocessing": record.preprocessing_recipe,
         "statistics": statistics,
         "warnings": record.warnings,
@@ -604,7 +1346,7 @@ def consume_one_message(
             if record is None:
                 should_delete = False
             else:
-                process_run(record, service, container)
+                execute_run(record, service, container)
                 should_delete = True
         elif record.status is RunStatus.FAILED:
             should_delete = _quarantine_message(

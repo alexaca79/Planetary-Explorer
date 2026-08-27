@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu116 \
     PYTHONPATH=/opt/planaura/src \
     HF_HOME=/tmp/huggingface \
-    GEOFM_CHECKPOINT_PATH=/opt/models/Planaura-1.0-HLS.pth
+    GEOFM_CHECKPOINT_PATH=/opt/models/Planaura-1.0-HLS.pth \
+    GEOFM_CLASSIFIER_HEAD_DIR=/opt/models/classifier-heads
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends git libgomp1 \
@@ -27,6 +28,7 @@ RUN python -m pip install --no-cache-dir \
     && test "$(git -C /opt/planaura rev-parse HEAD)" = "${PLANAURA_RUNTIME_REVISION}" \
     && mkdir -p /opt/models \
     && python -m geofm_service.download_checkpoint "${GEOFM_CHECKPOINT_PATH}" \
+        --classifier-head-dir "${GEOFM_CLASSIFIER_HEAD_DIR}" \
     && useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app /opt/models /tmp/huggingface
 
