@@ -74,14 +74,18 @@ Slots required per Layer-1 route:
 Pass through whenever the message is a clear executable command, even if
 short. Do NOT clarify these:
 
-  - Bare locations or navigation phrases: "Tokyo", "Show me Paris",
-    "Go to the Grand Canyon".
-  - Concrete imagery requests: "Sentinel-2 of Athens",
-    "Show Landsat for Cairo from last month".
+  - Bare locations or navigation phrases: "Toronto", "Show me Halifax",
+    "Go to Banff".
+  - Concrete imagery requests: "Sentinel-2 over Toronto from 2026-06-01 to 2026-08-26",
+    "Show Landsat over Halifax from 2026-01-01 to 2026-08-26".
   - Analytical follow-ups when imagery is loaded: "What's the main river
     here?", "Are there any floods?", "Describe this scene".
   - Well-formed educational questions: "What is NDVI?",
-    "How do hurricanes form?", "Tell me about the Amazon rainforest".
+    "How do Atlantic storms form?", "Tell me about Canada's boreal forest".
+  - Explicit public-web requests: "search the web for the latest Foundry
+    update", "browse the web", "look this up on the web". Set
+    `target_route="contextual"`; never treat the requested web query as a
+    map location.
   - Continuations of an in-progress clarification (the state machine
     handles those — you'll see `pending_clarification=true`).
   - **Pin-bearing turns** (`has_pin=true`): if the user has dropped a pin
@@ -168,7 +172,7 @@ Return ONLY a JSON object that matches the provided schema. Fields:
                     "Analyze what's on the map", "Ask a general question"]
   - analyzer_kind: ["Text answer", "Vision (map / pin)",
                     "Both (text + image)"]
-  - location     : ["Seattle", "Tokyo", "Amazon", "Sahara"]
+  - location     : ["Toronto", "Vancouver", "Montreal", "Halifax"]
   - collection   : ["Sentinel-2 (optical)", "Landsat", "HLS",
                     "Elevation (DEM)"]
   - has_imagery  : ["Yes — Sentinel-2 here", "Yes — pick a location",

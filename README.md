@@ -30,7 +30,7 @@ Meet users where they already work:
 - **M365 Copilot** — declarative agent surfaces the same answers inside Word, Outlook, and Copilot Chat
 - **VS Code / Claude Desktop** — every agent exposed as MCP tools for developers
 
-Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
+Built on **Microsoft Agent Framework**, **Azure AI Foundry models**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
 
 **Watch Satya Nadella introduce NASA Earth Copilot, the inspiration behind Planetary Explorer, at Microsoft Ignite 2024**: [View Here](https://www.linkedin.com/posts/microsoft_msignite-activity-7265061510635241472-CAYx/?utm_source=share&utm_medium=member_desktop)
 
@@ -42,7 +42,7 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model 
 
 ## ✨ Features
 
-- **Multi-Agent Architecture** — Microsoft Agent Framework (MAF) prompt agents and workflows plus Azure AI Agent Service tool agents.
+- **Multi-Agent Architecture** — Microsoft Agent Framework (MAF) executors and `WorkflowBuilder` graphs over Azure AI Foundry model clients.
 - **Dual MPC Surface** — Chat over **MPC Public** *or* **MPC Pro / GeoCatalog** in your own tenant
 - **Pluggable Connection Surfaces** — Bring your own **Microsoft Fabric** Lakehouse, **Azure AI Search** indexes, and **Foundry geospatial + weather models**. 
 - **MCP Server** — Expose every agent as Model Context Protocol tools for VS Code GitHub Copilot, Claude Desktop, and other MCP clients.
@@ -66,14 +66,16 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model 
 
 ### Query Examples
 
+<!-- markdownlint-disable MD013 MD033 MD060 -->
+
 <details>
-<summary><b>STAC Agent — chat-to-map (MPC Public + MPC Pro)</b></summary>
+<summary><b>STAC Agent: chat-to-map (MPC Public + MPC Pro)</b></summary>
 
 | Query |
 |-------|
-| Show coastal land cover changes in California |
-| Show me Sentinel-2 imagery over Los Angeles on May 20, 2026 |
-| Show me radar imagery of Houston Texas during Hurricane Harvey August 2017 |
+| Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26 |
+| Show MODIS daily snow cover over Quebec from 2026-02-01 to 2026-02-28 |
+| Show Sentinel-1 RTC radar imagery over the Red River, Manitoba from 2026-03-01 to 2026-05-31 |
 
 Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your tenant's collections.
 
@@ -84,163 +86,169 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 
 | Action | Query |
 |--------|-------|
-| Pin drop → Chat | Sample the raster value at this location |
-| Chat | How do I interpret this collection? |
-| Chat | Explain what each class in this land-cover raster means |
+| Pin drop to chat | Sample the 2026 raster value at this Canadian location |
+| Chat | How do I interpret the colours in this 2026 collection? |
+| Chat | Explain each class in this Canadian land-cover raster and show its legend |
 
 </details>
 
 <details>
-<summary><b>GEOINT Modules — Vision, Terrain, Mobility, Comparison, Building Damage</b></summary>
+<summary><b>GEOINT Modules: Vision, Terrain, Mobility, Comparison, Building Damage</b></summary>
 
 | Module | Query |
 |--------|-------|
-| **Vision** | Analyze this satellite image — what land cover types are visible and what is the surface reflectance? |
-| **Terrain** | Is this location suitable for a construction permit? Analyze slope, flood risk, and flat areas. |
-| **Terrain** | Analyze terrain elevation, slope, and line-of-sight at 38.9N, 77.0W |
-| **Comparison** | Show wildfire activity in Southern California in January 2025 and analyze how it evolved over 48 hours |
-| **Mobility** | Classify terrain traversability at these coordinates across 5 elevation layers |
-| **Building Damage** | Assess building damage using before/after satellite imagery at these coordinates |
+| **Vision** | Analyze this 2026 Toronto satellite image. Identify land cover and explain the natural-colour legend. |
+| **Terrain** | For 2026, is this Metro Vancouver location suitable for a construction permit? Analyze slope, flood exposure, and flat areas. |
+| **Terrain** | Analyze 2026 elevation, slope, and line-of-sight near Calgary at 51.0447N, 114.0719W. |
+| **Comparison** | Compare Alberta wildfire activity on 2026-08-24 and 2026-08-26 and explain the change over 48 hours. |
+| **Mobility** | Classify 2026 terrain traversability between two Kananaskis pins across five elevation layers. |
+| **Building Damage** | Use my MPC Pro 2026 before-and-after aerial collection to assess building damage in Jasper, Alberta. |
 
 </details>
 
 <details>
-<summary><b>Extreme Weather Agent — NASA NEX-GDDP-CMIP6 (NetCDF + trend reasoning)</b></summary>
+<summary><b>Extreme Weather Agent: NASA NEX-GDDP-CMIP6</b></summary>
 
 | Query |
 |-------|
-| What is the projected annual precipitation and peak daily rainfall for New Orleans? |
-| Compute the precipitation trend for New Orleans from 2020 to 2080 |
-| What are the projected temperature and precipitation trends for Miami through 2050? |
+| What are the projected annual precipitation and peak daily rainfall values for Vancouver in 2026? |
+| Compute the 2026 precipitation trend for Toronto and identify the wettest projected period. |
+| Compare Montreal temperature and precipitation during 2026 under SSP245 and SSP585. |
 
 </details>
 
 <details>
-<summary><b>Forecast Agent — 3-model ensemble (Aurora + Earth-2 FCN + MAI Weather)</b></summary>
+<summary><b>Forecast Agent: Aurora + Earth-2 FCN + MAI Weather</b></summary>
 
 | Query |
 |-------|
-| Give me a 5-day forecast over the Gulf of Mexico, ensemble view |
-| Forecast 2m temperature and 10m wind for Texas through Friday |
-| Compare Aurora vs Earth-2 FCN for tomorrow's precipitation over the Florida peninsula |
+| Give me an August 26-31, 2026 five-day ensemble forecast over Lake Ontario. |
+| Forecast 2m temperature and 10m wind across southern Saskatchewan for August 26-28, 2026. |
+| Compare Aurora and Earth-2 FCN precipitation over Nova Scotia for August 27, 2026. |
 
 </details>
 
 <details>
-<summary><b>Site Intel Agent — Fabric + MPC siting workflow</b></summary>
+<summary><b>Site Intel Agent: Fabric + MPC siting workflow</b></summary>
 
 | Query |
 |-------|
-| Score these candidate data-center sites in Texas for power, water, competition, and hazard |
-| Which of our candidate parcels in the Permian basin clears slope + flood + heat thresholds? |
-| Rank the top 3 sites near Phoenix with permitting precedent and grid-proximity weighted highest |
-
+| For 2026, score candidate data-centre sites near Calgary for power, water, competition, and hazard. |
+| Which 2026 candidate parcels near Montreal clear slope, flood, heat, and grid-proximity thresholds? |
+| Rank the top three 2026 sites near Edmonton with permitting precedent and grid proximity weighted highest. |
 
 </details>
 
 <details>
-<summary><b>Resilience Agent — continuous monitoring on Fabric + MPC </b></summary>
+<summary><b>Resilience Agent: continuous monitoring on Fabric + MPC</b></summary>
 
 | Query |
 |-------|
-| What facilities are at risk over the next 7 days, and what's the supply-chain blast radius? |
-| If our Houston DC goes offline for 48 hours, which downstream facilities are exposed? |
-| Show heat + wildfire risk for all West Coast facilities this week, ranked by severity |
-
+| For the week of August 26, 2026, which Canadian facilities are at risk and what is the supply-chain blast radius? |
+| If our Vancouver distribution centre goes offline for 48 hours in 2026, which downstream facilities are exposed? |
+| Show 2026 heat and wildfire risk for all Western Canada facilities this week, ranked by severity. |
 
 </details>
-
 
 ### Examples
 
-<table>
-<tr>
-<td align="center" width="25%"><b>ALOS World (Berlanga)</b><br/><img src="./documentation/images/maps/alos_world_berlanga.png" width="220"/></td>
-<td align="center" width="25%"><b>Burn Severity (California)</b><br/><img src="./documentation/images/maps/burn_severity_california.png" width="220"/></td>
-<td align="center" width="25%"><b>Cropland (Florida)</b><br/><img src="./documentation/images/maps/cropland_florida.png" width="220"/></td>
-<td align="center" width="25%"><b>Elevation (Grand Canyon)</b><br/><img src="./documentation/images/maps/elevation_grand_canyon.png" width="220"/></td>
-</tr>
-<tr>
-<td align="center"><b>HLS Greece Elevation</b><br/><img src="./documentation/images/maps/hls_greece_elevation.png" width="220"/></td>
-<td align="center"><b>LIDAR Height (New Orleans)</b><br/><img src="./documentation/images/maps/lidar_height_new_orleans.png" width="220"/></td>
-<td align="center"><b>MODIS Snow Cover (Quebec)</b><br/><img src="./documentation/images/maps/modis_snow_cover_quebec.png" width="220"/></td>
-<td align="center"><b>Nadir BDRF (Mexico)</b><br/><img src="./documentation/images/maps/nadir_bdrf_mexico.png" width="220"/></td>
-</tr>
-<tr>
-<td align="center"><b>Net Production (San Jose)</b><br/><img src="./documentation/images/maps/net_production_san_jose.png" width="220"/></td>
-<td align="center"><b>Sea Surface Temp (Madagascar)</b><br/><img src="./documentation/images/maps/sea_surface_temp_madagascar.png" width="220"/></td>
-<td align="center"><b>Sentinel (NYC)</b><br/><img src="./documentation/images/maps/sentinel_nyc.png" width="220"/></td>
-<td align="center"><b>Sentinel RTC (Philippines)</b><br/><img src="./documentation/images/maps/sentinel_rtc_philipines.png" width="220"/></td>
-</tr>
-<tr>
-<td align="center"><b>Surface Water (Bangladesh)</b><br/><img src="./documentation/images/maps/surface_water_bangladesh.png" width="220"/></td>
-<td align="center"><b>Vegetation Indices (Ukraine)</b><br/><img src="./documentation/images/maps/vegetation_indices_ukraine.png" width="220"/></td>
-<td align="center"><b>Vision Agent</b><br/><img src="./documentation/images/maps/agent_vision.png" width="220"/></td>
-<td align="center"><b>Vision Agent</b><br/><img src="./documentation/images/maps/agent_vision_fire.png" width="220"/></td>
-</tr>
-<tr>
-<td align="center"><b>Terrain Agent</b><br/><img src="./documentation/images/maps/agent_terrain_galapagos.png" width="220"/></td>
-<td align="center"><b>Terrain Agent</b><br/><img src="./documentation/images/maps/agent_terrain_florida.png" width="220"/></td>
-<td align="center"><b>Terrain Agent</b><br/><img src="./documentation/images/maps/agent_terrain_huston.png" width="220"/></td>
-<td align="center"><b>Mobility Agent</b><br/><img src="./documentation/images/maps/agent_mobility.png" width="220"/></td>
-</tr>
-<tr>
-<td align="center"><b>Mobility Agent</b><br/><img src="./documentation/images/maps/agent_mobility_alos_palsar_equador.png" width="220"/></td>
-<td align="center"><b>Extreme Weather Agent</b><br/><img src="./documentation/images/maps/agent_extreme_weather.png" width="220"/></td>
-<td align="center"><b>Extreme Weather Agent</b><br/><img src="./documentation/images/maps/agent_extreme_weather_new_orleans.png" width="220"/></td>
-<td align="center"><b>Thermal Anomalies (Australia)</b><br/><img src="./documentation/images/maps/thermal_anomalies_australia.png" width="220"/></td>
-</tr>
-</table>
+The screenshots below are generated by
+[`scripts/verify_canadian_demo_browser.py`](scripts/verify_canadian_demo_browser.py)
+against the running app.
+
+| Canadian 2026 workflow catalog | Toronto STAC response with chat legend |
+|:---:|:---:|
+| ![Canadian 2026 workflow catalog](documentation/images/maps/canadian_examples_2026.png) | ![Toronto Sentinel-2 response with natural-colour chat legend](documentation/images/maps/canadian_stac_chat_legend_2026.png) |
+
+<!-- markdownlint-enable MD013 MD033 MD060 -->
 
 ---
 
-
 ## 🏗️ Architecture
 
-![Planetary Explorer Architecture](documentation/images/architecture.png)
+Planetary Explorer uses Microsoft Agent Framework for orchestration. There is
+no Semantic Kernel runtime or dependency.
+
+```mermaid
+flowchart LR
+    UI[React map and chat] --> API[FastAPI security boundary]
+    API --> ROUTE[MAF clarifier and action-router executors]
+
+    subgraph MAF[Microsoft Agent Framework runtime]
+        ROUTE --> ANALYST[Analyst tool agent]
+        ROUTE --> FORECAST[Forecast WorkflowBuilder]
+        ROUTE --> SITE[Site Intel WorkflowBuilder]
+        ROUTE --> RESILIENCE[Resilience WorkflowBuilder]
+
+        FORECAST --> FPLAN[Planner]
+        FPLAN --> PROVIDERS[Aurora / Earth-2 FCN / MAI Weather]
+        PROVIDERS --> FOUT[Ensemble aggregator]
+
+        SITE --> SPLAN[Planner and Fabric retrieval]
+        SPLAN --> SCORERS[Grid / water / land / hazard / precedent scorers]
+        SCORERS --> SREVIEW[Evidence and review]
+
+        RESILIENCE --> RDATA[Facility and hazard retrieval]
+        RDATA --> RFAN[Weather / supply graph / context]
+        RFAN --> ROUT[Risk aggregator and critic]
+    end
+
+    ANALYST --> MPC[MPC Public or MPC Pro STAC]
+    ANALYST --> GEOINT[Raster / vision / terrain / mobility / comparison / damage]
+    ANALYST --> CMIP6[NASA NEX-GDDP-CMIP6]
+    SITE --> FABRIC[Microsoft Fabric Lakehouse]
+    SITE --> SEARCH[Azure AI Search]
+    RESILIENCE --> FABRIC
+    API --> MAP[Azure Maps and TiTiler rendering]
+```
+
+### MAF Workflow Inventory
+
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Surface | MAF execution path | Terminal output |
+|---------|--------------------|-----------------|
+| STAC and contextual analysis | Clarifier and Action Router executors to Analyst tool agent | Grounded answer, STAC items, tiles, and chat legend |
+| Forecast | Planner to provider fan-out to ensemble aggregator | Multi-model forecast dossier |
+| Site Intel | Planner to Fabric retrieval to six scorers to evidence review | Ranked siting dossier |
+| Resilience | Retrieval to weather, supply, and context fan-out to risk aggregator | Facility risk and blast-radius dossier |
+| Smart resilience | Router to standard or investigative planner to critic | Reviewed response with tool trace |
+
+Every workflow declares its terminal `output_from` executor. Forecast and Site
+Intel fail closed with HTTP 503 when MAF is unavailable; neither silently falls
+back to a non-MAF implementation.
 
 ### Core Services
 
-**React UI (`planetary-explorer/web-ui/`) - Azure Web Apps**
-- **Main Search Interface**: Unified natural language query input
-- **Chat Sidebar**: Conversation history with context awareness
-- **Azure Maps Integration**: Interactive map with satellite overlay and geointelligence results
-- **Data Catalog Selector**: Switch between MPC, NASA VEDA, and custom data sources
-- **Technology**: React 18, TypeScript, Vite, Azure Maps SDK v2
+| Layer | Responsibility |
+|-------|----------------|
+| React UI on Azure App Service | Natural-language input, MPC Public/Pro selector, map rendering, durable chat history, source chips, and response-bound colour legends |
+| FastAPI on Azure Container Apps | MAF execution, STAC and GEOINT tools, request validation, MCP tracing, and response contracts |
+| Azure AI Foundry | GPT model deployments used by MAF agents and optional MAI Weather hosting |
+| Microsoft Planetary Computer | Public STAC plus tenant-governed MPC Pro collections |
+| Microsoft Fabric | Site Intel and Resilience Delta tables |
+| Azure AI Search | Permitting precedent and continuity-document grounding |
+| Azure Maps and TiTiler | Geocoding, basemap display, and raster tile rendering |
 
-**Container App Backend (`planetary-explorer/container-app/`) - Azure Container Apps**
-- **Microsoft Agent Framework + Azure AI Agent Service**: Prompt agents, workflows, and hosted tool orchestration over Azure AI Foundry (GPT-5 or model of choice)
-- **MCP Runtime** (`mcp_runtime/`): Public STAC adapter + Pro MCP sidecar client; agents default to public MPC for reasoning, Pro for governed chat
-- **Fabric Connector**: Delta-table reads for Site Intel + Resilience (power, water, candidate sites, facilities, supply edges)
-- **Weather Provider Registry** (`connectors/weather`): Pluggable providers — Aurora, Earth-2 FCN, MAI Weather — used by the Forecast Agent
-- **NetCDF Reasoning**: NASA NEX-GDDP-CMIP6 sampling + linear-regression trend analysis (Extreme Weather Agent)
-- **STAC Integration**: Microsoft Planetary Computer (Public + Pro / GeoCatalog) and NASA VEDA
-- **Geointelligence Processing**: Terrain, mobility, line-of-sight (GDAL/Rasterio)
-- **Multi-Strategy Geocoding**: Google Maps, Azure Maps, Mapbox, OpenAI fallback
-- **Hybrid Rendering System**: TiTiler for 130+ satellite collection types
-- **VNet Integration**: Enterprise-grade security with private networking (optional)
-- **Technology**: Python 3.12, FastAPI, Microsoft Agent Framework, MCP, Azure Container Apps
+### Security Hardening
 
-**Azure Infrastructure**
-- **Azure AI Foundry**: Model deployments for agent intelligence (GPT-5 or model of choice); host for MAI Weather forecast provider
-- **Azure AI Agent Service**: Multi-turn tool orchestration for GEOINT agents (Hub + Project)
-- **Microsoft Planetary Computer Pro / GeoCatalog**: Tenant-scoped STAC for governed and private collections (opt-in)
-- **Microsoft Fabric**: Lakehouse Delta tables for Site Intel + Resilience (opt-in via `-EnableFabric`)
-- **Azure Maps**: Geocoding, reverse geocoding, and map tile services
-- **Azure AI Search**: Vector search for private data catalogs (RAG) and BCP / permitting precedent docs
-- **Azure Storage**: Blob storage for geointelligence raster processing results
-- **Virtual Network**: Private networking with private endpoints and DNS resolution (opt-in)
+| Control | Enforcement |
+|---------|-------------|
+| Authentication | Entra bearer validation fails closed; development bypass requires `DISABLE_AUTH=true` |
+| Browser access | Credentialed CORS accepts only the configured frontend origin and required methods/headers |
+| Host validation | `ALLOWED_HOSTS` defaults to Azure Container Apps hosts |
+| Request limits | `MAX_REQUEST_BODY_BYTES` defaults to 32 MiB |
+| Response policy | HSTS on HTTPS, request IDs, no-sniff, frame denial, referrer policy, permissions policy, API CSP, and no-store defaults |
+| Error handling | Unhandled errors return a request ID without internal exception text |
+| API discovery | OpenAPI and interactive docs are disabled unless `ENABLE_API_DOCS=true` |
+| Private catalog | MPC Pro collection inventory requires authentication |
+| Cloud credentials | Azure resources use managed identity and Key Vault references instead of embedded secrets |
 
-**MCP Server (`planetary-explorer/mcp-server/`) - Model Context Protocol (Optional)**
-- **GitHub Copilot Integration**: Expose Planetary Explorer as tool for VS Code
-- **HTTP Bridge**: MCP protocol bridge for external tool access
-- **Technology**: Python, FastAPI, Docker, Azure Container Apps
+<!-- markdownlint-enable MD013 MD060 -->
 
-**Copilot Studio - M365 Integration (Optional)**
-- **Teams Bot**: Chat with Planetary Explorer directly inside Microsoft Teams
-- **M365 Copilot Plugin**: Extend Microsoft 365 Copilot with geospatial capabilities
-- **Custom Connector**: Points to the deployed backend API — no additional infrastructure required
-
+The bundled Site Intel and Resilience fallback records are explicitly marked
+as synthetic Canadian 2026 demo data. Production deployments should ingest
+authoritative tenant data into Fabric.
 
 ## ⚙️ Environment Setup
 

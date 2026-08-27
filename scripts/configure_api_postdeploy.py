@@ -82,6 +82,34 @@ RUNTIME_PROFILES: dict[str, RuntimeProfile] = {
             },
         ),
     ),
+    "web-search": RuntimeProfile(
+        sticky_sessions=False,
+        probes=(
+            {
+                "type": "Startup",
+                "httpGet": {"path": "/health", "port": API_PORT},
+                "initialDelaySeconds": 2,
+                "periodSeconds": 5,
+                "timeoutSeconds": 3,
+                "failureThreshold": 12,
+            },
+            {
+                "type": "Liveness",
+                "httpGet": {"path": "/health", "port": API_PORT},
+                "periodSeconds": 30,
+                "timeoutSeconds": 3,
+                "failureThreshold": 3,
+            },
+            {
+                "type": "Readiness",
+                "httpGet": {"path": "/ready", "port": API_PORT},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 15,
+                "timeoutSeconds": 5,
+                "failureThreshold": 4,
+            },
+        ),
+    ),
 }
 
 logger = logging.getLogger(__name__)
@@ -167,7 +195,7 @@ def build_update_document(
 def configure_container_app(
     name: str,
     resource_group: str,
-    profile_name: Literal["api", "geofm"] = "api",
+    profile_name: Literal["api", "geofm", "web-search"] = "api",
 ) -> None:
     """Apply and verify a production ingress and probe configuration."""
     resource = json.loads(
@@ -327,11 +355,11 @@ def main() -> int:
     """Configure a Container App target from arguments or azd environment."""
     configure_logging()
     arguments = create_parser().parse_args()
-    default_name_variable = (
-        "AZURE_CONTAINER_APP_NAME"
-        if arguments.profile == "api"
-        else "AZURE_GEOFM_MCP_CONTAINER_APP_NAME"
-    )
+    default_name_variable = {
+        "api": "AZURE_CONTAINER_APP_NAME",
+        "geofm": "AZURE_GEOFM_MCP_CONTAINER_APP_NAME",
+        "web-search": "AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME",
+    }[arguments.profile]
     name = (arguments.name or os.getenv(default_name_variable, "")).strip()
     resource_group = (
         arguments.resource_group or os.getenv("AZURE_RESOURCE_GROUP", "")

@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 import json
 import logging
@@ -346,8 +347,24 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="Planetary Explorer API", version="1.0.0")
+# Interactive API schema routes are opt-in in deployed environments.
+api_docs_enabled = os.environ.get("ENABLE_API_DOCS", "false").casefold() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+app = FastAPI(
+    title="Planetary Explorer API",
+    version="1.0.0",
+    docs_url="/docs" if api_docs_enabled else None,
+    redoc_url="/redoc" if api_docs_enabled else None,
+    openapi_url="/openapi.json" if api_docs_enabled else None,
+)
+
+from chat_history_api import router as chat_history_router
+
+app.include_router(chat_history_router)
 
 # Configure CORS origins from environment variable
 cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
@@ -375,23 +392,60 @@ cors_origins = (
 )
 logger.info(f"[LOCK] CORS configured for origins: {cors_origins}")
 
-# Add CORS middleware (must be outermost — runs first on requests, last on responses)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_origin_regex=r"https?://.*" if cors_is_wildcard else None,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Add Entra ID JWT auth middleware (validates Bearer tokens on protected routes)
-# Registered AFTER CORSMiddleware so CORS headers are always added, even on 401.
 # Open paths (/api/health, /docs, etc.) are excluded from auth.
 from auth_middleware import EntraAuthMiddleware
 
 app.add_middleware(EntraAuthMiddleware)
 logger.info("[AUTH] Entra ID auth middleware registered")
+
+from security_middleware import (
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+    apply_security_headers,
+)
+
+try:
+    max_request_body_bytes = int(
+        os.environ.get("MAX_REQUEST_BODY_BYTES", str(DEFAULT_MAX_REQUEST_BODY_BYTES))
+    )
+except ValueError as exc:
+    raise RuntimeError("MAX_REQUEST_BODY_BYTES must be an integer") from exc
+app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=max_request_body_bytes)
+
+allowed_hosts = [
+    host.strip()
+    for host in os.environ.get(
+        "ALLOWED_HOSTS",
+        "*.azurecontainerapps.io,localhost,127.0.0.1,testserver",
+    ).split(",")
+    if host.strip()
+]
+if "*" in allowed_hosts and not public_demo_mode:
+    raise RuntimeError("ALLOWED_HOSTS cannot contain '*' when authentication is enabled")
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+# CORS wraps auth and boundary checks so browser clients receive headers on
+# authentication, host-validation, and request-size failures.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_origin_regex=r"https?://.*" if cors_is_wildcard else None,
+    allow_credentials=not cors_is_wildcard,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-Requested-With",
+    ],
+    expose_headers=["Content-Disposition", "X-Request-ID"],
+)
+
+# Added last so normal and preflight responses both receive the policy.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Mount static files for React frontend (if static directory exists)
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -2686,6 +2740,7 @@ async def get_config():
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
+            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
             # Forecast agent is "available" when at least one weather
             # provider endpoint is configured (real Foundry endpoint or
             # the CPU weather stub). With none of these set the
@@ -3767,7 +3822,10 @@ def _require_fabric_assertion(request: Request) -> str:
     # Dev-mode bypass for local testing of M365 / Copilot Studio surfaces
     # before the Entra app registration + admin consent are in place.
     # NEVER set this in production — gated by an explicit env var.
-    if os.getenv("RESILIENCE_DEV_BYPASS_AUTH", "0").lower() in ("1", "true", "yes", "on"):
+    if (
+        os.getenv("DISABLE_AUTH", "false").lower() in ("1", "true", "yes", "on")
+        and os.getenv("RESILIENCE_DEV_BYPASS_AUTH", "0").lower() in ("1", "true", "yes", "on")
+    ):
         logger.warning(
             "[AUTH] RESILIENCE_DEV_BYPASS_AUTH active — request not authenticated"
         )
@@ -3880,7 +3938,7 @@ async def sites_audit(request: Request):
 
     Body:  { lat: float, lng: float, claimed_mw: float (default 200),
              user_query: str (optional) }
-    Returns the structured dossier produced by ``agents.site_audit.audit_site``.
+    Returns the structured dossier produced by the Site Intel MAF workflow.
 
     When ``user_query`` is supplied, additional MPC collections relevant to the
     user's question are dynamically discovered via ``CollectionMapper`` and
@@ -3914,35 +3972,19 @@ async def sites_audit(request: Request):
     claimed_mw = float(body.get("claimed_mw") or 200)
     user_query = body.get("user_query") or body.get("query")
 
-    # v2 path: Microsoft Agent Framework fan-out/fan-in graph.
-    # Gated by ``SITE_AUDIT_V2=1`` so v1 (monolithic asyncio.gather inside
-    # ``agents.site_audit.audit_site``) remains the default and v2 can be
-    # toggled per environment. The two implementations return the same JSON
-    # shape; v2 additionally tags the dossier with ``engine: "maf_workflow_v2"``.
-    use_v2 = os.getenv("SITE_AUDIT_V2", "0").lower() in ("1", "true", "yes", "on")
-    if use_v2:
-        try:
-            from agents.site_intel import audit_site_v2, is_available
-            if not is_available():
-                logger.warning("[SITE_AUDIT] SITE_AUDIT_V2 set but agent_framework "
-                               "unavailable; falling back to v1")
-            else:
-                logger.info("[SITE_AUDIT] routing via MAF workflow v2")
-                return _sanitize_nan(await audit_site_v2(
-                    user_assertion=assertion,
-                    lat=lat,
-                    lng=lng,
-                    claimed_mw=claimed_mw,
-                    user_query=user_query,
-                ))
-        except fabric_client.FabricNotConfigured as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
-        except Exception as exc:
-            logger.exception("[SITE_AUDIT] v2 failed; falling back to v1")
-
-    from agents.site_audit import audit_site
     try:
-        return _sanitize_nan(await audit_site(
+        from agents.site_intel import audit_site_v2, is_available
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Site Intel MAF workflow unavailable: {exc}")
+    if not is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Microsoft Agent Framework is required for Site Intel.",
+        )
+
+    try:
+        logger.info("[SITE_AUDIT] routing via MAF workflow")
+        return _sanitize_nan(await audit_site_v2(
             user_assertion=assertion,
             lat=lat,
             lng=lng,
@@ -3952,8 +3994,8 @@ async def sites_audit(request: Request):
     except fabric_client.FabricNotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
-        logger.exception("[SITE_AUDIT] failed")
-        raise HTTPException(status_code=502, detail=f"Site audit error: {exc}")
+        logger.exception("[SITE_AUDIT] MAF workflow failed")
+        raise HTTPException(status_code=502, detail=f"Site Intel workflow error: {exc}")
 
 
 @app.post("/api/sites/audit/stream")
@@ -3962,8 +4004,7 @@ async def sites_audit_stream(request: Request):
 
     Emits one ``data: {json}`` line per workflow event so the UI can render
     dimension scores as they arrive instead of blocking on the whole graph.
-    Only available when ``SITE_AUDIT_V2=1`` and the Microsoft Agent Framework
-    is installed; otherwise 503.
+    Requires the Microsoft Agent Framework runtime; otherwise returns 503.
 
     Event payload shape (all JSON):
         { "type": "executor_invoked" | "executor_completed" | "output" | ...,
@@ -3982,13 +4023,6 @@ async def sites_audit_stream(request: Request):
         raise HTTPException(status_code=400, detail="lat and lng (floats) are required")
     claimed_mw = float(body.get("claimed_mw") or 200)
     user_query = body.get("user_query") or body.get("query")
-
-    use_v2 = os.getenv("SITE_AUDIT_V2", "0").lower() in ("1", "true", "yes", "on")
-    if not use_v2:
-        raise HTTPException(
-            status_code=503,
-            detail="Streaming requires SITE_AUDIT_V2=1; current deployment uses v1 only.",
-        )
 
     try:
         from agents.site_intel import audit_site_v2_stream, is_available
@@ -10606,16 +10640,18 @@ async def debug_location_resolver(location: str):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
-    logger.error(f"Unhandled exception: {str(exc)}")
+    request_id = getattr(request.state, "request_id", None) or "unavailable"
+    logger.error("Unhandled exception request_id=%s path=%s", request_id, request.url.path)
     logger.error(traceback.format_exc())
-    return JSONResponse(
+    response = JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "message": str(exc),
+            "request_id": request_id,
             "timestamp": datetime.utcnow().isoformat()
         }
     )
+    return apply_security_headers(response, request)
 
 
 # ---------------------------------------------------------------------------
@@ -10653,8 +10689,8 @@ async def geoint_forecast_health():
 
     payload["status"] = (
         "ready"
-        if enabled and providers
-        else "unavailable" if not providers else "disabled"
+        if enabled and providers and payload["agent_framework_available"]
+        else "disabled" if not enabled else "unavailable"
     )
     return payload
 
@@ -10709,9 +10745,15 @@ async def geoint_forecast(request: Request):
     location_label = body.get("location_label")
 
     try:
-        from agents.forecast import ForecastAgentQuery, forecast
+        from agents.forecast import ForecastAgentQuery, forecast, is_available
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"Forecast Agent not importable: {exc}")
+
+    if not is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Microsoft Agent Framework is required for the Forecast Agent.",
+        )
 
     agent_query = ForecastAgentQuery(
         lat=lat,

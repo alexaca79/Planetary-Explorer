@@ -1007,113 +1007,17 @@ def _build_provenance(
     return out
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Public entry point
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-async def audit_site(
-    *,
-    user_assertion: str,
-    lat: float,
-    lng: float,
-    claimed_mw: float,
-    user_query: str | None = None,
-    workspace_id: str | None = None,
-    lakehouse_id: str | None = None,
-) -> dict[str, Any]:
-    """Produce a structured siting dossier for (lat, lng, claimed_mw).
-
-    Returns
-    -------
-    dict
-        {
-          "input": {...},
-          "scores": {power, water, hazards, competition, parcel, overall},
-          "summaries": {...},
-          "evidence": [...],     # flat list across dimensions, with `kind`
-          "data_provenance": [...]  # which Lakehouse tables were consulted
-        }
-    """
-    ws = workspace_id or DEFAULT_WORKSPACE_ID
-    lh = lakehouse_id or DEFAULT_LAKEHOUSE_ID
-
-    # Run all six data calls concurrently:
-    #   • 4 Delta tables from OneLake (Fabric)
-    #   • 1 MPC raster sample (Planetary Computer)
-    #   • 1 AI Search query    (Azure AI Search)
-    sites, power, water, dcs, hazards_r, precedent_r = await asyncio.gather(
-        _load_table("candidate_sites", user_assertion, ws, lh),
-        _load_table("power_infrastructure", user_assertion, ws, lh),
-        _load_table("water_assets", user_assertion, ws, lh),
-        _load_table("existing_data_centers", user_assertion, ws, lh),
-        _score_hazards_with_mpc(lat, lng, user_query),
-        _score_precedent_with_search(user_assertion, ws, lat, lng, claimed_mw),
-    )
-
-    power_r = _score_power(lat, lng, claimed_mw, power)
-    water_r = _score_water(lat, lng, water)
-    competition_r = _score_competition(lat, lng, dcs)
-    parcel_r = _score_parcel_match(lat, lng, sites)
-
-    # Overall score: weighted average reflecting siting team priorities.
-    # Power dominates because grid is the binding constraint; precedent is
-    # included as a regulatory-confidence factor.
-    weights = {
-        "power": 0.35,
-        "water": 0.15,
-        "hazards": 0.15,
-        "competition": 0.10,
-        "parcel": 0.10,
-        "precedent": 0.15,
-    }
-    overall = (
-        power_r.score * weights["power"]
-        + water_r.score * weights["water"]
-        + hazards_r.score * weights["hazards"]
-        + competition_r.score * weights["competition"]
-        + parcel_r.score * weights["parcel"]
-        + precedent_r.score * weights["precedent"]
-    )
-
-    return {
-        "input": {"lat": lat, "lng": lng, "claimed_mw": claimed_mw},
-        "scores": {
-            "power": round(power_r.score, 1),
-            "water": round(water_r.score, 1),
-            "hazards": round(hazards_r.score, 1),
-            "competition": round(competition_r.score, 1),
-            "parcel_match": round(parcel_r.score, 1),
-            "precedent": round(precedent_r.score, 1),
-            "overall": round(overall, 1),
-            "weights": weights,
-        },
-        "summaries": {
-            "power": power_r.summary,
-            "water": water_r.summary,
-            "hazards": hazards_r.summary,
-            "competition": competition_r.summary,
-            "parcel_match": parcel_r.summary,
-            "precedent": precedent_r.summary,
-        },
-        "evidence": (
-            power_r.evidence
-            + water_r.evidence
-            + competition_r.evidence
-            + parcel_r.evidence
-            + hazards_r.evidence
-            + precedent_r.evidence
-        ),
-        "data_provenance": _build_provenance(
-            fabric_tables=[
-                ("candidate_sites", sites),
-                ("power_infrastructure", power),
-                ("water_assets", water),
-                ("existing_data_centers", dcs),
-            ],
-            hazards_evidence=hazards_r.evidence,
-            user_query=user_query,
-        ),
-        "lakehouse": {"workspace_id": ws, "lakehouse_id": lh},
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+__all__ = [
+    "DEFAULT_LAKEHOUSE_ID",
+    "DEFAULT_WORKSPACE_ID",
+    "DimensionResult",
+    "_MPC_ANCHOR_COLLECTIONS",
+    "_build_provenance",
+    "_load_table",
+    "_score_competition",
+    "_score_hazards_with_mpc",
+    "_score_parcel_match",
+    "_score_power",
+    "_score_precedent_with_search",
+    "_score_water",
+]

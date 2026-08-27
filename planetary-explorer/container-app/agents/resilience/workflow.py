@@ -62,7 +62,10 @@ def _build_workflow(query: ResilienceQuery):
 
     fanout = [weather, supply, context]
 
-    builder = WorkflowBuilder(start_executor=retrieval)  # type: ignore[call-arg]
+    builder = WorkflowBuilder(  # type: ignore[call-arg]
+        start_executor=retrieval,
+        output_from=[aggregator],
+    )
     builder = builder.add_fan_out_edges(retrieval, fanout)
     builder = builder.add_fan_in_edges(fanout, aggregator)
     return builder.build()

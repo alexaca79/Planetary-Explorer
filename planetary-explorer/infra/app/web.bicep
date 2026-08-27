@@ -12,6 +12,13 @@ param enableHealthProbes bool = true
 @description('Exact HTTPS frontend origin allowed by credentialed CORS.')
 @minLength(1)
 param frontendUrl string
+@description('Comma-separated host names accepted by the API. Include custom API domains when configured.')
+param allowedHosts string = '*.azurecontainerapps.io'
+@description('Maximum accepted API request body size in bytes.')
+@minValue(1048576)
+param maxRequestBodyBytes int = 33554432
+@description('Expose interactive OpenAPI documentation routes.')
+param enableApiDocs bool = false
 
 @secure()
 param azureOpenAiApiKey string = ''
@@ -61,6 +68,24 @@ param microsoftEntraClientId string = ''
 @secure()
 param microsoftEntraClientSecret string = ''
 
+@description('Enable durable per-user chat history and downloadable test artifacts.')
+param enableChatHistory bool = false
+
+@description('Keyless Cosmos DB endpoint for chat history.')
+param cosmosChatEndpoint string = ''
+
+@description('Cosmos DB database containing chat sessions.')
+param cosmosChatDatabase string = 'planetary-explorer'
+
+@description('Cosmos DB container containing user-partitioned chat sessions.')
+param cosmosChatContainer string = 'chat-history'
+
+@description('Blob service endpoint for private chat artifact files.')
+param chatArtifactBlobEndpoint string = ''
+
+@description('Private Blob container containing chat artifact files.')
+param chatArtifactContainer string = 'chat-artifacts'
+
 // Cloud environment
 @description('Cloud environment: Commercial or Government')
 @allowed(['Commercial', 'Government'])
@@ -86,6 +111,12 @@ param geoFmMcpApiKey string = ''
 @secure()
 @description('HMAC key used to sign authenticated GeoFM run-owner operations.')
 param geoFmOwnerSigningKey string = ''
+
+@description('Internal URL of the Azure Web Search MCP service. Empty disables current-web tools.')
+param webSearchMcpUrl string = ''
+
+@description('Enable current-date and web-search MCP tools in the AnalystAgent.')
+param enableWebSearch bool = false
 
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
@@ -120,7 +151,7 @@ param collectionSelectorDisambiguate bool = true
 @description('Key Vault name hosting forecast provider URL secrets. Empty disables KV-backed forecast wiring.')
 param keyVaultName string = ''
 
-@description('Key Vault URI (https://<name>.vault.azure.net/). Required when keyVaultName is set.')
+@description('Key Vault URI. Required when keyVaultName is set.')
 param keyVaultUri string = ''
 
 @description('Master switch for the Forecast Agent. Surfaced as FORECAST_AGENT_ENABLED ("1"/"0").')
@@ -264,6 +295,38 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: microsoftEntraClientId
             }
             {
+              name: 'PE_FEATURE_CHAT_HISTORY'
+              value: enableChatHistory ? 'true' : 'false'
+            }
+            {
+              name: 'CHAT_HISTORY_STORE'
+              value: enableChatHistory ? 'cosmos' : 'disabled'
+            }
+            {
+              name: 'COSMOS_CHAT_ENDPOINT'
+              value: cosmosChatEndpoint
+            }
+            {
+              name: 'COSMOS_CHAT_DATABASE'
+              value: cosmosChatDatabase
+            }
+            {
+              name: 'COSMOS_CHAT_CONTAINER'
+              value: cosmosChatContainer
+            }
+            {
+              name: 'CHAT_ARTIFACT_STORE'
+              value: enableChatHistory ? 'blob' : 'disabled'
+            }
+            {
+              name: 'CHAT_ARTIFACT_BLOB_ENDPOINT'
+              value: chatArtifactBlobEndpoint
+            }
+            {
+              name: 'CHAT_ARTIFACT_CONTAINER'
+              value: chatArtifactContainer
+            }
+            {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: azureOpenAiEndpoint
             }
@@ -300,6 +363,26 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: frontendUrl
             }
             {
+              name: 'ALLOWED_HOSTS'
+              value: allowedHosts
+            }
+            {
+              name: 'MAX_REQUEST_BODY_BYTES'
+              value: string(maxRequestBodyBytes)
+            }
+            {
+              name: 'ENABLE_API_DOCS'
+              value: enableApiDocs ? 'true' : 'false'
+            }
+            {
+              name: 'FORECAST_AGENT_ENABLED'
+              value: forecastAgentEnabled ? '1' : '0'
+            }
+            {
+              name: 'MAI_WEATHER_SCORE_PATH'
+              value: maiWeatherScorePath
+            }
+            {
               // MPC Pro MCP sidecar URL (internal Container Apps FQDN). Empty
               // disables the MCP-first catalog inventory path regardless of
               // USE_MPC_MCP; the backend falls back to direct STAC calls.
@@ -317,6 +400,14 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'GEOFM_MCP_URL'
               value: geoFmMcpUrl
+            }
+            {
+              name: 'WEB_SEARCH_ENABLED'
+              value: enableWebSearch ? 'true' : 'false'
+            }
+            {
+              name: 'WEB_SEARCH_MCP_URL'
+              value: webSearchMcpUrl
             }
             {
               // UI feature flags. Read by the backend's /api/config

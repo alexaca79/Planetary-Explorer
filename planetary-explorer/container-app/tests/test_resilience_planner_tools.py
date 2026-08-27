@@ -44,14 +44,14 @@ def test_tool_schemas_and_dispatch_match() -> None:
 # ─────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_query_facilities_region_filter() -> None:
-    """region_filter=TX returns 10 seed rows; CA returns zero."""
-    tx = await tools.query_facilities(region_filter="TX")
-    assert tx["count"] == 10
-    assert all(f["region"] == "TX" for f in tx["facilities"])
-    assert tx["provenance"][0]["source"] == "facility_registry"
+    """British Columbia returns its facilities; an unknown code returns none."""
+    bc = await tools.query_facilities(region_filter="BC")
+    assert bc["count"] == 2
+    assert all(f["region"] == "BC" for f in bc["facilities"])
+    assert bc["provenance"][0]["source"] == "facility_registry"
 
-    ca = await tools.query_facilities(region_filter="CA")
-    assert ca["count"] == 0
+    unknown = await tools.query_facilities(region_filter="ZZ")
+    assert unknown["count"] == 0
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,7 @@ async def test_query_facilities_type_and_criticality() -> None:
 # ─────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_search_playbooks_hazard_filter() -> None:
-    res = await tools.search_playbooks(query="heat dome", hazards=["heat"], region="TX")
+    res = await tools.search_playbooks(query="heat", hazards=["heat"], region="AB")
     assert res["count"] >= 1
     for pb in res["playbooks"]:
         haz_lower = {h.lower() for h in pb.get("hazards") or []}
@@ -81,11 +81,11 @@ async def test_search_playbooks_hazard_filter() -> None:
 # ─────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_simulate_outage_walks_supply_graph() -> None:
-    """Houston Port has known downstream edges in the seed graph."""
+    """Vancouver distribution has a known downstream edge in the seed graph."""
     res = await tools.simulate_outage(
-        facility_id="tx-dc-houston-01", days=5, max_hops=3
+        facility_id="bc-dc-vancouver-01", days=5, max_hops=3
     )
-    assert res["source_facility_id"] == "tx-dc-houston-01"
+    assert res["source_facility_id"] == "bc-dc-vancouver-01"
     assert res["total_downstream"] >= 1
     # Every impact row should carry the metadata the planner needs.
     for row in res["impacts"]:
@@ -102,7 +102,7 @@ async def test_simulate_outage_walks_supply_graph() -> None:
 async def test_simulate_outage_respects_max_hops() -> None:
     """max_hops=1 should never return a row past hop 1."""
     res = await tools.simulate_outage(
-        facility_id="tx-fab-austin-01", days=3, max_hops=1
+        facility_id="on-rd-ottawa-01", days=3, max_hops=1
     )
     for row in res["impacts"]:
         assert row["hops_from_source"] == 1
@@ -124,11 +124,11 @@ async def test_simulate_outage_unknown_source_returns_empty() -> None:
 @pytest.mark.asyncio
 async def test_find_similar_facilities_same_type() -> None:
     res = await tools.find_similar_facilities(
-        reference_id="tx-fab-austin-01", same_type=True
+        reference_id="on-fab-toronto-01", same_type=True
     )
     assert "matches" in res
     # Should not include the reference itself.
-    assert all(m["facility_id"] != "tx-fab-austin-01" for m in res["matches"])
+    assert all(m["facility_id"] != "on-fab-toronto-01" for m in res["matches"])
     # All matches share the reference's type when same_type=True.
     assert all(m["type"] == res["reference"]["type"] for m in res["matches"])
     # Similarity score is in [0, 1].
@@ -159,7 +159,7 @@ def _maf_available() -> bool:
 async def test_run_standard_assessment_seed_mode() -> None:
     """Smoke: tool reaches the existing workflow and returns the dossier."""
     res = await tools.run_standard_assessment(
-        region_filter="TX", horizon_days=3, hazards=["heat"],
+        region_filter="AB", horizon_days=3, hazards=["heat"],
         user_query="planner smoke test"
     )
     assert "facilities" in res
@@ -171,7 +171,7 @@ async def test_run_standard_assessment_seed_mode() -> None:
 @pytest.mark.skipif(not _maf_available(), reason="agent_framework not installed")
 async def test_compare_periods_returns_diffs() -> None:
     res = await tools.compare_periods(
-        region_filter="TX", hazards=["heat"],
+        region_filter="AB", hazards=["heat"],
         horizon_a_days=3, horizon_b_days=7,
         label_a="short", label_b="long",
     )

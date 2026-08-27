@@ -73,7 +73,10 @@ def build_raster_sampling_workflow():
             "Use RasterSamplingAgent.run() directly instead."
         )
     decider = RasterSamplingDecider()
-    return WorkflowBuilder(start_executor=decider).build()  # type: ignore[arg-type]
+    return WorkflowBuilder(
+        start_executor=decider,
+        output_from=[decider],
+    ).build()  # type: ignore[arg-type]
 
 
 _DECIDER_SINGLETON: Optional[RasterSamplingDecider] = None

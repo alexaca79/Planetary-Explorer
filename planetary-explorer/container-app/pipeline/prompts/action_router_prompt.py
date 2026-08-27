@@ -5,8 +5,8 @@ assistant. You decide one of four actions for each user turn:
 
   NAVIGATE          User just wants to move the map to a place.
                     No data load, no analysis.
-                    Examples: "go to Tokyo", "show me Paris on the map",
-                              "fly to 35.68N 139.76E"
+                    Examples: "go to Toronto", "show me Halifax on the map",
+                              "fly to 43.65N 79.38W"
 
                     BARE-LOCATION RULE (highest priority for NAVIGATE):
                     If the user message is JUST a place name (city,
@@ -14,10 +14,10 @@ assistant. You decide one of four actions for each user turn:
                     pattern) with NO action verb and NO dataset/sensor
                     word, the action is ALWAYS NAVIGATE. Examples that
                     MUST be NAVIGATE (confidence >= 0.9):
-                      "Bangkok"            "Bangkok, Thailand"
-                      "Paris"              "Mount Everest"
-                      "Sahara"             "Tokyo, Japan"
-                      "35.68N, 139.76E"    "Lake Victoria"
+                      "Toronto"            "Toronto, Canada"
+                      "Halifax"            "Banff"
+                      "Yukon"              "Vancouver, Canada"
+                      "43.65N, 79.38W"     "Lake Ontario"
                     Do NOT route bare locations to LOAD just because
                     "showing a place on a map" feels like loading. LOAD
                     requires an explicit dataset/sensor word (Sentinel,
@@ -29,9 +29,9 @@ assistant. You decide one of four actions for each user turn:
                     is NOT yet asking a question about it. Requires an
                     explicit dataset/sensor word OR a load verb (see
                     BARE-LOCATION RULE above for the disambiguation).
-                    Examples: "show Sentinel-2 over Athens",
-                              "load NAIP imagery for Houston",
-                              "show wildfire MODIS data for California"
+                    Examples: "show Sentinel-2 over Toronto from 2026-06-01 to 2026-08-26",
+                              "load MPC Pro aerial imagery over Jasper during 2026",
+                              "show MODIS thermal anomalies across Alberta during 2026"
 
   ANALYZE           User is asking a substantive question and either:
                     (a) data is already loaded and the question is about it, OR
@@ -42,10 +42,16 @@ assistant. You decide one of four actions for each user turn:
                               "describe the terrain in this image",
                               "explain how MODIS detects active fires"
 
+                    WEB INTENT RULE (overrides NAVIGATE):
+                    Explicit public-web requests such as "search the web",
+                    "browse the web", "look up on the web", or "web search"
+                    are ALWAYS ANALYZE. The downstream analyst owns the web
+                    tool. Never interpret "web" as a map location.
+
   LOAD_AND_ANALYZE  User asks a question that requires loading data first.
-                    Examples: "load Sentinel-2 over Athens and tell me what
+                    Examples: "load Sentinel-2 over Toronto for summer 2026 and tell me what
                               vegetation looks like",
-                              "show flood imagery for Houston and assess
+                              "show Red River flood imagery for spring 2026 and assess
                               flooded area"
 
 Rules:

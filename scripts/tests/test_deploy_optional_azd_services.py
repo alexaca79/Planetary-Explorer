@@ -21,6 +21,7 @@ def test_given_geofm_disabled_when_running_then_no_deployment_occurs(monkeypatch
     # Arrange
     monkeypatch.delenv("AZURE_GEOFM_MCP_CONTAINER_APP_NAME", raising=False)
     monkeypatch.delenv("AZURE_GEOFM_WORKER_CONTAINER_APP_NAME", raising=False)
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME", raising=False)
     calls: list[list[str]] = []
     monkeypatch.setattr(MODULE, "run_command", lambda arguments: calls.append(arguments))
 
@@ -54,3 +55,24 @@ def test_given_geofm_enabled_when_deploying_then_both_services_are_published(
     # Assert
     assert ["azd", "deploy", "geofm", "--no-prompt"] in commands
     assert ["azd", "deploy", "geofm-worker", "--no-prompt"] in commands
+
+
+def test_given_web_search_enabled_when_deploying_then_service_is_published(
+    monkeypatch,
+) -> None:
+    # Arrange
+    commands: list[list[str]] = []
+
+    def fake_run_command(arguments: list[str]) -> str:
+        commands.append(arguments)
+        if arguments[:3] == ["az", "containerapp", "show"]:
+            return "registry/web-search-mcp:latest"
+        return ""
+
+    monkeypatch.setattr(MODULE, "run_command", fake_run_command)
+
+    # Act
+    MODULE.deploy_web_search_mcp("web-search", "rg-search")
+
+    # Assert
+    assert ["azd", "deploy", "web-search-mcp", "--no-prompt"] in commands

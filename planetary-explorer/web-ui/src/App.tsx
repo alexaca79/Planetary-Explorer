@@ -29,12 +29,14 @@ interface DeploymentFeatures {
   mpcPublic: boolean;
   mpcPro: boolean;
   fabric: boolean;
+  chatHistory: boolean;
 }
 
 const DEFAULT_FEATURES: DeploymentFeatures = {
   mpcPublic: true,
   mpcPro: false,
   fabric: false,
+  chatHistory: false,
 };
 
 function App() {
@@ -81,6 +83,7 @@ function App() {
           mpcPublic: data.features.mpcPublic !== false,
           mpcPro: !!data.features.mpcPro,
           fabric: !!data.features.fabric,
+          chatHistory: !!data.features.chatHistory,
         };
         setFeatures(next);
         // If Pro is locked out by this deployment but the user had it
@@ -189,6 +192,7 @@ function App() {
               onGeointToggle={setGeointMode}
               selectedModel={selectedModel}
               reasoningEffort={reasoningEffort}
+              chatHistoryEnabled={features.chatHistory}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
             />

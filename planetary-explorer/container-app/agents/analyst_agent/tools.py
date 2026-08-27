@@ -186,6 +186,88 @@ async def general_earth_qa(question: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e), "elapsed_ms": int((time.time() - started) * 1000)}
 
 
+async def search_web(
+    query: str,
+    search_context_size: str = "medium",
+) -> Dict[str, Any]:
+    """Search the current public web through Microsoft Foundry Web Search."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    if search_context_size not in {"low", "medium", "high"}:
+        return {
+            "success": False,
+            "error": "search_context_size must be low, medium, or high",
+        }
+    client = TracedMcpClient.from_web_search(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "Azure Web Search is not enabled in this environment.",
+        }
+    try:
+        result = await client.call(
+            "web_search",
+            {"query": query, "search_context_size": search_context_size},
+        )
+        structured = result if isinstance(result, dict) else {"answer": str(result)}
+        sources = [
+            {
+                "title": str(citation.get("title") or "Web source"),
+                "uri": citation.get("url"),
+                "kind": "web",
+            }
+            for citation in structured.get("citations", [])
+            if isinstance(citation, dict) and citation.get("url")
+        ]
+        out = {
+            "success": True,
+            "answer": structured.get("answer") or "",
+            "structured": structured,
+            "sources": sources,
+        }
+    except Exception as error:
+        logger.exception("search_web failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("search_web", out)
+    return out
+
+
+async def get_current_datetime(timezone: str = "UTC") -> Dict[str, Any]:
+    """Get the current date and time from the web-search MCP host clock."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_web_search(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "The current-date MCP service is not enabled.",
+        }
+    try:
+        result = await client.call("get_current_datetime", {"timezone": timezone})
+        structured = result if isinstance(result, dict) else {"iso8601": str(result)}
+        date_value = str(structured.get("date") or "")
+        timezone_value = str(structured.get("timezone") or timezone)
+        out = {
+            "success": True,
+            "answer": f"The current date is {date_value} ({timezone_value}).",
+            "structured": structured,
+            "sources": [
+                {
+                    "title": "MCP host system clock",
+                    "uri": None,
+                    "kind": "calculation",
+                }
+            ],
+        }
+    except Exception as error:
+        logger.exception("get_current_datetime failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("get_current_datetime", out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # VISION / MAP TOOLS
 # ---------------------------------------------------------------------------
@@ -408,14 +490,15 @@ async def compare_temporal(
     collection: str,
     t1: str,
     t2: str,
+    metric: str = "auto",
 ) -> Dict[str, Any]:
     """Compare the same location + collection across two distinct time windows.
 
     This implements REQ-COMPARE-1 / closes G9. The tool:
       1. Confirms the user has a pin (or bbox) and a single collection target.
-      2. Runs ``sample_raster_value`` twice (once with each time window
-         in the hint) so the underlying RasterSamplingAgent picks the
-         right STAC item per epoch.
+        2. For NBR, searches Public Planetary Computer near each requested
+            epoch and computes a cloud-masked extent summary from signed COGs.
+            Other metrics continue through the generic raster sampler.
       3. Returns a structured diff: {t1_value, t2_value, delta,
          percent_change, narrative}.
 
@@ -424,6 +507,7 @@ async def compare_temporal(
                     loaded or what get_collection_metadata returned).
         t1: ISO date or year for the "before" window (e.g. "2015-06" or "2015").
         t2: ISO date or year for the "after" window.
+        metric: Metric to compare. Use "nbr" for Normalized Burn Ratio.
     """
     from pipeline.analyzers.raster_sampling_analyzer import RasterSamplingAnalyzer
 
@@ -437,6 +521,113 @@ async def compare_temporal(
             "missing_slot": "location",
             "error": "compare_temporal needs a pin or bbox to anchor both samples.",
         }
+
+    requested_metric = metric.strip().lower()
+    question_lower = s.question.lower()
+    if requested_metric == "auto" and (
+        "nbr" in question_lower or "normalized burn ratio" in question_lower
+    ):
+        requested_metric = "nbr"
+
+    if requested_metric in {"nbr", "dnbr", "normalized burn ratio"}:
+        import asyncio
+
+        from agents.raster_sampling_agent.spectral_indices import (
+            SpectralIndexSample,
+            sample_temporal_nbr,
+        )
+
+        if s.bbox:
+            sampling_bbox = s.bbox
+            spatial_support = "valid cloud-masked pixels in the requested extent"
+        else:
+            from pyproj import Geod
+
+            latitude, longitude = s.pin  # type: ignore[misc]
+            geod = Geod(ellps="WGS84")
+            west = geod.fwd(longitude, latitude, 270, 30)[0]
+            east = geod.fwd(longitude, latitude, 90, 30)[0]
+            south = geod.fwd(longitude, latitude, 180, 30)[1]
+            north = geod.fwd(longitude, latitude, 0, 30)[1]
+            sampling_bbox = (west, south, east, north)
+            spatial_support = "valid cloud-masked pixels in a 60 m window around the pin"
+
+        async def _sample_nbr(when: str) -> SpectralIndexSample:
+            return await asyncio.to_thread(
+                sample_temporal_nbr,
+                collection,
+                when,
+                bbox=sampling_bbox,
+            )
+
+        sampled = await asyncio.gather(
+            _sample_nbr(t1),
+            _sample_nbr(t2),
+            return_exceptions=True,
+        )
+        errors = [value for value in sampled if isinstance(value, BaseException)]
+        if errors:
+            out = {
+                "success": False,
+                "collection": collection,
+                "metric": "nbr",
+                "t1": t1,
+                "t2": t2,
+                "error": "; ".join(str(error) for error in errors),
+                "narrative": (
+                    "Could not retrieve valid NBR rasters for both epochs. "
+                    + "; ".join(str(error) for error in errors)
+                ),
+                "elapsed_ms": int((time.time() - started) * 1000),
+            }
+            _record_evidence("compare_temporal", out)
+            return out
+
+        before = sampled[0]
+        after = sampled[1]
+        assert isinstance(before, SpectralIndexSample)
+        assert isinstance(after, SpectralIndexSample)
+        delta = after.value - before.value
+        percent_change = (delta / before.value * 100.0) if before.value != 0 else None
+        dnbr = before.value - after.value
+        before_date = before.acquisition_datetime[:10]
+        after_date = after.acquisition_datetime[:10]
+        narrative = (
+            f"Mean NBR over {spatial_support} was {before.value:.4f} on {before_date} "
+            f"(requested {t1}) and {after.value:.4f} on {after_date} "
+            f"(requested {t2}). NBR change (after - before) is {delta:+.4f}; "
+            f"standard dNBR (before - after) is {dnbr:+.4f}"
+            + (
+                f", and relative NBR change is {percent_change:+.1f}%."
+                if percent_change is not None
+                else ". Relative change is undefined because baseline NBR is zero."
+            )
+        )
+        out = {
+            "success": True,
+            "collection": collection,
+            "metric": "nbr",
+            "summary_statistic": "mean",
+            "spatial_support": spatial_support,
+            "bbox": list(sampling_bbox),
+            "t1": t1,
+            "t2": t2,
+            "t1_value": before.value,
+            "t2_value": after.value,
+            "delta": delta,
+            "dnbr": dnbr,
+            "percent_change": percent_change,
+            "t1_sample": before.to_dict(),
+            "t2_sample": after.to_dict(),
+            "narrative": narrative,
+            "sources": [
+                {"title": before.item_id, "uri": before.item_url, "kind": "raster"},
+                {"title": after.item_id, "uri": after.item_url, "kind": "raster"},
+            ],
+            "elapsed_ms": int((time.time() - started) * 1000),
+        }
+        _record_evidence("compare_temporal", out)
+        return out
 
     # Sample at each epoch using the analyzer + a time-range hint.
     analyzer = RasterSamplingAnalyzer()
@@ -891,6 +1082,8 @@ def create_analyst_functions():
     Order is the priority hint shown to the model in the tool list.
     """
     return {
+        get_current_datetime,
+        search_web,
         search_graphrag,
         general_earth_qa,
         describe_map_screenshot,

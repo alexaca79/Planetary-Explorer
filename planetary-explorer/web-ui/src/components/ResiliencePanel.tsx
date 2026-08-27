@@ -139,7 +139,7 @@ function formatScore(n: number): string {
 const ResiliencePanel: React.FC<ResiliencePanelProps> = ({
   visible,
   onClose,
-  regionFilter = 'TX',
+  regionFilter = '',
   horizonDays = 7,
   hazards = ['heat', 'wildfire'],
   userQuery,

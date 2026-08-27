@@ -65,7 +65,7 @@ const IntelligentLandingPage: React.FC<IntelligentLandingPageProps> = ({ onRoute
 
   const exampleQueries = [
     {
-      text: "Show me recent wildfire data in California",
+      text: "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
       icon: "",
       expectedSource: "fire_events"
     },

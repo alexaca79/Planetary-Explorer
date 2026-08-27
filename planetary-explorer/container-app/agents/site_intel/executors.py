@@ -466,12 +466,11 @@ class MetaExecutor(Executor):  # type: ignore[misc]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Aggregator — fan-in of all 6 DimensionResults; assembles the same JSON
-# contract as :func:`agents.site_audit.audit_site` so the web UI is unchanged.
+# Aggregator — fan-in of all 6 DimensionResults; assembles the Site Intel
+# dossier contract consumed by the web UI.
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Same weights as v1. Kept in this module so the planner agent (added later)
-# can override per-request without touching v1.
+# Default siting weights. The planner can override these per request.
 DEFAULT_WEIGHTS: dict[str, float] = {
     "power": 0.35,
     "water": 0.15,
@@ -525,8 +524,7 @@ class AggregatorExecutor(Executor):  # type: ignore[misc]
             await ctx.send_message(self._build_dossier(meta))
 
     def _build_dossier(self, meta: DimensionResult | None) -> dict[str, Any]:
-        """Assemble the same JSON shape as ``site_audit.audit_site`` returns,
-        with planner metadata appended when present."""
+        """Assemble the Site Intel dossier with planner metadata."""
         c = self._collected
         # Resolve effective weights — planner override if it ran, else default.
         if meta and meta.provenance:

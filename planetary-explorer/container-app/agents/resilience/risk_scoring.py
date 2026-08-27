@@ -10,8 +10,7 @@ Scores are 0-100 where higher = more risk (opposite of Site Intel, where
 higher = better candidate site). This is intentional: Resilience is a
 risk product, so "high score" must read as "needs attention".
 
-Thresholds are tunable via env vars so the same scoring runs against
-either Texas or, say, Arizona without code changes.
+Thresholds are tunable via environment variables for local operating climates.
 """
 
 from __future__ import annotations
@@ -27,10 +26,10 @@ from .weather import FacilityForecast
 logger = logging.getLogger(__name__)
 
 
-# Heat thresholds — defaults are reasonable for Texas industrial sites.
-HEAT_WATCH_F = float(os.getenv("RESILIENCE_HEAT_WATCH_F", "95"))
-HEAT_WARNING_F = float(os.getenv("RESILIENCE_HEAT_WARN_F", "100"))
-HEAT_EMERGENCY_F = float(os.getenv("RESILIENCE_HEAT_EMERG_F", "105"))
+# Heat thresholds for the bundled Canadian 2026 demonstration facilities.
+HEAT_WATCH_F = float(os.getenv("RESILIENCE_HEAT_WATCH_F", "86"))
+HEAT_WARNING_F = float(os.getenv("RESILIENCE_HEAT_WARN_F", "91"))
+HEAT_EMERGENCY_F = float(os.getenv("RESILIENCE_HEAT_EMERG_F", "95"))
 
 # Wildfire / smoke thresholds.
 PM25_MODERATE = float(os.getenv("RESILIENCE_PM25_MODERATE", "12"))   # µg/m³

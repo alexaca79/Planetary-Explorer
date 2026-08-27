@@ -1,4 +1,7 @@
-# 🚀 Quick Start Guide - Planetary Explorer MCP Server
+---
+title: Planetary Explorer MCP Server Quick Start
+description: Run and test the MCP server with Canadian geospatial examples from 2026.
+---
 
 Get your Planetary Explorer MCP server running in 5 minutes!
 
@@ -113,8 +116,8 @@ curl -X POST http://localhost:8080/tools/call \
   -d '{
     "name": "data_discovery",
     "arguments": {
-      "location": "San Francisco, CA",
-      "timeframe": "2024-01-01/2024-01-31"
+      "location": "Toronto, Ontario, Canada",
+      "timeframe": "2026-06-01/2026-08-26"
     }
   }'
 ```
@@ -183,27 +186,27 @@ Once connected, try these queries:
 
 ### 1. Wildfire Detection
 ```
-Show me active wildfires in California from the past week
+Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26
 ```
 
 ### 2. Terrain Analysis
 ```
-Analyze the terrain slope and aspect of Mount Rainier
+Analyze the terrain slope and aspect around Banff, Alberta for 2026
 ```
 
 ### 3. Change Detection
 ```
-Show me deforestation in the Amazon rainforest from 2020 to 2024
+Show forest-cover conditions in British Columbia from 2026-05-01 to 2026-08-26
 ```
 
 ### 4. Data Discovery
 ```
-What Sentinel-2 data is available for Seattle with low cloud cover?
+What Sentinel-2 data is available for Toronto from 2026-06-01 to 2026-08-26 with low cloud cover?
 ```
 
 ### 5. Environmental Monitoring
 ```
-Monitor water quality changes in the Great Lakes over the past year
+Monitor water-quality conditions in the Great Lakes during 2026
 ```
 
 ---

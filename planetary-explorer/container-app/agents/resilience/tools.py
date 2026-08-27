@@ -80,8 +80,8 @@ async def query_facilities(
 ) -> dict[str, Any]:
     """Read the facility registry without running any scoring.
 
-    Useful when the planner just needs the inventory ("list all TX
-    fabs") before deciding what to do next.
+    Useful when the planner just needs the inventory ("list all Ontario
+    manufacturing facilities") before deciding what to do next.
     """
     df, _edges, source = await load_registry(
         user_assertion="planner.query_facilities", region_filter=region_filter
@@ -255,8 +255,8 @@ async def find_similar_facilities(
 ) -> dict[str, Any]:
     """Return facilities that share key risk attributes with ``reference_id``.
 
-    Used by the planner for "find me a Phoenix expansion site with the
-    same risk profile as Austin". MVP just matches on
+    Used by the planner for "find me a Vancouver expansion site with the
+    same risk profile as Calgary". MVP just matches on
     ``type`` + ``criticality`` bucket; future versions could use embeddings.
     """
     df, _edges, source = await load_registry(user_assertion="planner.find_similar")
@@ -304,7 +304,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "region_filter": {"type": "string", "description": "Region code, e.g. 'TX' or 'CA'. Omit to scan all."},
+                    "region_filter": {"type": "string", "description": "Canadian region code, e.g. 'BC' or 'ON'. Omit to scan all."},
                     "horizon_days": {"type": "integer", "minimum": 1, "maximum": 14, "default": 7},
                     "hazards": {"type": "array", "items": {"type": "string", "enum": list(ALL_HAZARDS)}},
                     "user_query": {"type": "string"},
@@ -557,7 +557,7 @@ TOOL_SCHEMAS += [
                     },
                     "datetime_range": {
                         "type": "string",
-                        "description": "RFC3339 interval, e.g. '2024-01-01/2024-12-31'.",
+                        "description": "RFC3339 interval, e.g. '2026-01-01/2026-08-26'.",
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                 },

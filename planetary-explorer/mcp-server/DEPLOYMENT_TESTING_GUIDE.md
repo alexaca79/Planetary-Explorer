@@ -1,4 +1,7 @@
-#  Testing Deployed MCP Server
+---
+title: Testing the Deployed Planetary Explorer MCP Server
+description: Validate an Azure Container Apps deployment with Canadian 2026 scenarios.
+---
 
 This guide shows you how to test your Planetary Explorer MCP Server once it's deployed to Azure Container Apps.
 
@@ -204,7 +207,7 @@ curl -X POST https://planetary-explorer-mcp.azurecontainerapps.io/resources/read
 $body = @{
     name = "terrain_analysis"
     arguments = @{
-        location = "Mount Rainier, Washington"
+        location = "Banff, Alberta, Canada"
         analysis_types = @("elevation", "slope", "aspect")
         resolution = 30
     }
@@ -220,7 +223,7 @@ curl -X POST https://planetary-explorer-mcp.azurecontainerapps.io/tools/call \
   -d '{
     "name": "terrain_analysis",
     "arguments": {
-      "location": "Mount Rainier, Washington",
+      "location": "Banff, Alberta, Canada",
       "analysis_types": ["elevation", "slope", "aspect"],
       "resolution": 30
     }
@@ -234,9 +237,9 @@ curl -X POST https://planetary-explorer-mcp.azurecontainerapps.io/tools/call \
 $body = @{
     name = "analyze_satellite_imagery"
     arguments = @{
-        query = "Show me recent wildfire activity"
-        location = "California"
-        timeframe = "2024-10-01/2024-10-31"
+        query = "Show MODIS thermal anomalies across Alberta during 2026"
+        location = "Alberta, Canada"
+        timeframe = "2026-05-01/2026-08-26"
         collections = @("sentinel-2", "landsat-8")
         cloud_cover_max = 20
     }
@@ -377,7 +380,7 @@ class DeployedMCPTester:
                 json={
                     "name": "terrain_analysis",
                     "arguments": {
-                        "location": "Grand Canyon, Arizona",
+                        "location": "Banff, Alberta, Canada",
                         "analysis_types": ["elevation", "slope"],
                         "resolution": 30
                     }
@@ -408,9 +411,9 @@ class DeployedMCPTester:
                 json={
                     "name": "analyze_satellite_imagery",
                     "arguments": {
-                        "query": "Recent satellite data",
-                        "location": "Seattle, Washington",
-                        "timeframe": "2024-10-01/2024-10-31",
+                        "query": "Sentinel-2 imagery over Toronto during summer 2026",
+                        "location": "Toronto, Ontario, Canada",
+                        "timeframe": "2026-06-01/2026-08-26",
                         "collections": ["sentinel-2"]
                     }
                 }

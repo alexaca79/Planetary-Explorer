@@ -257,8 +257,8 @@ const MapView: React.FC<MapViewProps> = ({
       try {
         // Create Leaflet map
         const leafletMap = window.L.map(mapRef.current, {
-          center: [39.8282, -98.5795], // Center of United States
-          zoom: 4,
+          center: [56.1304, -106.3468], // Center of Canada
+          zoom: 3,
           zoomControl: true
         });
 
@@ -2101,8 +2101,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: azureMapsKey,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282] // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304] // Center on Canada
           });
           return;
         }
@@ -2132,8 +2132,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: apiAzureMapsKey,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282] // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304] // Center on Canada
           });
           return;
         } else if (apiAzureMapsKey === "DEVELOPMENT_MODE_NO_KEY" || config.azureMaps?.developmentMode) {
@@ -2142,8 +2142,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: null,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282], // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304], // Center on Canada
             developmentMode: true
           });
           return;
@@ -2215,10 +2215,10 @@ const MapView: React.FC<MapViewProps> = ({
           setCurrentLayer(null);
         }
 
-        // Initialize the map with default US view
+        // Initialize the map with the default Canadian view.
         const mapConfig: any = {
-          center: [-98.5795, 39.8282], // Center of United States
-          zoom: 4, // Standard initial zoom for US view
+          center: [-106.3468, 56.1304], // Center of Canada
+          zoom: 3,
           language: 'en-US',
           // Use 'satellite_road_labels' basemap so label layers exist and can be moved on top
           // We'll programmatically move the label layers above our satellite tiles after adding them
@@ -2314,7 +2314,7 @@ const MapView: React.FC<MapViewProps> = ({
         newMap.events.add('ready', () => {
           mapInitialized = true;
           clearTimeout(initTimeout);
-          console.log('??? MapView: ? Azure Maps is ready and centered on United States');
+          console.log('??? MapView: ? Azure Maps is ready and centered on Canada');
 
           try {
             // Custom controls will be rendered in JSX - no default Azure Maps controls

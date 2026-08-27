@@ -247,6 +247,27 @@ class TracedMcpClient:
         )
 
     @classmethod
+    def from_web_search(
+        cls,
+        *,
+        turn_id: str | None = None,
+        confirm: _ConfirmHook = _broker_confirm,
+    ) -> "TracedMcpClient | None":
+        """Return a traced client when the web-search MCP server is enabled."""
+        from .registry import get_registry
+        from .remote_client import RemoteMcpClient
+
+        server = get_registry().get("web_search")
+        if server is None or not server.enabled:
+            return None
+        return cls(
+            server_id=server.server_id,
+            underlying=RemoteMcpClient(server.url, api_key=server.api_key),
+            turn_id=turn_id,
+            confirm=confirm,
+        )
+
+    @classmethod
     def for_agent_geospatial(
         cls,
         *,

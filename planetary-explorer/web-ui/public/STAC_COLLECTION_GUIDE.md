@@ -1,4 +1,7 @@
-# 🛰️ STAC Collection Availability Guide
+---
+title: STAC Collection Availability Guide
+description: Query Microsoft Planetary Computer collections with Canadian examples from 2026.
+---
 
 **Microsoft Planetary Computer | Planetary Explorer**
 
@@ -25,9 +28,9 @@ Harmonized Landsat Sentinel-2 (HLS) Version 2.0 provides consistent surface refl
 
 **How to Query:**
 ```
-✅ "Show me HLS Landsat imagery of Washington State forests from 2024"
-✅ "Find HLS Sentinel-2 data for California agriculture with low cloud cover"
-✅ "Display recent HLS imagery of the Amazon rainforest"
+✅ "Show HLS Landsat imagery over British Columbia forests from 2026-05-01 to 2026-08-26"
+✅ "Find HLS Sentinel-2 data for Saskatchewan agriculture from 2026-04-01 to 2026-08-26 with low cloud cover"
+✅ "Display HLS imagery over the Mackenzie River from 2026-05-01 to 2026-06-30"
 ```
 
 **Best Practices:**
@@ -56,10 +59,10 @@ The Landsat program provides a comprehensive, continuous archive of multispectra
 
 **How to Query:**
 ```
-✅ "Show me Landsat imagery of Yellowstone National Park"
-✅ "Find Landsat images of urban development in Phoenix from 2023"
-✅ "Display recent Landsat data for forest monitoring"
-✅ "Show me historical Landsat MSS imagery from 1970s Montana"
+✅ "Show Landsat imagery over Halifax from 2026-01-01 to 2026-08-26"
+✅ "Find Landsat images of Toronto urban development from 2026-01-01 to 2026-08-26"
+✅ "Display Landsat data for British Columbia forest monitoring from 2026-05-01 to 2026-08-26"
+✅ "Show Landsat imagery of Hudson Bay from 2026-06-01 to 2026-08-26"
 ```
 
 **Best Practices:**
@@ -96,14 +99,14 @@ The MODIS instrument operates on both the Terra and Aqua spacecraft, covering th
 
 **How to Query:**
 ```
-✅ "Show me MODIS vegetation index for the Sahel from early 2024"
-✅ "Find MODIS fire data for California from January-June 2024"
-✅ "Display MODIS land surface temperature in Death Valley from spring 2024"
-✅ "Show me MODIS snow cover in the Himalayas from winter 2024"
+✅ "Show MODIS vegetation indices over Saskatchewan from 2026-04-01 to 2026-08-26"
+✅ "Find MODIS fire data across Alberta from 2026-05-01 to 2026-08-26"
+✅ "Display MODIS land surface temperature over Toronto from 2026-05-01 to 2026-08-26"
+✅ "Show MODIS snow cover over Quebec from 2026-02-01 to 2026-02-28"
 ```
 
 **Best Practices:**
-- ⚠️ **CRITICAL:** Use "early 2024", "spring 2024", or "January-June 2024" dates
+- ⚠️ **CRITICAL:** Use an explicit supported range, such as `2026-01-01/2026-08-26`
 - **Do NOT use current dates** - MODIS has 3-6 month processing lag
 - Ideal for global monitoring at moderate resolution
 - Use for vegetation health, fire detection, thermal analysis, snow monitoring
@@ -127,9 +130,9 @@ Sentinel-1 comprises a constellation of two polar-orbiting satellites, operating
 
 **How to Query:**
 ```
-✅ "Show me Sentinel-1 radar imagery of Seattle for flood monitoring"
-✅ "Find SAR data for ship detection near Los Angeles"
-✅ "Display Sentinel-1 RTC for Houston during Hurricane Harvey August 2017"
+✅ "Show Sentinel-1 RTC over the Red River, Manitoba from 2026-03-01 to 2026-05-31"
+✅ "Find Sentinel-1 SAR data for ship detection near Vancouver from 2026-01-01 to 2026-08-26"
+✅ "Display Sentinel-1 RTC over Halifax from 2026-01-01 to 2026-08-26 for coastal-storm monitoring"
 ```
 
 **Best Practices:**
@@ -158,9 +161,9 @@ The Sentinel-2 program provides global imagery in thirteen spectral bands at 10m
 
 **How to Query:**
 ```
-✅ "Show me Sentinel-2 imagery of California with low cloud cover"
-✅ "Find recent Sentinel-2 images of the Amazon rainforest"
-✅ "Display Sentinel-2 data for coastal monitoring in Florida"
+✅ "Show Sentinel-2 imagery over Toronto from 2026-06-01 to 2026-08-26 with low cloud cover"
+✅ "Find Sentinel-2 images along the Mackenzie River from 2026-05-01 to 2026-06-30"
+✅ "Display Sentinel-2 data for Halifax coastal monitoring from 2026-06-01 to 2026-08-26"
 ```
 
 **Best Practices:**
@@ -193,17 +196,17 @@ Different satellite collections have different update schedules and data availab
 | **NASADEM** | 30m | No date needed | Static elevation dataset (2000) |
 | **Sentinel-1 RTC** | 10-20m | Last 90 days | Radar data, updated continuously |
 | **Sentinel-1 GRD** | 10-20m | Last 30 days | Radar data, updated continuously |
-| **MODIS 09A1** (500m) | 500m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 09Q1** (250m) | 250m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 13A1** (NDVI 500m) | 500m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 13Q1** (NDVI 250m) | 250m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 15A2H** (LAI) | 500m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 17A2H** (GPP) | 500m | January-June 2024 | 3-6 month processing lag |
-| **MODIS 17A3HGF** (NPP) | 500m | 2023-2024 | Yearly product, processing lag |
-| **MODIS 14A1** (Fire Daily) | 1km | January-June 2024 | 3-6 month processing lag |
-| **MODIS 14A2** (Fire 8-day) | 1km | January-June 2024 | 3-6 month processing lag |
-| **MODIS 10A1** (Snow) | 500m | Winter 2024 (Jan-Mar) | Seasonal, 3-6 month lag |
-| **MODIS 11A1** (Temperature) | 1km | January-June 2024 | 3-6 month processing lag |
+| **MODIS 09A1** (500m) | 500m | 2026-01-01 to 2026-08-26 | Verify collection availability |
+| **MODIS 09Q1** (250m) | 250m | 2026-01-01 to 2026-08-26 | Verify collection availability |
+| **MODIS 13A1** (NDVI 500m) | 500m | 2026-04-01 to 2026-08-26 | Growing-season example |
+| **MODIS 13Q1** (NDVI 250m) | 250m | 2026-04-01 to 2026-08-26 | Growing-season example |
+| **MODIS 15A2H** (LAI) | 500m | 2026-04-01 to 2026-08-26 | Growing-season example |
+| **MODIS 17A2H** (GPP) | 500m | 2026-05-01 to 2026-08-26 | Productivity example |
+| **MODIS 17A3HGF** (NPP) | 500m | 2026 when available | Yearly product |
+| **MODIS 14A1** (Fire Daily) | 1km | 2026-05-01 to 2026-08-26 | Fire-season example |
+| **MODIS 14A2** (Fire 8-day) | 1km | 2026-05-01 to 2026-08-26 | Fire-season example |
+| **MODIS 10A1** (Snow) | 500m | 2026-02-01 to 2026-02-28 | Winter example |
+| **MODIS 11A1** (Temperature) | 1km | 2026-05-01 to 2026-08-26 | Warm-season example |
 
 ---
 
@@ -213,19 +216,19 @@ Different satellite collections have different update schedules and data availab
 
 **NAIP (0.6m aerial imagery)**
 ```
-✅ "Show me NAIP imagery of Seattle"
-✅ "Find NAIP aerial photos of New York City"
-✅ "Display NAIP imagery for agricultural areas in Iowa"
+NAIP covers the United States and is not used for Canadian starter scenarios.
+For Canadian high-resolution examples, use an MPC Pro tenant aerial collection,
+such as 2026 before-and-after imagery over Jasper, Alberta.
 ```
-💡 **Tip:** Don't specify dates - NAIP updates every 2-3 years, latest is from 2023
+💡 **Tip:** Use MPC Pro tenant collections when Canadian aerial coverage is required.
 
 ---
 
 **Sentinel-2 L2A (10m multispectral)**
 ```
-✅ "Show me Sentinel-2 imagery of California with low cloud cover"
-✅ "Find recent Sentinel-2 images of the Amazon rainforest"
-✅ "Display Sentinel-2 data for coastal monitoring in Florida"
+✅ "Show Sentinel-2 imagery over Toronto from 2026-06-01 to 2026-08-26 with low cloud cover"
+✅ "Find Sentinel-2 images along the Mackenzie River from 2026-05-01 to 2026-06-30"
+✅ "Display Sentinel-2 data for Halifax coastal monitoring from 2026-06-01 to 2026-08-26"
 ```
 💡 **Tip:** Mention "recent" or "latest" - data is near real-time (last 30 days)
 
@@ -235,9 +238,9 @@ Different satellite collections have different update schedules and data availab
 
 **Landsat C2 L2**
 ```
-✅ "Show me Landsat imagery of Yellowstone National Park"
-✅ "Find Landsat images of urban development in Phoenix"
-✅ "Display recent Landsat data for forest monitoring"
+✅ "Show Landsat imagery over Halifax from 2026-01-01 to 2026-08-26"
+✅ "Find Landsat images of Toronto urban development from 2026-01-01 to 2026-08-26"
+✅ "Display Landsat data for British Columbia forest monitoring from 2026-05-01 to 2026-08-26"
 ```
 💡 **Tip:** Use "recent" for best results - data updated continuously
 
@@ -245,9 +248,9 @@ Different satellite collections have different update schedules and data availab
 
 **HLS (Harmonized Landsat Sentinel-2)**
 ```
-✅ "Show me HLS images of agricultural fields in Kansas"
-✅ "Find HLS data for vegetation monitoring with low cloud cover"
-✅ "Display HLS imagery of wetlands in Louisiana"
+✅ "Show HLS images of Saskatchewan agricultural fields from 2026-04-01 to 2026-08-26"
+✅ "Find HLS data for Alberta vegetation monitoring from 2026-05-01 to 2026-08-26 with low cloud cover"
+✅ "Display HLS imagery of Manitoba wetlands from 2026-05-01 to 2026-08-26"
 ```
 💡 **Tip:** HLS combines Landsat and Sentinel-2, use recent dates
 
@@ -257,10 +260,10 @@ Different satellite collections have different update schedules and data availab
 
 **Copernicus DEM / NASADEM**
 ```
-✅ "Show me elevation of the Rocky Mountains"
-✅ "Display terrain data for California"
-✅ "Find topography of the Appalachian Mountains"
-✅ "Show me a 3D elevation model of Hawaii"
+✅ "Show Copernicus DEM terrain around Banff for 2026 analysis"
+✅ "Display terrain data for the North Shore Mountains in British Columbia"
+✅ "Find topography along the Yukon River corridor"
+✅ "Show a 3D elevation model of Cape Breton Island"
 ```
 💡 **Tip:** No dates needed - these are static datasets from 2000-2021
 
@@ -270,9 +273,9 @@ Different satellite collections have different update schedules and data availab
 
 **Sentinel-1 RTC/GRD**
 ```
-✅ "Show me Sentinel-1 radar imagery of Seattle"
-✅ "Find SAR data for flood monitoring in the Mississippi River"
-✅ "Display Sentinel-1 for ship detection near Los Angeles"
+✅ "Show Sentinel-1 RTC over Vancouver from 2026-01-01 to 2026-08-26"
+✅ "Find SAR data for Red River flood monitoring from 2026-03-01 to 2026-05-31"
+✅ "Display Sentinel-1 for ship detection near Halifax from 2026-01-01 to 2026-08-26"
 ```
 💡 **Tip:** Mention "recent" - radar data updated every 6-12 days
 
@@ -280,33 +283,33 @@ Different satellite collections have different update schedules and data availab
 
 ### MODIS Collections (250m - 1km)
 
-**⚠️ IMPORTANT: MODIS data has a 3-6 month processing delay**
+**⚠️ IMPORTANT: Verify MODIS availability for the requested 2026 interval.**
 
 **Surface Reflectance (MODIS 09A1 / 09Q1)**
 ```
-✅ "Show me MODIS surface reflectance of California from early 2024"
-✅ "Find MODIS tiles for the Amazon from January to June 2024"
-✅ "Display MODIS imagery of Africa from spring 2024"
+✅ "Show MODIS surface reflectance over Saskatchewan from 2026-04-01 to 2026-08-26"
+✅ "Find MODIS tiles over Manitoba from 2026-05-01 to 2026-08-26"
+✅ "Display MODIS imagery of Quebec forests from 2026-04-01 to 2026-08-26"
 ```
-💡 **Tip:** Specify "early 2024", "January-June 2024", or "spring 2024"
+💡 **Tip:** Specify exact 2026 start and end dates, then adjust if the collection reports an availability gap.
 
 ---
 
 **Vegetation Indices (MODIS 13A1 / 13Q1 - NDVI)**
 ```
-✅ "Show me MODIS vegetation index of the Sahel from early 2024"
-✅ "Find MODIS NDVI for agricultural monitoring from spring 2024"
-✅ "Display vegetation health in the Great Plains from Jan-Jun 2024"
+✅ "Show MODIS vegetation indices over Saskatchewan from 2026-04-01 to 2026-08-26"
+✅ "Find MODIS NDVI for southern Alberta from 2026-05-01 to 2026-08-26"
+✅ "Display vegetation health over Ontario cropland from 2026-04-01 to 2026-08-26"
 ```
-💡 **Tip:** Use "early 2024" or "spring 2024" for vegetation data
+💡 **Tip:** Use the Canadian growing-season interval from April through August 2026.
 
 ---
 
 **Leaf Area Index (MODIS 15A2H)**
 ```
-✅ "Show me leaf area index of the Amazon from early 2024"
-✅ "Find MODIS LAI for forest canopy analysis from spring 2024"
-✅ "Display vegetation coverage in Southeast Asia from Jan-Jun 2024"
+✅ "Show leaf area index over British Columbia from 2026-05-01 to 2026-08-26"
+✅ "Find MODIS LAI for Quebec boreal forest from 2026-04-01 to 2026-08-26"
+✅ "Display vegetation coverage in coastal British Columbia from 2026-05-01 to 2026-08-26"
 ```
 💡 **Tip:** Best for tropical forests and dense vegetation areas
 
@@ -314,9 +317,9 @@ Different satellite collections have different update schedules and data availab
 
 **Productivity (MODIS 17A2H GPP / 17A3HGF NPP)**
 ```
-✅ "Show me MODIS productivity of the Amazon from early 2024"
-✅ "Find gross primary production in rainforests from spring 2024"
-✅ "Display ecosystem productivity in Congo Basin from Jan-Jun 2024"
+✅ "Show MODIS productivity over British Columbia from 2026-05-01 to 2026-08-26"
+✅ "Find gross primary production over Saskatchewan cropland from 2026-04-01 to 2026-08-26"
+✅ "Display ecosystem productivity in Quebec forests from 2026-04-01 to 2026-08-26"
 ```
 💡 **Tip:** Focus on highly productive ecosystems (rainforests, croplands)
 
@@ -324,29 +327,29 @@ Different satellite collections have different update schedules and data availab
 
 **Fire Detection (MODIS 14A1 / 14A2)**
 ```
-✅ "Show me MODIS fire data for California from early 2024"
-✅ "Find active fires in Australia from January to June 2024"
-✅ "Display fire activity in the Amazon from spring 2024"
+✅ "Show MODIS fire data across Alberta from 2026-05-01 to 2026-08-26"
+✅ "Find active fires in British Columbia from 2026-05-01 to 2026-08-26"
+✅ "Display fire activity near Prince George from 2026-05-01 to 2026-08-26"
 ```
-💡 **Tip:** Use "early 2024" or specify Jan-Jun for fire data
+💡 **Tip:** Use the explicit Canadian fire-season range from May 1 through August 26, 2026.
 
 ---
 
 **Snow Cover (MODIS 10A1)**
 ```
-✅ "Show me MODIS snow cover in the Sierra Nevada from winter 2024"
-✅ "Find snow extent in the Alps from January to March 2024"
-✅ "Display snow coverage in the Himalayas from early 2024"
+✅ "Show MODIS snow cover over Quebec from 2026-02-01 to 2026-02-28"
+✅ "Find snow extent in Yukon from 2026-01-01 to 2026-03-31"
+✅ "Display snow coverage around Banff from 2026-01-01 to 2026-03-31"
 ```
-💡 **Tip:** Use winter months (Jan-Mar 2024) for snow data
+💡 **Tip:** Use Canadian winter months from January through March 2026.
 
 ---
 
 **Land Surface Temperature (MODIS 11A1)**
 ```
-✅ "Show me MODIS temperature of Death Valley from spring 2024"
-✅ "Find land surface temperature in the Sahara from early 2024"
-✅ "Display thermal data for urban heat islands from Jan-Jun 2024"
+✅ "Show MODIS temperature over Toronto from 2026-05-01 to 2026-08-26"
+✅ "Find land surface temperature in Calgary from 2026-05-01 to 2026-08-26"
+✅ "Display thermal data for Montreal urban heat islands from 2026-05-01 to 2026-08-26"
 ```
 💡 **Tip:** Great for hot regions and urban heat analysis
 
@@ -354,28 +357,28 @@ Different satellite collections have different update schedules and data availab
 
 ## 🚫 Common Query Mistakes to Avoid
 
-### ❌ Don't Use Current/Recent Dates for MODIS
+### ❌ Don't Use Vague Dates for MODIS
 ```
-❌ "Show me MODIS data from October 2024"  (No results - data not yet processed)
-✅ "Show me MODIS data from spring 2024"   (Works - data available)
+❌ "Show me recent MODIS data for Canada"  (Too broad to validate)
+✅ "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26"
 ```
 
 ### ❌ Don't Specify Dates for Static Datasets
 ```
-❌ "Show me 2024 elevation data for Colorado"  (Elevation doesn't change)
-✅ "Show me elevation of Colorado"             (Gets static DEM data)
+❌ "Show 2026 elevation data around Banff"  (Elevation does not change)
+✅ "Show Copernicus DEM terrain around Banff for 2026 analysis"
 ```
 
 ### ❌ Don't Use Old Dates for Near Real-Time Data
 ```
-❌ "Show me Sentinel-2 from 2020"  (Too old, use recent dates)
-✅ "Show me recent Sentinel-2"     (Gets latest data)
+❌ "Show Sentinel-2 over Canada"  (Location and dates are underspecified)
+✅ "Show Sentinel-2 imagery over Toronto from 2026-06-01 to 2026-08-26"
 ```
 
-### ❌ Don't Use Specific Dates for NAIP
+### ❌ Don't Use NAIP for Canadian Coverage
 ```
-❌ "Show me NAIP from 2024"  (NAIP updates every 2-3 years)
-✅ "Show me NAIP imagery"    (Gets latest available, usually 2023)
+❌ "Show NAIP imagery over Jasper in 2026"  (NAIP covers the United States)
+✅ "Show my MPC Pro aerial imagery over Jasper from 2026-01-01 to 2026-08-26"
 ```
 
 ---
@@ -383,7 +386,7 @@ Different satellite collections have different update schedules and data availab
 ## 📊 Collection Categories Summary
 
 ### Category 1: No Date Filter Needed
-- **NAIP** - Get latest available (usually 2023)
+- **NAIP** - U.S.-only; use MPC Pro tenant imagery for Canadian aerial examples
 - **All DEMs** - Static datasets (Copernicus 30m/90m, NASADEM)
 
 ### Category 2: Use Recent Dates (Last 30-90 Days)
@@ -392,7 +395,7 @@ Different satellite collections have different update schedules and data availab
 - **HLS (L30/S30)** - Last 30 days
 - **Sentinel-1 (RTC/GRD)** - Last 30-90 days
 
-### Category 3: Use January-June 2024 (MODIS with Processing Lag)
+### Category 3: Use Explicit 2026 Ranges for MODIS
 - **MODIS 09A1/09Q1** - Surface reflectance
 - **MODIS 13A1/13Q1** - Vegetation indices (NDVI)
 - **MODIS 15A2H** - Leaf area index
@@ -401,18 +404,18 @@ Different satellite collections have different update schedules and data availab
 - **MODIS 14A1/14A2** - Fire detection
 - **MODIS 11A1** - Land surface temperature
 
-### Category 4: Seasonal Data (Winter 2024 for Snow)
-- **MODIS 10A1** - Snow cover (use Jan-Mar 2024)
+### Category 4: Seasonal Data (Winter 2026 for Snow)
+- **MODIS 10A1** - Snow cover (use January through March 2026)
 
 ---
 
 ## 🎓 Pro Tips for Better Results
 
-1. **For MODIS queries:** Always specify "early 2024", "spring 2024", or "January-June 2024"
+1. **For MODIS queries:** Specify an exact 2026 range and verify collection availability
 2. **For optical imagery:** Mention "low cloud cover" or "clear sky" to filter cloudy scenes
 3. **For elevation:** No need to specify dates - these are static datasets
-4. **For NAIP:** Just request the imagery without dates - system returns latest available
-5. **For near real-time data:** Use "recent", "latest", or "last month" in your query
+4. **For Canadian aerial imagery:** Use an MPC Pro tenant collection because NAIP is U.S.-only
+5. **For near real-time data:** Use an explicit 2026 interval so results are reproducible
 
 ---
 
@@ -420,13 +423,13 @@ Different satellite collections have different update schedules and data availab
 
 If your query returns no results:
 - **Check the date range** - Most issues are date-related
-- **MODIS collections:** Use January-June 2024, not current dates
+- **MODIS collections:** Verify that the requested 2026 interval is available
 - **Elevation data:** Remove date filters
-- **NAIP:** Remove date specifications
-- **Optical imagery:** Try "recent" or "latest" instead of specific dates
+- **Canadian aerial imagery:** Use MPC Pro rather than NAIP
+- **Optical imagery:** Use the catalog-backed 2026 ranges shown above
 
 ---
 
-**Last Updated:** October 9, 2025  
+**Last Updated:** August 27, 2026
 **Data Source:** Microsoft Planetary Computer STAC API  
 **Validated Collections:** 21/21 (100% operational)

@@ -21,6 +21,7 @@ from typing import Any
 
 from .bootstrap import build_default_pipeline
 from .contracts import AnalysisRequest
+from .action_router import is_explicit_web_request
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,18 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
         logger.info(
             "[PIPELINE-V2] foundation_change module -> ANALYZE "
             "(skipped clarifier route and ActionRouter)"
+        )
+    elif is_explicit_web_request(request.question):
+        decision = ActionDecision(
+            action="ANALYZE",
+            analysis_question=request.question,
+            reasoning="explicit_web_search",
+            confidence=1.0,
+        )
+        logger.info(
+            "[PIPELINE-V2] explicit web search -> ANALYZE "
+            "(overrode clarifier route %r)",
+            clarifier_route,
         )
     elif clarifier_route in _route_to_action:
         decision = ActionDecision(

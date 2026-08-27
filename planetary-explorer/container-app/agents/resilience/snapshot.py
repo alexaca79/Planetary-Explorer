@@ -1,7 +1,8 @@
 """Static-map snapshot rendering for resilience dossiers.
 
-Used by the M365 declarative agent: when a user asks "which TX facilities are
-at risk?", the agent calls ``/api/resilience/assess`` to get a dossier, then
+Used by the M365 declarative agent: when a user asks "which Canadian facilities
+are at risk in the week of August 26, 2026?", the agent calls
+``/api/resilience/assess`` to get a dossier, then
 calls ``/api/resilience/snapshot?assessment_id=<id>`` to fetch a PNG it can
 inline in an adaptive card.
 

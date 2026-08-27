@@ -1,4 +1,7 @@
-# 🌍 Planetary Explorer MCP Server - Template & Deployment Guide
+---
+title: Planetary Explorer MCP Server Template and Deployment Guide
+description: Configure and deploy the MCP server with Canadian 2026 geospatial examples.
+---
 
 ## 📘 What is MCP (Model Context Protocol)?
 
@@ -24,7 +27,7 @@
 ┌──────────────────────────────────────────────────────────────────┐
 │ 1. CLIENT (GitHub Copilot in VS Code)                            │
 │    User in Copilot Chat: "Show me the most recent satellite      │
-│    data of NYC"                                                  │
+│    data over Toronto in 2026"                                   │
 └────────────────┬─────────────────────────────────────────────────┘
                  │
                  │ Sends MCP Request:
@@ -34,8 +37,8 @@
                  │     "name": "analyze_satellite_imagery",
                  │     "arguments": {
                  │       "query": "most recent satellite data",
-                 │       "location": "New York City, NY",
-                 │       "timeframe": "2025-10-01/2025-10-29"
+                 │       "location": "Toronto, Ontario, Canada",
+                 │       "timeframe": "2026-06-01/2026-08-26"
                  │     }
                  │   }
                  │ }
@@ -53,7 +56,7 @@
 │    ┌─────────────────────────────────────────────────────────┐   │
 │    │ server.py                                               │   │
 │    │ - Parses MCP request                                    │   │
-│    │ - Validates parameters (location: NYC, timeframe)       │   │
+│    │ - Validates parameters (location: Toronto, timeframe)   │   │
 │    │ - Calls analyze_satellite_imagery handler               │   │
 │    └──────────────┬──────────────────────────────────────────┘   │
 │                   │                                              │
@@ -83,9 +86,9 @@
                  │     "content": [
                  │       {
                  │         "type": "text",
-                 │         "text": "Found recent satellite data for NYC:\n
-                 │                  • Sentinel-2: Oct 27, 2025 (5% clouds)\n
-                 │                  • Landsat-9: Oct 25, 2025 (12% clouds)\n
+                 │         "text": "Found 2026 satellite data for Toronto:\n
+                 │                  • Sentinel-2: Aug 26, 2026 (5% clouds)\n
+                 │                  • Landsat-9: Aug 24, 2026 (12% clouds)\n
                  │                  📊 View static map: [Preview URL]"
                  │       },
                  │       {
@@ -109,16 +112,16 @@
 │    ┌─────────────────────────────────────────────────────────┐   │
 │    │ 🤖 GitHub Copilot Chat Panel                           │   │
 │    │                                                         │   │
-│    │ I found recent satellite data for New York City:       │   │
+│    │ I found 2026 satellite data for Toronto:               │   │
 │    │                                                         │   │
-│    │ **Sentinel-2** (Oct 27, 2025)                          │   │
+│    │ **Sentinel-2** (Aug 26, 2026)                          │   │
 │    │ • Cloud cover: 5%                                       │   │
 │    │ • Resolution: 10m                                       │   │
 │    │ • Bands: RGB + NIR                                      │   │
 │    │                                                         │   │
 │    │ [Static Map Preview Image Displayed]                   │   │
 │    │                                                         │   │
-│    │ **Landsat-9** (Oct 25, 2025)                           │   │
+│    │ **Landsat-9** (Aug 24, 2026)                           │   │
 │    │ • Cloud cover: 12%                                      │   │
 │    │ • Resolution: 30m                                       │   │
 │    │                                                         │   │
@@ -169,7 +172,7 @@ The user types their question in the **VS Code Copilot Chat panel** (accessed vi
 | **External Links** | ✅ Open datasets | ✅ Open in browser |
 
 **Example MCP Response Content:**
-- **Text**: "Found Sentinel-2 imagery for Seattle (Oct 27, 2025, 5% cloud cover)"
+- **Text**: "Found Sentinel-2 imagery for Toronto (Aug 26, 2026, 5% cloud cover)"
 - **Image**: Static map preview PNG (via TiTiler or similar)
 - **Links**: "Open interactive map in Planetary Explorer web UI", "Download GeoTIFF"
 - **Metadata**: JSON with STAC item details for programmatic access
@@ -218,7 +221,7 @@ Maps to:** `/api/query` (Main search box queries)
     },
     "timeframe": {
       "type": "string",
-      "description": "Time period for analysis (e.g., '2023-01-01/2023-12-31')"
+      "description": "Time period for analysis (e.g., '2026-01-01/2026-08-26')"
     },
     "collections": {
       "type": "array",
@@ -390,9 +393,9 @@ fetch("http://localhost:8080/analysis/satellite", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    query: "Show me wildfires in California",
-    location: "California",
-    timeframe: "2024-08-01/2024-08-31"
+    query: "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
+    location: "Alberta, Canada",
+    timeframe: "2026-05-01/2026-08-26"
   })
 })
 ```
@@ -477,15 +480,15 @@ Create `.github/copilot/mcp-servers.json`:
 
 Then in VS Code:
 ```python
-# User comment: "Get Sentinel-2 imagery of Seattle with low clouds"
+# User comment: "Get Sentinel-2 imagery of Toronto in summer 2026 with low clouds"
 
 # Copilot: *Calls MCP server via HTTP*
 response = await planetary_explorer_client.call_tool(
     "analyze_satellite_imagery",
     {
-        "query": "Sentinel-2 imagery of Seattle",
-        "location": "Seattle, WA",
-        "timeframe": "2024-10-01/2024-10-31",
+        "query": "Sentinel-2 imagery of Toronto from 2026-06-01 to 2026-08-26",
+        "location": "Toronto, Ontario, Canada",
+        "timeframe": "2026-06-01/2026-08-26",
         "collections": ["sentinel-2"],
         "cloud_cover_max": 10
     }
@@ -514,10 +517,10 @@ Create `claude_desktop_config.json`:
 
 Then in Claude Desktop:
 ```
-You: Show me recent wildfire activity in California
+You: Show MODIS thermal anomalies across Alberta from May 1 to August 26, 2026
 
 Claude: *Uses analyze_satellite_imagery tool*
-I found 22 active fire detections in California from MODIS data...
+I found 2026 MODIS thermal-anomaly detections across Alberta...
 [Shows map visualization]
 
 You: What's the terrain like in those areas?
@@ -544,7 +547,7 @@ print(f"Available tools: {[t.name for t in tools]}")
 result = await client.call_tool(
     "terrain_analysis",
     {
-        "location": "Grand Canyon, Arizona",
+        "location": "Banff, Alberta, Canada",
         "analysis_types": ["slope", "aspect", "hillshade"],
         "resolution": 30
     }
@@ -642,9 +645,9 @@ curl -X POST http://localhost:8080/tools/call \
   -d '{
     "name": "analyze_satellite_imagery",
     "arguments": {
-      "query": "Show me wildfires in California",
-      "location": "California",
-      "timeframe": "2024-08-01/2024-08-31"
+      "query": "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
+      "location": "Alberta, Canada",
+      "timeframe": "2026-05-01/2026-08-26"
     }
   }'
 
@@ -654,7 +657,7 @@ curl -X POST http://localhost:8080/tools/call \
     "content": [
       {
         "type": "text",
-        "text": "Found 22 MODIS fire features in California..."
+        "text": "Found 2026 MODIS thermal-anomaly features across Alberta..."
       },
       {
         "type": "image",

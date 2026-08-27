@@ -44,9 +44,9 @@ the orchestrator dispatch. Examples:
     → analyzer_kind=vision, analyzer=raster_sampling.
   - "Describe what you see on the map" + screenshot/raster
     → analyzer_kind=vision, analyzer=vision.
-  - "How does NDVI work?" / "Tell me about the Amazon rainforest"
+  - "How does NDVI work?" / "Tell me about Canada's boreal forest"
     → analyzer_kind=text, analyzer=contextual.
-  - "What does the 2023 flood report say about this area?" + pin
+  - "What does the 2026 Red River flood report say about this area?" + pin
     → analyzer_kind=text, analyzer=graph_rag.
   - "Can a vehicle cross from this pin to that pin?" + 2 pins + DEM
     → analyzer_kind=vision, analyzer=mobility.

@@ -107,6 +107,37 @@ def test_given_geofm_profile_when_building_update_then_dependency_probe_is_resto
     }
 
 
+def test_given_web_search_profile_when_building_update_then_mcp_probes_are_restored() -> None:
+    # Arrange
+    resource = {
+        "identity": {"type": "SystemAssigned"},
+        "properties": {
+            "environmentId": "/subscriptions/example/environments/example",
+            "configuration": {"ingress": {"external": False, "targetPort": 8080}},
+            "template": {
+                "containers": [{"name": "web-search-mcp", "image": "example/search:latest"}],
+                "scale": {"minReplicas": 1, "maxReplicas": 3},
+            },
+        },
+    }
+
+    # Act
+    document = MODULE.build_update_document(resource, "web-search")
+
+    # Assert
+    probes = document["properties"]["template"]["containers"][0]["probes"]
+    assert {probe["type"] for probe in probes} == {
+        "Startup",
+        "Liveness",
+        "Readiness",
+    }
+    assert next(
+        probe["httpGet"]["path"]
+        for probe in probes
+        if probe["type"] == "Readiness"
+    ) == "/ready"
+
+
 def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retries(
     monkeypatch,
 ) -> None:

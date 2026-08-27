@@ -66,7 +66,10 @@ def build_contextual_workflow():
             "Use ContextualAgent.run() directly instead."
         )
     decider = ContextualDecider()
-    return WorkflowBuilder(start_executor=decider).build()  # type: ignore[arg-type]
+    return WorkflowBuilder(
+        start_executor=decider,
+        output_from=[decider],
+    ).build()  # type: ignore[arg-type]
 
 
 _DECIDER_SINGLETON: Optional[ContextualDecider] = None
