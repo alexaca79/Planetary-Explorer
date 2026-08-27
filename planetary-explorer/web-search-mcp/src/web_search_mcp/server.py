@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -21,6 +22,7 @@ from starlette.routing import Route
 FOUNDRY_SCOPE = "https://ai.azure.com/.default"
 MAX_QUERY_LENGTH = 500
 MAX_CITATIONS = 10
+MIN_API_KEY_LENGTH = 32
 
 mcp = FastMCP(
     "planetary-explorer-web-search",
@@ -83,16 +85,22 @@ class CurrentDateTimeResponse(BaseModel):
 def _required_configuration() -> tuple[str, str]:
     endpoint = (os.getenv("FOUNDRY_PROJECT_ENDPOINT") or "").strip().rstrip("/")
     model = (os.getenv("FOUNDRY_MODEL") or "").strip()
+    api_key = (os.getenv("WEB_SEARCH_MCP_API_KEY") or "").strip()
     missing = [
         name
         for name, value in (
             ("FOUNDRY_PROJECT_ENDPOINT", endpoint),
             ("FOUNDRY_MODEL", model),
+            ("WEB_SEARCH_MCP_API_KEY", api_key),
         )
         if not value
     ]
     if missing:
         raise RuntimeError(f"Missing required configuration: {', '.join(missing)}")
+    if len(api_key) < MIN_API_KEY_LENGTH:
+        raise RuntimeError(
+            f"WEB_SEARCH_MCP_API_KEY must be at least {MIN_API_KEY_LENGTH} characters."
+        )
     return endpoint, model
 
 
@@ -229,6 +237,40 @@ class McpSuccessStatusMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class McpApiKeyMiddleware(BaseHTTPMiddleware):
+    """Require the API-to-MCP shared key on the MCP data plane."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        if request.url.path != "/mcp":
+            return await call_next(request)
+        expected = (os.getenv("WEB_SEARCH_MCP_API_KEY") or "").strip()
+        supplied = (request.headers.get("X-API-Key") or "").strip()
+        if len(expected) < MIN_API_KEY_LENGTH:
+            return JSONResponse(
+                {"error": "Web Search MCP authentication is not configured."},
+                status_code=503,
+            )
+        if not supplied or not hmac.compare_digest(supplied, expected):
+            return JSONResponse({"error": "Unauthorized."}, status_code=401)
+        return await call_next(request)
+
+
+async def readiness(_: Request | None = None) -> JSONResponse:
+    """Report whether all Web Search MCP runtime configuration is valid."""
+    try:
+        _required_configuration()
+    except RuntimeError as exc:
+        return JSONResponse(
+            {"status": "degraded", "error": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ready"})
+
+
 def build_app():
     """Build the MCP ASGI application with liveness and readiness routes."""
 
@@ -237,20 +279,11 @@ def build_app():
             {"status": "ok", "service": "planetary-explorer-web-search"}
         )
 
-    async def ready(_: Request) -> JSONResponse:
-        try:
-            _required_configuration()
-        except RuntimeError as exc:
-            return JSONResponse(
-                {"status": "degraded", "error": str(exc)},
-                status_code=503,
-            )
-        return JSONResponse({"status": "ready"})
-
     application = mcp.streamable_http_app()
     application.routes.insert(0, Route("/health", endpoint=health, methods=["GET"]))
-    application.routes.insert(1, Route("/ready", endpoint=ready, methods=["GET"]))
+    application.routes.insert(1, Route("/ready", endpoint=readiness, methods=["GET"]))
     application.add_middleware(McpSuccessStatusMiddleware)
+    application.add_middleware(McpApiKeyMiddleware)
     return application
 
 

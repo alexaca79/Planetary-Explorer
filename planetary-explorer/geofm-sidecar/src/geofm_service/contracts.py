@@ -123,6 +123,8 @@ class RunRecord(BaseModel):
     version: int = Field(default=0, ge=0)
     attempt: int = Field(default=1, ge=1)
     status: RunStatus = RunStatus.QUEUED
+    worker_id: str | None = Field(default=None, max_length=128)
+    lease_expires_at: datetime | None = None
     request: CompareEpochsRequest
     selected_model: dict[str, JsonValue]
     preprocessing_recipe: dict[str, JsonValue]

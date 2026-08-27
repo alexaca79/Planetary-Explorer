@@ -40,6 +40,6 @@ COPY . .
 # Expose port 8080 (must match Azure Container App targetPort configuration)
 EXPOSE 8080
 
-# Run the FastAPI application with uvicorn on port 8080
-# Using 4 workers to handle concurrent requests (especially important for AI/LLM calls)
-CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]
+# Confirmation and trace brokers are process-local, so one async worker must
+# own both the streaming request and its confirmation callback.
+CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

@@ -115,6 +115,131 @@ RUNTIME_PROFILES: dict[str, RuntimeProfile] = {
 logger = logging.getLogger(__name__)
 
 
+def _enabled(value: str) -> bool:
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def reconcile_api_optional_services(name: str, resource_group: str) -> None:
+    """Apply optional-service outputs to a newly deployed or adopted API."""
+    values: list[str] = []
+    public_demo = _enabled(os.getenv("PUBLIC_DEMO_MODE", ""))
+    chat_endpoint = os.getenv("AZURE_COSMOS_CHAT_HISTORY_ENDPOINT", "").strip()
+    blob_endpoint = os.getenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
+    chat_requested = public_demo or bool(chat_endpoint or blob_endpoint)
+    if chat_requested:
+        if public_demo:
+            values.extend(
+                [
+                    "PE_FEATURE_CHAT_HISTORY=false",
+                    "CHAT_HISTORY_STORE=disabled",
+                    "COSMOS_CHAT_ENDPOINT=",
+                    "CHAT_ARTIFACT_STORE=disabled",
+                    "CHAT_ARTIFACT_BLOB_ENDPOINT=",
+                ]
+            )
+        elif chat_endpoint and blob_endpoint:
+            values.extend(
+                [
+                    "PE_FEATURE_CHAT_HISTORY=true",
+                    "CHAT_HISTORY_STORE=cosmos",
+                    f"COSMOS_CHAT_ENDPOINT={chat_endpoint}",
+                    "COSMOS_CHAT_DATABASE="
+                    + os.getenv(
+                        "AZURE_COSMOS_CHAT_HISTORY_DATABASE",
+                        "planetary-explorer",
+                    ),
+                    "COSMOS_CHAT_CONTAINER="
+                    + os.getenv(
+                        "AZURE_COSMOS_CHAT_HISTORY_CONTAINER",
+                        "chat-history",
+                    ),
+                    "CHAT_ARTIFACT_STORE=blob",
+                    f"CHAT_ARTIFACT_BLOB_ENDPOINT={blob_endpoint}",
+                    "CHAT_ARTIFACT_CONTAINER="
+                    + os.getenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts"),
+                ]
+            )
+        else:
+            raise RuntimeError("Chat history deployment outputs are incomplete.")
+
+    web_search_url = os.getenv("AZURE_WEB_SEARCH_MCP_URL", "").strip()
+    if web_search_url:
+        web_search_key = os.getenv("WEB_SEARCH_MCP_API_KEY", "").strip()
+        if len(web_search_key) < 32:
+            raise RuntimeError(
+                "WEB_SEARCH_MCP_API_KEY must contain at least 32 characters."
+            )
+        run_az(
+            [
+                "containerapp",
+                "secret",
+                "set",
+                "--name",
+                name,
+                "--resource-group",
+                resource_group,
+                "--secrets",
+                f"web-search-mcp-api-key={web_search_key}",
+                "--output",
+                "none",
+            ]
+        )
+        values.extend(
+            [
+                "WEB_SEARCH_ENABLED=true",
+                f"WEB_SEARCH_MCP_URL={web_search_url}",
+                "WEB_SEARCH_MCP_API_KEY=secretref:web-search-mcp-api-key",
+            ]
+        )
+
+    geofm_url = os.getenv("AZURE_GEOFM_MCP_URL", "").strip()
+    if geofm_url:
+        api_key = os.getenv("GEOFM_MCP_API_KEY", "").strip()
+        owner_key = os.getenv("GEOFM_OWNER_SIGNING_KEY", "").strip()
+        if len(api_key) < 32 or len(owner_key) < 32:
+            raise RuntimeError("GeoFM API and owner-signing keys are required.")
+        run_az(
+            [
+                "containerapp",
+                "secret",
+                "set",
+                "--name",
+                name,
+                "--resource-group",
+                resource_group,
+                "--secrets",
+                f"geofm-mcp-api-key={api_key}",
+                f"geofm-owner-signing-key={owner_key}",
+                "--output",
+                "none",
+            ]
+        )
+        values.extend(
+            [
+                "GEOFM_ENABLED=true",
+                f"GEOFM_MCP_URL={geofm_url}",
+                "GEOFM_MCP_API_KEY=secretref:geofm-mcp-api-key",
+                "GEOFM_OWNER_SIGNING_KEY=secretref:geofm-owner-signing-key",
+            ]
+        )
+
+    if values:
+        run_az(
+            [
+                "containerapp",
+                "update",
+                "--name",
+                name,
+                "--resource-group",
+                resource_group,
+                "--set-env-vars",
+                *values,
+                "--output",
+                "none",
+            ]
+        )
+
+
 def configure_logging() -> None:
     """Configure concise command-line logging."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -147,7 +272,7 @@ def run_az(arguments: list[str]) -> str:
 
 def build_update_document(
     resource: dict[str, object],
-    profile_name: Literal["api", "geofm"] = "api",
+    profile_name: Literal["api", "geofm", "web-search"] = "api",
 ) -> dict[str, object]:
     """Build a writable Container Apps YAML document from an ARM response."""
     profile = RUNTIME_PROFILES[profile_name]
@@ -371,6 +496,8 @@ def main() -> int:
         return EXIT_FAILURE
 
     try:
+        if arguments.profile == "api":
+            reconcile_api_optional_services(name, resource_group)
         configure_container_app(name, resource_group, arguments.profile)
         if arguments.profile == "geofm":
             wait_for_geofm_readiness(name, resource_group)

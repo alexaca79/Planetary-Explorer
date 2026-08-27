@@ -11,6 +11,7 @@ import pytest
 
 from _framework import FanOutExecutor, merge_with_trace
 from _framework.executors import CriticExecutor, CriticVerdict, PlannerExecutor
+from agents.analyst_agent.analyst_agent import _serialize_tool_result_for_model
 from mcp_runtime import (
     PermissionTier,
     TracedMcpClient,
@@ -179,6 +180,20 @@ async def test_given_signed_artifact_when_traced_then_sas_query_is_redacted():
     # Assert
     assert "sig=secret" not in (client.buffer[0].response_summary or "")
     assert "?<redacted>" in (client.buffer[0].response_summary or "")
+
+
+def test_given_signed_artifact_when_serialized_for_model_then_query_is_redacted():
+    # Arrange
+    signed_url = "https://storage.blob.core.windows.net/geofm/file.tif?sig=secret"
+
+    # Act
+    output = _serialize_tool_result_for_model(
+        {"artifacts": [{"kind": "raster", "uri": signed_url}]}
+    )
+
+    # Assert
+    assert "sig=secret" not in output
+    assert "?<redacted>" in output
 
 
 @pytest.mark.asyncio

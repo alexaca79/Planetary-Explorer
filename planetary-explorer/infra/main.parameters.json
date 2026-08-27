@@ -17,6 +17,9 @@
     "apiContainerAppName": {
       "value": "${API_CONTAINER_APP_NAME=}"
     },
+    "existingContainerAppsEnvironmentName": {
+      "value": "${EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME=}"
+    },
     "deployApiContainer": {
       "value": "${DEPLOY_API_CONTAINER=true}"
     },
@@ -61,6 +64,18 @@
     },
     "geoFmOwnerSigningKey": {
       "value": "${GEOFM_OWNER_SIGNING_KEY=}"
+    },
+    "deployWebSearchMcp": {
+      "value": "${DEPLOY_WEB_SEARCH_MCP=false}"
+    },
+    "webSearchFoundryAccountName": {
+      "value": "${WEB_SEARCH_FOUNDRY_ACCOUNT_NAME=}"
+    },
+    "webSearchFoundryProjectEndpoint": {
+      "value": "${WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT=}"
+    },
+    "webSearchMcpApiKey": {
+      "value": "${WEB_SEARCH_MCP_API_KEY=}"
     },
     "deployBotService": {
       "value": false

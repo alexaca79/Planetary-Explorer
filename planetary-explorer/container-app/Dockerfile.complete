@@ -27,7 +27,7 @@ RUN ls -la dist/
 # =============================================================================
 # STAGE 2: Python Backend with Static Files
 # =============================================================================
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 # Install system dependencies for geospatial processing
 # GDAL is required for rasterio to read COG files (terrain analysis)

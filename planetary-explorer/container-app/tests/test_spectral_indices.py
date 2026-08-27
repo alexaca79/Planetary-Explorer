@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 from agents.analyst_agent.session_context import AnalystSession, clear_session, set_session
 from agents.raster_sampling_agent import spectral_indices
@@ -121,6 +124,103 @@ def test_given_first_scene_has_no_pixels_when_sampling_then_tries_next_scene(mon
 
     # Assert
     assert result.item_id == "clear"
+
+
+def test_given_only_partial_scene_when_sampling_then_rejects_extent(monkeypatch) -> None:
+    # Arrange
+    monkeypatch.setattr(
+        spectral_indices,
+        "_search_stac_items",
+        lambda *_args: [
+            {
+                "id": "partial",
+                "bbox": [-123.0, 47.0, -122.5, 48.0],
+                "properties": {"datetime": "2026-04-01T00:00:00Z"},
+            }
+        ],
+    )
+
+    # Act & Assert
+    with pytest.raises(RasterSamplingError, match="fully covers"):
+        spectral_indices.sample_temporal_nbr(
+            "sentinel-2-l2a",
+            "2026-04-01",
+            bbox=(-123.0, 47.0, -122.0, 48.0),
+            today=date(2026, 8, 26),
+        )
+
+
+def test_given_mixed_resolution_bands_when_sampling_then_aligns_on_nir_grid(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    # Arrange
+    nir_path = tmp_path / "nir.tif"
+    swir_path = tmp_path / "swir.tif"
+    mask_path = tmp_path / "scl.tif"
+
+    with rasterio.open(
+        nir_path,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(0, 4, 1, 1),
+    ) as dataset:
+        dataset.write(np.full((4, 4), 0.8, dtype="float32"), 1)
+
+    for path, values, dtype in (
+        (
+            swir_path,
+            np.array([[0.2, 0.6], [0.2, 0.6]], dtype="float32"),
+            "float32",
+        ),
+        (mask_path, np.full((2, 2), 4, dtype="uint8"), "uint8"),
+    ):
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            width=2,
+            height=2,
+            count=1,
+            dtype=dtype,
+            crs="EPSG:4326",
+            transform=from_origin(0, 4, 2, 2),
+        ) as dataset:
+            dataset.write(values, 1)
+
+    import planetary_computer
+
+    monkeypatch.setattr(planetary_computer, "sign", lambda item: item)
+    item = {
+        "id": "mixed-resolution",
+        "collection": "sentinel-2-l2a",
+        "bbox": [0, 0, 40, 40],
+        "properties": {"datetime": "2026-04-01T00:00:00Z"},
+        "assets": {
+            "B08": {"href": str(nir_path)},
+            "B12": {"href": str(swir_path)},
+            "SCL": {"href": str(mask_path)},
+        },
+        "links": [],
+    }
+    window = normalize_temporal_window("2026-04-01", today=date(2026, 8, 26))
+
+    # Act
+    result = spectral_indices._sample_sentinel_2_nbr(
+        item,
+        bbox=(0, 0, 2, 4),
+        window=window,
+    )
+
+    # Assert
+    assert result.value == pytest.approx(0.6)
+    assert result.valid_pixel_count == 2
+    assert result.valid_pixel_fraction == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio

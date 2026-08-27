@@ -17,6 +17,7 @@ from geofm_service.stac import StacItemSummary
 from geofm_service.worker import (
     RetriableWorkerError,
     WorkerError,
+    _close_worker_clients,
     _upload_artifact,
     build_evidence_manifest,
     build_fixed_grid,
@@ -40,6 +41,24 @@ AOI = {
         ]
     ],
 }
+
+
+def test_given_worker_clients_when_cleanup_runs_then_each_client_is_closed() -> None:
+    # Arrange
+    class Client:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    clients = [Client(), Client(), Client(), Client()]
+
+    # Act
+    _close_worker_clients(*clients)
+
+    # Assert
+    assert all(client.closed for client in clients)
 
 
 class _PoisonQueue:
@@ -315,6 +334,60 @@ def test_given_run_load_failure_when_consuming_then_queue_message_is_not_deleted
     assert queue.deleted is False
 
 
+def test_given_active_foreign_lease_when_consuming_then_message_is_retained(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from geofm_service.contracts import CompareEpochsRequest, RunRecord
+    from geofm_service.jobs import InMemoryRunRepository, RunService
+    from geofm_service.policy import PLAN_AURA_HLS
+
+    class Message:
+        content = '{"run_id":"00000000-0000-0000-0000-000000000001"}'
+        dequeue_count = 2
+
+    class Queue:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def receive_messages(self, **_kwargs):
+            return [Message()]
+
+        def delete_message(self, _message) -> None:
+            self.deleted = True
+
+    repository = InMemoryRunRepository()
+    record = RunRecord(
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+        idempotency_key="a" * 64,
+        request=CompareEpochsRequest(
+            geometry=AOI,
+            item_id_epoch_a="epoch-a",
+            item_id_epoch_b="epoch-b",
+            correlation_id="turn-1",
+            requested_by="session-1",
+        ),
+        selected_model=PLAN_AURA_HLS.model_dump(mode="json"),
+        preprocessing_recipe={"collection": "hls2-s30"},
+    )
+    repository.create_or_get(record)
+    service = RunService(
+        repository,
+        dispatcher=None,
+        inventory_lookup=lambda _item_id: None,
+        allow_conditional_models=True,
+    )
+    service.try_claim(record.run_id, "other-worker", lease_seconds=600)
+    queue = Queue()
+
+    # Act
+    consumed = consume_one_message(queue, service, container=None)
+
+    # Assert
+    assert consumed is True
+    assert queue.deleted is False
+
+
 def test_given_malformed_message_when_consuming_then_message_is_deleted() -> None:
     # Arrange
     class Message:
@@ -470,6 +543,7 @@ def test_given_parse_like_processing_failure_when_consuming_then_run_is_failed_b
         record.run_id,
         RunStatus.FAILED,
         error=sanitize_error(processing_error),
+            expected_worker_id=record.worker_id,
     )
     assert queue.deleted is True
     assert poison_queue.messages[0]["error"] == sanitize_error(processing_error)
@@ -691,6 +765,7 @@ def test_given_transient_failure_at_retry_limit_when_consuming_then_run_is_faile
         record.run_id,
         RunStatus.FAILED,
         error=sanitize_error(error),
+        expected_worker_id=record.worker_id,
     )
     assert queue.deleted is True
     assert poison_queue.messages[0]["error"] == sanitize_error(error)
@@ -863,3 +938,98 @@ def test_given_artifact_upload_outage_when_uploading_then_retryable_error_is_rai
             path,
             "evidence",
         )
+
+
+@pytest.mark.parametrize("matching_digest", [True, False])
+def test_given_existing_artifact_when_retried_then_only_matching_content_is_reused(
+    tmp_path,
+    matching_digest: bool,
+) -> None:
+    # Arrange
+    from geofm_service.jobs import RunRepositoryError
+
+    class ConflictError(Exception):
+        status_code = 409
+
+    class Properties:
+        metadata: dict[str, str]
+
+        def __init__(self, digest: str) -> None:
+            self.metadata = {"sha256": digest}
+
+    class Blob:
+        def __init__(self, digest: str) -> None:
+            self.digest = digest
+
+        def upload_blob(self, _content, **_kwargs) -> None:
+            raise ConflictError("already exists")
+
+        def get_blob_properties(self) -> Properties:
+            return Properties(self.digest)
+
+    class Container:
+        url = "https://storage.blob.core.windows.net/geofm"
+
+        def __init__(self, digest: str) -> None:
+            self.blob = Blob(digest)
+
+        def get_blob_client(self, _name):
+            return self.blob
+
+    path = tmp_path / "artifact.json"
+    path.write_text("{}", encoding="utf-8")
+    expected_digest = hashlib.sha256(b"{}").hexdigest()
+    stored_digest = expected_digest if matching_digest else "0" * 64
+
+    # Act & Assert
+    if matching_digest:
+        artifact = _upload_artifact(
+            Container(stored_digest),
+            UUID("00000000-0000-0000-0000-000000000001"),
+            path,
+            "evidence",
+        )
+        assert artifact.sha256 == expected_digest
+    else:
+        with pytest.raises(RunRepositoryError, match="different content"):
+            _upload_artifact(
+                Container(stored_digest),
+                UUID("00000000-0000-0000-0000-000000000001"),
+                path,
+                "evidence",
+            )
+
+
+def test_given_regenerated_artifact_when_content_changes_then_uri_is_content_addressed(
+    tmp_path,
+) -> None:
+    # Arrange
+    class Blob:
+        def upload_blob(self, _content, **_kwargs) -> None:
+            return None
+
+    class Container:
+        url = "https://storage.blob.core.windows.net/geofm"
+
+        def __init__(self) -> None:
+            self.names: list[str] = []
+
+        def get_blob_client(self, name: str):
+            self.names.append(name)
+            return Blob()
+
+    container = Container()
+    path = tmp_path / "evidence_manifest.json"
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    path.write_text('{"generated":"first"}', encoding="utf-8")
+
+    # Act
+    first = _upload_artifact(container, run_id, path, "evidence")
+    path.write_text('{"generated":"second"}', encoding="utf-8")
+    second = _upload_artifact(container, run_id, path, "evidence")
+
+    # Assert
+    assert first.uri != second.uri
+    assert first.sha256 != second.sha256
+    assert first.sha256 in first.uri
+    assert second.sha256 in second.uri

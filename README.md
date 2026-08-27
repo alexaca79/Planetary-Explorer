@@ -30,7 +30,7 @@ Meet users where they already work:
 - **M365 Copilot** — declarative agent surfaces the same answers inside Word, Outlook, and Copilot Chat
 - **VS Code / Claude Desktop** — every agent exposed as MCP tools for developers
 
-Built on **Microsoft Agent Framework**, **Azure AI Foundry models**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
+Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
 
 **Watch Satya Nadella introduce NASA Earth Copilot, the inspiration behind Planetary Explorer, at Microsoft Ignite 2024**: [View Here](https://www.linkedin.com/posts/microsoft_msignite-activity-7265061510635241472-CAYx/?utm_source=share&utm_medium=member_desktop)
 
@@ -42,7 +42,7 @@ Built on **Microsoft Agent Framework**, **Azure AI Foundry models**, and **Model
 
 ## ✨ Features
 
-- **Multi-Agent Architecture** — Microsoft Agent Framework (MAF) executors and `WorkflowBuilder` graphs over Azure AI Foundry model clients.
+- **Multi-Agent Architecture** — Microsoft Agent Framework prompt agents and `WorkflowBuilder` graphs plus Azure AI Agent Service tool agents.
 - **Dual MPC Surface** — Chat over **MPC Public** *or* **MPC Pro / GeoCatalog** in your own tenant
 - **Pluggable Connection Surfaces** — Bring your own **Microsoft Fabric** Lakehouse, **Azure AI Search** indexes, and **Foundry geospatial + weather models**. 
 - **MCP Server** — Expose every agent as Model Context Protocol tools for VS Code GitHub Copilot, Claude Desktop, and other MCP clients.
@@ -194,11 +194,14 @@ flowchart LR
     end
 
     ANALYST --> MPC[MPC Public or MPC Pro STAC]
+    ANALYST --> WEB[Internal Web Search MCP]
+    WEB --> FWEB[Microsoft Foundry Web Search]
     ANALYST --> GEOINT[Raster / vision / terrain / mobility / comparison / damage]
     ANALYST --> CMIP6[NASA NEX-GDDP-CMIP6]
     SITE --> FABRIC[Microsoft Fabric Lakehouse]
     SITE --> SEARCH[Azure AI Search]
     RESILIENCE --> FABRIC
+    API --> HISTORY[Cosmos DB chat history and Blob artifacts]
     API --> MAP[Azure Maps and TiTiler rendering]
 ```
 
@@ -224,10 +227,12 @@ back to a non-MAF implementation.
 |-------|----------------|
 | React UI on Azure App Service | Natural-language input, MPC Public/Pro selector, map rendering, durable chat history, source chips, and response-bound colour legends |
 | FastAPI on Azure Container Apps | MAF execution, STAC and GEOINT tools, request validation, MCP tracing, and response contracts |
-| Azure AI Foundry | GPT model deployments used by MAF agents and optional MAI Weather hosting |
+| Azure AI Foundry and Agent Service | GPT deployments plus hosted multi-turn tool orchestration |
+| Internal Web Search MCP | Authenticated read-only current-web grounding through Microsoft Foundry |
 | Microsoft Planetary Computer | Public STAC plus tenant-governed MPC Pro collections |
 | Microsoft Fabric | Site Intel and Resilience Delta tables |
 | Azure AI Search | Permitting precedent and continuity-document grounding |
+| Cosmos DB and Blob Storage | Owner-isolated chat sessions and downloadable private artifacts |
 | Azure Maps and TiTiler | Geocoding, basemap display, and raster tile rendering |
 
 ### Security Hardening
@@ -242,6 +247,7 @@ back to a non-MAF implementation.
 | Error handling | Unhandled errors return a request ID without internal exception text |
 | API discovery | OpenAPI and interactive docs are disabled unless `ENABLE_API_DOCS=true` |
 | Private catalog | MPC Pro collection inventory requires authentication |
+| Internal MCP authentication | Web Search MCP requires a shared key of at least 32 characters |
 | Cloud credentials | Azure resources use managed identity and Key Vault references instead of embedded secrets |
 
 <!-- markdownlint-enable MD013 MD060 -->
@@ -257,7 +263,7 @@ authoritative tenant data into Fabric.
 **Technical Background:**
 - **Azure Subscription Management** - Resource groups, RBAC, cost management, service quotas
 - **Azure Cloud Services** - Azure AI Foundry, Azure Maps, Container Apps, AI Search
-- **Python Development** - Python 3.12, FastAPI, async programming, package management
+- **Python Development** - Python 3.11, FastAPI, async programming, package management
 - **React/TypeScript** - React 18, TypeScript, Vite, modern JavaScript
 - **AI/ML Concepts** - LLMs, agent tool calling, multi-agent systems, RAG
 - **Microsoft Agent Framework & MCP** - MAF `WorkflowBuilder` graphs, Model Context Protocol clients/servers

@@ -9,6 +9,7 @@ from agents.analyst_agent.analyst_prompt import ANALYST_AGENT_INSTRUCTIONS
 from agents.analyst_agent.session_context import AnalystSession, clear_session, set_session
 from mcp_runtime.registry import McpRegistry, get_registry
 from mcp_runtime.traced_client import TracedMcpClient
+from pipeline.contracts import Source
 
 
 class FakeWebSearchClient:
@@ -90,12 +91,63 @@ async def test_given_current_fact_question_when_search_called_then_citations_are
     ]
 
 
+@pytest.mark.asyncio
+async def test_given_source_urls_without_annotations_when_search_called_then_sources_are_preserved(
+    monkeypatch,
+) -> None:
+    # Arrange
+    class SourceUrlClient:
+        async def call(self, _tool: str, _arguments: dict):
+            return {
+                "answer": "A grounded fallback answer.",
+                "citations": [],
+                "source_urls": ["https://example.com/fallback"],
+            }
+
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_web_search",
+        classmethod(lambda cls, **_kwargs: SourceUrlClient()),
+    )
+
+    # Act
+    result = await analyst_tools.search_web("latest wildfire status")
+
+    # Assert
+    assert result["success"] is True
+    assert result["sources"][0]["uri"] == "https://example.com/fallback"
+
+
+@pytest.mark.asyncio
+async def test_given_answer_without_sources_when_search_called_then_result_fails_closed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    class UngroundedClient:
+        async def call(self, _tool: str, _arguments: dict):
+            return {"answer": "An ungrounded answer.", "citations": [], "source_urls": []}
+
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_web_search",
+        classmethod(lambda cls, **_kwargs: UngroundedClient()),
+    )
+
+    # Act
+    result = await analyst_tools.search_web("latest wildfire status")
+
+    # Assert
+    assert result["success"] is False
+    assert "usable source" in result["error"]
+
+
 def test_given_web_search_environment_when_registry_discovered_then_server_is_enabled(
     monkeypatch,
 ) -> None:
     # Arrange
     monkeypatch.setenv("WEB_SEARCH_ENABLED", "true")
     monkeypatch.setenv("WEB_SEARCH_MCP_URL", "https://web-search.internal/mcp")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "registry-secret")
 
     # Act
     registry = McpRegistry.discover()
@@ -104,6 +156,7 @@ def test_given_web_search_environment_when_registry_discovered_then_server_is_en
     server = registry.get("web_search")
     assert server is not None
     assert server.url == "https://web-search.internal/mcp"
+    assert server.api_key == "registry-secret"
 
 
 def test_given_web_search_environment_when_client_built_then_tracing_is_enabled(
@@ -112,6 +165,7 @@ def test_given_web_search_environment_when_client_built_then_tracing_is_enabled(
     # Arrange
     monkeypatch.setenv("WEB_SEARCH_ENABLED", "true")
     monkeypatch.setenv("WEB_SEARCH_MCP_URL", "https://web-search.internal/mcp")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "registry-secret")
     get_registry.cache_clear()
 
     # Act
@@ -136,3 +190,12 @@ def test_given_analyst_registry_when_created_then_web_tools_are_registered() -> 
 
     # Assert
     assert {"get_current_datetime", "search_web"} <= names
+
+
+@pytest.mark.parametrize("kind", ["web", "calculation"])
+def test_given_web_tool_source_when_validated_then_pipeline_preserves_kind(kind: str) -> None:
+    # Act
+    source = Source(title="Current source", kind=kind)
+
+    # Assert
+    assert source.kind == kind

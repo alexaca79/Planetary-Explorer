@@ -23,7 +23,8 @@ Microsoft Foundry project. It does not create or store a Bing API key.
 Enable the optional service in the selected Azure Developer CLI environment:
 
 ```powershell
-azd env set deployWebSearchMcp true
+azd env set DEPLOY_WEB_SEARCH_MCP true
+azd env set WEB_SEARCH_MCP_API_KEY <random-value-with-at-least-32-characters>
 azd up
 ```
 
@@ -33,6 +34,7 @@ real image after Bicep creates the bootstrap Container App. The API receives:
 
 * `WEB_SEARCH_ENABLED=true`
 * `WEB_SEARCH_MCP_URL=<internal-container-app-url>`
+* `WEB_SEARCH_MCP_API_KEY=<secretref>`
 
 The deployment exports `AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME` and
 `AZURE_WEB_SEARCH_MCP_URL` for validation and operations.
@@ -52,6 +54,7 @@ Start the service with an existing Foundry project and Azure credential:
 ```powershell
 $env:FOUNDRY_PROJECT_ENDPOINT = "https://<account>.services.ai.azure.com/api/projects/<project>"
 $env:FOUNDRY_MODEL = "gpt-4o"
+$env:WEB_SEARCH_MCP_API_KEY = "<random-value-with-at-least-32-characters>"
 python -m web_search_mcp.server
 ```
 
@@ -60,6 +63,12 @@ Endpoints:
 * `GET /health` for process liveness
 * `GET /ready` for required configuration
 * `POST /mcp` for Streamable HTTP MCP
+
+Clients must send the shared key with every MCP request:
+
+```text
+X-API-Key: <same-value-as-WEB_SEARCH_MCP_API_KEY>
+```
 
 ## Security and Data Boundary
 

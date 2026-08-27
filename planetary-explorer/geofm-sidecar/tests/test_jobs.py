@@ -1,6 +1,6 @@
 """Admission, idempotency, and lifecycle tests for GeoFM runs."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from azure.core.exceptions import ResourceModifiedError
@@ -10,6 +10,7 @@ from geofm_service.jobs import (
     BlobRunRepository,
     ImageryObservation,
     InMemoryRunRepository,
+    RunConflict,
     RunError,
     RunService,
 )
@@ -131,6 +132,42 @@ def test_given_queued_request_twice_when_submitting_then_second_call_redrives_it
     assert second_created is False
     assert first.run_id == second.run_id
     assert dispatcher.run_ids == [first.run_id, first.run_id]
+
+
+def test_given_active_worker_claim_when_second_worker_claims_then_only_expired_lease_wins() -> None:
+    # Arrange
+    repository = InMemoryRunRepository()
+    service = RunService(
+        repository,
+        RecordingDispatcher(),
+        inventory_lookup=lambda item_id: _observation(
+            item_id,
+            2023 if item_id == "epoch-a" else 2024,
+        ),
+        allow_conditional_models=True,
+    )
+    record, _ = service.submit(_request())
+
+    # Act
+    first_claim = service.try_claim(record.run_id, "worker-a", lease_seconds=600)
+    blocked_claim = service.try_claim(record.run_id, "worker-b", lease_seconds=600)
+    expired = service.get(record.run_id)
+    expected_version = expired.version
+    expired.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    expired.version += 1
+    repository.save(expired, expected_version=expected_version)
+    replacement_claim = service.try_claim(record.run_id, "worker-b", lease_seconds=600)
+
+    # Assert
+    assert first_claim is not None and first_claim.worker_id == "worker-a"
+    assert blocked_claim is None
+    assert replacement_claim is not None and replacement_claim.worker_id == "worker-b"
+    with pytest.raises(RunConflict, match="another worker"):
+        service.transition(
+            record.run_id,
+            RunStatus.COMPLETE,
+            expected_worker_id="worker-a",
+        )
 
 
 def test_given_dispatch_failure_when_resubmitting_then_same_queued_run_is_redriven() -> None:

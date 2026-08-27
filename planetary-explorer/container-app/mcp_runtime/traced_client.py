@@ -98,6 +98,13 @@ def _redact_sensitive_args(value: Any) -> Any:
     return value
 
 
+def redact_sensitive_value(value: Any) -> Any:
+    """Return a model- and trace-safe copy of a structured value."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return _redact_sensitive_args(value)
+
+
 @dataclass
 class TraceEntry:
     """One row in the per-turn trace buffer."""
@@ -303,7 +310,7 @@ class TracedMcpClient:
             turn_id=self.turn_id,
             server_id=self.server_id,
             tool=tool,
-            args=_redact_sensitive_args(args),
+            args=redact_sensitive_value(args),
             tier=tier,
             started_at=time.time(),
         )

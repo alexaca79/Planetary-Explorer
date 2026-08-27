@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import numpy as np
 import rasterio
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 GEOD = Geod(ellps="WGS84")
 UTC = timezone.utc
 ALLOWED_ASSET_HOST_SUFFIXES = (".blob.core.windows.net",)
+WORKER_ID = f"{os.getenv('HOSTNAME', 'geofm-worker')}:{uuid4()}"
 
 
 class WorkerError(RuntimeError):
@@ -275,7 +276,12 @@ def process_run(
     adapter: PlanAuraAdapter | None = None,
 ) -> RunRecord:
     """Execute one persisted run and complete it with citable artefacts."""
-    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=5)
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=5,
+        expected_worker_id=record.worker_id,
+    )
     descriptor = ModelDescriptor.model_validate(record.selected_model)
     recipe = PreprocessingRecipe.model_validate(record.preprocessing_recipe)
     catalog = get_catalog()
@@ -301,7 +307,12 @@ def process_run(
         ) from exc
     if service.get(record.run_id).status is RunStatus.CANCELLED:
         return service.get(record.run_id)
-    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=35)
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=35,
+        expected_worker_id=record.worker_id,
+    )
     try:
         distance = (adapter or PlanAuraAdapter(descriptor)).infer(prepared.values)
     except WorkerError:
@@ -315,7 +326,12 @@ def process_run(
     distance = np.where(prepared.aoi_mask, distance, np.nan).astype(np.float32)
     if service.get(record.run_id).status is RunStatus.CANCELLED:
         return service.get(record.run_id)
-    service.transition(record.run_id, RunStatus.RUNNING, progress_pct=75)
+    service.transition(
+        record.run_id,
+        RunStatus.RUNNING,
+        progress_pct=75,
+        expected_worker_id=record.worker_id,
+    )
 
     features = vectorize_distance(
         distance,
@@ -364,7 +380,7 @@ def process_run(
             encoding="utf-8",
         )
         artifacts = [
-            _upload_artifact(container, record.run_id, path, kind)
+            _upload_artifact(container, record, path, kind)
             for path, kind in (
                 (change_map, "change_distance"),
                 (polygons, "change_polygons"),
@@ -378,6 +394,7 @@ def process_run(
         artifacts=artifacts,
         statistics=statistics,
         features=features,
+        expected_worker_id=record.worker_id,
     )
 
 
@@ -453,37 +470,54 @@ def sanitize_error(error: Exception) -> str:
     return message[:2000]
 
 
+def _close_worker_clients(*clients) -> None:
+    for client in clients:
+        if client is None:
+            continue
+        try:
+            client.close()
+        except Exception as error:
+            logger.warning("GeoFM worker client cleanup failed: %s", sanitize_error(error))
+
+
 def run_one_message() -> bool:
     """Consume and acknowledge at most one Azure Queue message."""
     from azure.identity import DefaultAzureCredential
     from azure.storage.blob import ContainerClient
     from azure.storage.queue import QueueClient
 
-    credential = DefaultAzureCredential()
-    blob_url = os.environ["AZURE_STORAGE_BLOB_ENDPOINT"]
-    queue_url = os.environ["AZURE_STORAGE_QUEUE_ENDPOINT"]
-    container = ContainerClient(
-        account_url=blob_url,
-        container_name=os.getenv("GEOFM_CONTAINER_NAME", "geofm"),
-        credential=credential,
-    )
-    queue = QueueClient(
-        account_url=queue_url,
-        queue_name=os.getenv("GEOFM_QUEUE_NAME", "geofm-jobs"),
-        credential=credential,
-    )
-    poison_queue = QueueClient(
-        account_url=queue_url,
-        queue_name=os.getenv("GEOFM_POISON_QUEUE_NAME", "geofm-poison"),
-        credential=credential,
-    )
-    service = RunService(
-        BlobRunRepository(container),
-        NoopDispatcher(),
-        inventory_lookup=get_catalog().get_asset_inventory,
-        allow_conditional_models=True,
-    )
-    return consume_one_message(queue, service, container, poison_queue=poison_queue)
+    credential = None
+    container = None
+    queue = None
+    poison_queue = None
+    try:
+        credential = DefaultAzureCredential()
+        blob_url = os.environ["AZURE_STORAGE_BLOB_ENDPOINT"]
+        queue_url = os.environ["AZURE_STORAGE_QUEUE_ENDPOINT"]
+        container = ContainerClient(
+            account_url=blob_url,
+            container_name=os.getenv("GEOFM_CONTAINER_NAME", "geofm"),
+            credential=credential,
+        )
+        queue = QueueClient(
+            account_url=queue_url,
+            queue_name=os.getenv("GEOFM_QUEUE_NAME", "geofm-jobs"),
+            credential=credential,
+        )
+        poison_queue = QueueClient(
+            account_url=queue_url,
+            queue_name=os.getenv("GEOFM_POISON_QUEUE_NAME", "geofm-poison"),
+            credential=credential,
+        )
+        service = RunService(
+            BlobRunRepository(container),
+            NoopDispatcher(),
+            inventory_lookup=get_catalog().get_asset_inventory,
+            allow_conditional_models=True,
+        )
+        return consume_one_message(queue, service, container, poison_queue=poison_queue)
+    finally:
+        _close_worker_clients(poison_queue, queue, container, credential)
 
 
 def _quarantine_message(
@@ -526,8 +560,17 @@ def consume_one_message(
     poison_queue=None,
 ) -> bool:
     """Process one queue message and acknowledge only after durable resolution."""
+    lease_seconds = min(
+        604800,
+        max(60, int(os.getenv("GEOFM_WORKER_LEASE_SECONDS", "21600"))),
+    )
     message = next(
-        iter(queue.receive_messages(messages_per_page=1, visibility_timeout=1800)),
+        iter(
+            queue.receive_messages(
+                messages_per_page=1,
+                visibility_timeout=lease_seconds,
+            )
+        ),
         None,
     )
     if message is None:
@@ -551,11 +594,18 @@ def consume_one_message(
 
     try:
         record = service.get(run_id)
-        # A redelivered running record means the prior queue visibility lease
-        # expired. Restart the idempotent run; version checks protect cancel.
         if record.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
-            process_run(record, service, container)
-            should_delete = True
+            if isinstance(service, RunService):
+                record = service.try_claim(
+                    run_id,
+                    WORKER_ID,
+                    lease_seconds=lease_seconds,
+                )
+            if record is None:
+                should_delete = False
+            else:
+                process_run(record, service, container)
+                should_delete = True
         elif record.status is RunStatus.FAILED:
             should_delete = _quarantine_message(
                 poison_queue,
@@ -584,6 +634,7 @@ def consume_one_message(
                         record.run_id,
                         RunStatus.FAILED,
                         error=sanitize_error(exc),
+                        expected_worker_id=record.worker_id,
                     )
                 except Exception as persistence_error:
                     logger.error(
@@ -605,6 +656,7 @@ def consume_one_message(
                     record.run_id,
                     RunStatus.FAILED,
                     error=sanitize_error(exc),
+                    expected_worker_id=record.worker_id,
                 )
             except Exception as persistence_error:
                 logger.error(
@@ -648,7 +700,13 @@ def consume_one_message(
             )
     finally:
         if should_delete:
-            queue.delete_message(message)
+            try:
+                queue.delete_message(message)
+            except Exception as error:
+                logger.warning(
+                    "GeoFM worker could not acknowledge a resolved message: %s",
+                    sanitize_error(error),
+                )
     return True
 
 
@@ -779,16 +837,51 @@ def _write_output_stac(
     path.write_text(json.dumps(item), encoding="utf-8")
 
 
-def _upload_artifact(container, run_id: UUID, path: Path, kind: str) -> RunArtifact:
+def _upload_artifact(
+    container,
+    run: RunRecord | UUID,
+    path: Path,
+    kind: str,
+) -> RunArtifact:
     content = path.read_bytes()
     digest = hashlib.sha256(content).hexdigest()
-    blob_name = f"runs/{run_id}/{path.name}"
+    if isinstance(run, RunRecord):
+        run_id = run.run_id
+        worker_key = hashlib.sha256(
+            (run.worker_id or f"version-{run.version}").encode("utf-8")
+        ).hexdigest()[:16]
+        blob_name = (
+            f"runs/{run_id}/attempts/{run.attempt}/workers/{worker_key}/"
+            f"{digest}/{path.name}"
+        )
+    else:
+        run_id = run
+        blob_name = f"runs/{run_id}/legacy/{digest}/{path.name}"
+    blob = container.get_blob_client(blob_name)
     try:
-        container.get_blob_client(blob_name).upload_blob(content, overwrite=True)
+        blob.upload_blob(
+            content,
+            overwrite=False,
+            metadata={"sha256": digest},
+        )
     except Exception as exc:
-        raise RunRepositoryError(
-            f"Artifact '{path.name}' could not be uploaded."
-        ) from exc
+        if getattr(exc, "status_code", None) != 409:
+            raise RunRepositoryError(
+                f"Artifact '{path.name}' could not be uploaded."
+            ) from exc
+        try:
+            properties = blob.get_blob_properties()
+            metadata = getattr(properties, "metadata", None)
+            if metadata is None and isinstance(properties, dict):
+                metadata = properties.get("metadata")
+        except Exception as metadata_error:
+            raise RunRepositoryError(
+                f"Artifact '{path.name}' exists but could not be verified."
+            ) from metadata_error
+        if not isinstance(metadata, dict) or metadata.get("sha256") != digest:
+            raise RunRepositoryError(
+                f"Artifact '{path.name}' already exists with different content."
+            ) from exc
     return RunArtifact(
         kind=kind,
         uri=urljoin(container.url.rstrip("/") + "/", blob_name),

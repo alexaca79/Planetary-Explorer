@@ -98,6 +98,12 @@ param(
     [bool]$DeployGeoFm = $false,
 
     [Parameter(Mandatory=$false)]
+    [bool]$DeployWebSearchMcp = $false,
+
+    [Parameter(Mandatory=$false)]
+    [string]$WebSearchMcpApiKey = '',
+
+    [Parameter(Mandatory=$false)]
     [string]$GeoFmMcpApiKey = '',
 
     [Parameter(Mandatory=$false)]
@@ -137,6 +143,18 @@ $deployGpt5Resolved = Resolve-Bool $DeployGpt5 'DEPLOY_GPT5'
 $deployGpt56Resolved = Resolve-Bool $DeployGpt56 'DEPLOY_GPT56'
 $deployEmbeddingResolved = Resolve-Bool $DeployEmbeddingModel 'DEPLOY_EMBEDDING_MODEL'
 $deployGeoFmResolved = Resolve-Bool $DeployGeoFm 'DEPLOY_GEOFM'
+$deployWebSearchResolved = Resolve-Bool $DeployWebSearchMcp 'DEPLOY_WEB_SEARCH_MCP'
+if (-not $WebSearchMcpApiKey -and $env:WEB_SEARCH_MCP_API_KEY) {
+    $WebSearchMcpApiKey = $env:WEB_SEARCH_MCP_API_KEY
+}
+if ($deployWebSearchResolved -and -not $WebSearchMcpApiKey) {
+    $WebSearchMcpApiKey = [Convert]::ToBase64String(
+        [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+    )
+}
+if ($deployWebSearchResolved -and $WebSearchMcpApiKey.Length -lt 32) {
+    throw 'WebSearchMcpApiKey must contain at least 32 characters.'
+}
 
 if (-not $GeoFmMcpApiKey -and $env:GEOFM_MCP_API_KEY) {
     $GeoFmMcpApiKey = $env:GEOFM_MCP_API_KEY
@@ -224,6 +242,7 @@ if (-not $FrontendUrl) {
     $FrontendUrl = $resolvedTargets.frontend_url
 }
 $existingApiUrl = $resolvedTargets.api_container_app_url
+$existingContainerAppsEnvironmentName = $resolvedTargets.container_apps_environment_name
 $deployApiContainerResolved = [bool]$resolvedTargets.deploy_api_container
 if ($PSBoundParameters.ContainsKey('ContainerImage') -and $ContainerImage) {
     $deployApiContainerResolved = $true
@@ -303,6 +322,7 @@ $inlineParams = @(
     "location=$Location",
     "containerImage=$ContainerImage",
     "apiContainerAppName=$ApiContainerAppName",
+    "existingContainerAppsEnvironmentName=$existingContainerAppsEnvironmentName",
     "existingApiUrl=$existingApiUrl",
     "frontendUrl=$FrontendUrl",
     "frontendWebAppName=$FrontendWebAppName",
@@ -331,6 +351,8 @@ $inlineParams += "deployEmbeddingModel=$($deployEmbeddingResolved.ToString().ToL
 $inlineParams += "agentProjectName=$AgentProjectName"
 $inlineParams += "deployGeoFm=$($deployGeoFmResolved.ToString().ToLower())"
 $inlineParams += "deployGeoFmServices=$($deployGeoFmResolved.ToString().ToLower())"
+$inlineParams += "deployWebSearchMcp=$($deployWebSearchResolved.ToString().ToLower())"
+$inlineParams += "webSearchMcpApiKey=$WebSearchMcpApiKey"
 $inlineParams += "geoFmMcpApiKey=$GeoFmMcpApiKey"
 $inlineParams += "geoFmOwnerSigningKey=$GeoFmOwnerSigningKey"
 
@@ -368,6 +390,26 @@ if ($LASTEXITCODE -eq 0) {
     $containerApp = $deploymentOutputs.AZURE_CONTAINER_APP_NAME.value
     $registry = $deploymentOutputs.AZURE_CONTAINER_REGISTRY_NAME.value
     $appService = $deploymentOutputs.AZURE_WEB_APP_NAME.value
+    if ($containerApp -and (
+        -not $deployApiContainerResolved -or
+        $ContainerImage -ne 'mcr.microsoft.com/k8se/quickstart:latest'
+    )) {
+        $env:AZURE_COSMOS_CHAT_HISTORY_ENDPOINT = $deploymentOutputs.AZURE_COSMOS_CHAT_HISTORY_ENDPOINT.value
+        $env:AZURE_COSMOS_CHAT_HISTORY_DATABASE = $deploymentOutputs.AZURE_COSMOS_CHAT_HISTORY_DATABASE.value
+        $env:AZURE_COSMOS_CHAT_HISTORY_CONTAINER = $deploymentOutputs.AZURE_COSMOS_CHAT_HISTORY_CONTAINER.value
+        $env:AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT = $deploymentOutputs.AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT.value
+        $env:AZURE_CHAT_ARTIFACT_CONTAINER = $deploymentOutputs.AZURE_CHAT_ARTIFACT_CONTAINER.value
+        $env:AZURE_WEB_SEARCH_MCP_URL = $deploymentOutputs.AZURE_WEB_SEARCH_MCP_URL.value
+        $env:WEB_SEARCH_MCP_API_KEY = $WebSearchMcpApiKey
+        $env:AZURE_GEOFM_MCP_URL = $deploymentOutputs.AZURE_GEOFM_MCP_URL.value
+        $env:GEOFM_MCP_API_KEY = $GeoFmMcpApiKey
+        $env:GEOFM_OWNER_SIGNING_KEY = $GeoFmOwnerSigningKey
+        $env:PUBLIC_DEMO_MODE = $publicDemo.ToString().ToLower()
+        $apiPostDeploy = Join-Path $PSScriptRoot 'scripts/configure_api_postdeploy.py'
+        python $apiPostDeploy --profile api --name $containerApp `
+            --resource-group $ResourceGroup
+        if ($LASTEXITCODE -ne 0) { throw 'API optional-service reconciliation failed.' }
+    }
     if (-not $appService -and $FrontendUrl) {
         $frontendHost = ([Uri]$FrontendUrl).Host
         if ($frontendHost.EndsWith('.azurewebsites.net')) {
@@ -484,6 +526,87 @@ if ($LASTEXITCODE -eq 0) {
             if ($LASTEXITCODE -ne 0) { throw 'GeoFM API endpoint reconciliation failed.' }
         }
         Write-Host "GeoFM images published and verified." -ForegroundColor Green
+    }
+
+    if ($deployWebSearchResolved) {
+        Write-Host "`nPublishing Azure Web Search MCP image..." -ForegroundColor Cyan
+        $webSearchApp = az deployment sub show --name $deploymentName `
+            --query "properties.outputs.AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME.value" -o tsv
+        if (-not $registry -or -not $webSearchApp) {
+            throw "Web Search MCP deployment outputs are incomplete."
+        }
+        $imageTag = Get-Date -Format "yyyyMMddHHmmss"
+        $webSearchRoot = Join-Path $PSScriptRoot "planetary-explorer/web-search-mcp"
+        $webSearchImage = "planetary-explorer-web-search-mcp:$imageTag"
+        $buildRegistry = $registry
+        $temporaryBuildRegistry = ''
+        $agentPool = az acr agentpool list --registry $registry `
+            --query "[?count > ``0``].name | [0]" -o tsv 2>$null
+        $registryPna = az acr show --name $registry --resource-group $ResourceGroup `
+            --query publicNetworkAccess -o tsv
+        $registryDefaultAction = az acr show --name $registry --resource-group $ResourceGroup `
+            --query networkRuleSet.defaultAction -o tsv
+        if (-not $agentPool -and (
+            $registryPna -eq 'Disabled' -or $registryDefaultAction -eq 'Deny'
+        )) {
+            $temporaryBuildRegistry = 'crbuild' + [guid]::NewGuid().ToString('N').Substring(0, 16)
+            az acr create --name $temporaryBuildRegistry --resource-group $ResourceGroup `
+                --location $Location --sku Basic --admin-enabled false `
+                --public-network-enabled true --output none
+            if ($LASTEXITCODE -ne 0) { throw 'Temporary Web Search build ACR creation failed.' }
+            $buildRegistry = $temporaryBuildRegistry
+        }
+        try {
+            $webSearchBuild = @(
+                'acr', 'build',
+                '--registry', $buildRegistry,
+                '--image', $webSearchImage,
+                '--file', (Join-Path $webSearchRoot 'Dockerfile'),
+                $webSearchRoot,
+                '--platform', 'linux/amd64'
+            )
+            if ($agentPool) { $webSearchBuild += @('--agent-pool', $agentPool) }
+            & az @webSearchBuild
+            if ($LASTEXITCODE -ne 0) { throw "Web Search MCP image build failed." }
+            if ($buildRegistry -ne $registry) {
+                $buildRegistryId = az acr show --name $buildRegistry `
+                    --resource-group $ResourceGroup --query id -o tsv
+                az acr import --name $registry --resource-group $ResourceGroup `
+                    --registry $buildRegistryId --source $webSearchImage `
+                    --image $webSearchImage --force
+                if ($LASTEXITCODE -ne 0) { throw 'Web Search image import failed.' }
+            }
+        }
+        finally {
+            if ($temporaryBuildRegistry) {
+                az acr delete --name $temporaryBuildRegistry `
+                    --resource-group $ResourceGroup --yes --output none
+            }
+        }
+        $registryServer = az acr show --name $registry --resource-group $ResourceGroup `
+            --query loginServer -o tsv
+        az containerapp registry set --name $webSearchApp `
+            --resource-group $ResourceGroup --server $registryServer `
+            --identity system --output none
+        if ($LASTEXITCODE -ne 0) { throw "Web Search MCP registry binding failed." }
+        az containerapp update --name $webSearchApp --resource-group $ResourceGroup `
+            --image "$registryServer/$webSearchImage" --output none
+        if ($LASTEXITCODE -ne 0) { throw "Web Search MCP image update failed." }
+        $postDeployScript = Join-Path $PSScriptRoot 'scripts/configure_api_postdeploy.py'
+        python $postDeployScript --profile web-search --name $webSearchApp `
+            --resource-group $ResourceGroup
+        if ($LASTEXITCODE -ne 0) { throw "Web Search MCP probe configuration failed." }
+        if ($containerApp) {
+            $webSearchUrl = az deployment sub show --name $deploymentName `
+                --query "properties.outputs.AZURE_WEB_SEARCH_MCP_URL.value" -o tsv
+            az containerapp update --name $containerApp --resource-group $ResourceGroup `
+                --set-env-vars `
+                    "WEB_SEARCH_ENABLED=true" `
+                    "WEB_SEARCH_MCP_URL=$webSearchUrl" `
+                --output none
+            if ($LASTEXITCODE -ne 0) { throw "Web Search API endpoint reconciliation failed." }
+        }
+        Write-Host "Web Search MCP image published and verified." -ForegroundColor Green
     }
 
     Write-Host "`nDeployed Resources:" -ForegroundColor Yellow

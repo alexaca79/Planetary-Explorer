@@ -22,6 +22,10 @@ param foundryProjectEndpoint string
 @description('Existing Azure OpenAI deployment used to synthesize grounded search results.')
 param modelDeploymentName string
 
+@secure()
+@description('Shared API key required on Web Search MCP data-plane requests.')
+param apiKey string
+
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-10-02-preview' existing = {
   name: containerAppsEnvironmentName
 }
@@ -41,6 +45,18 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
     environmentId: containerAppsEnvironment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: [
+        {
+          name: 'web-search-mcp-api-key'
+          value: apiKey
+        }
+      ]
+      registries: [
+        {
+          server: containerRegistry.properties.loginServer
+          identity: 'system'
+        }
+      ]
       ingress: {
         external: false
         targetPort: 8080
@@ -75,6 +91,10 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'FOUNDRY_MODEL'
               value: modelDeploymentName
+            }
+            {
+              name: 'WEB_SEARCH_MCP_API_KEY'
+              secretRef: 'web-search-mcp-api-key'
             }
           ]
         }

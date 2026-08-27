@@ -29,12 +29,14 @@ class Source(BaseModel):
       - "dataset" -> STAC collection (link to PC explorer)
       - "raster"  -> Specific raster URL/COG used for a measurement
       - "api"     -> External authoritative API response (NOAA, USGS, ...)
+    - "web"     -> Public web result returned by the current-information tool
+    - "calculation" -> Deterministic local or service-side calculation
     """
 
     title: str
     uri: Optional[str] = None
     excerpt: Optional[str] = None
-    kind: Literal["doc", "dataset", "raster", "api"] = "doc"
+    kind: Literal["doc", "dataset", "raster", "api", "web", "calculation"] = "doc"
     score: Optional[float] = None
 
 

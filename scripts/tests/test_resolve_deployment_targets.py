@@ -26,6 +26,10 @@ def test_given_legacy_resources_when_resolving_then_existing_names_and_plan_are_
             "name": "ca-web-xqpvvhppatu4i",
             "tags": {},
             "properties": {
+                "environmentId": (
+                    "/subscriptions/example/resourceGroups/rg-earthcopilot/"
+                    "providers/Microsoft.App/managedEnvironments/cae-earthcopilot"
+                ),
                 "configuration": {
                     "ingress": {"fqdn": "ca-web-xqpvvhppatu4i.example.net"}
                 }
@@ -51,6 +55,7 @@ def test_given_legacy_resources_when_resolving_then_existing_names_and_plan_are_
     # Assert
     assert targets.api_container_app_name == "ca-web-xqpvvhppatu4i"
     assert targets.api_container_app_url == "https://ca-web-xqpvvhppatu4i.example.net"
+    assert targets.container_apps_environment_name == "cae-earthcopilot"
     assert targets.frontend_web_app_name == "app-earthcopilot-e1bb5a9c"
     assert targets.frontend_app_service_plan_name == "asp-earthcopilot"
     assert targets.frontend_url == (
@@ -58,6 +63,51 @@ def test_given_legacy_resources_when_resolving_then_existing_names_and_plan_are_
     )
     assert targets.deploy_api_container is False
     assert targets.deploy_frontend is False
+
+
+def test_given_adopted_environment_when_writing_azd_then_exact_name_is_persisted(
+    monkeypatch,
+) -> None:
+    # Arrange
+    calls: list[list[str]] = []
+    monkeypatch.setattr(MODULE, "run_command", lambda arguments: calls.append(arguments) or "")
+    targets = MODULE.DeploymentTargets(
+        api_container_app_name="api",
+        container_apps_environment_name="cae-existing",
+        deploy_api_container=False,
+    )
+
+    # Act
+    MODULE.write_azd_environment(targets)
+
+    # Assert
+    assert [
+        "azd",
+        "env",
+        "set",
+        "EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME",
+        "cae-existing",
+    ] in calls
+
+
+def test_given_no_adopted_environment_when_writing_azd_then_stale_name_is_cleared(
+    monkeypatch,
+) -> None:
+    # Arrange
+    calls: list[list[str]] = []
+    monkeypatch.setattr(MODULE, "run_command", lambda arguments: calls.append(arguments) or "")
+
+    # Act
+    MODULE.write_azd_environment(MODULE.DeploymentTargets())
+
+    # Assert
+    assert [
+        "azd",
+        "env",
+        "set",
+        "EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME",
+        "",
+    ] in calls
 
 
 def test_given_multiple_possible_apis_when_resolving_then_ambiguity_is_rejected() -> None:

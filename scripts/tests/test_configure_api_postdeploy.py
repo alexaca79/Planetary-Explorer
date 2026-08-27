@@ -138,6 +138,34 @@ def test_given_web_search_profile_when_building_update_then_mcp_probes_are_resto
     ) == "/ready"
 
 
+def test_given_optional_outputs_when_reconciling_api_then_services_are_configured(
+    monkeypatch,
+) -> None:
+    # Arrange
+    commands: list[list[str]] = []
+    monkeypatch.setenv("AZURE_COSMOS_CHAT_HISTORY_ENDPOINT", "https://cosmos.example")
+    monkeypatch.setenv("AZURE_COSMOS_CHAT_HISTORY_DATABASE", "planetary-explorer")
+    monkeypatch.setenv("AZURE_COSMOS_CHAT_HISTORY_CONTAINER", "chat-history")
+    monkeypatch.setenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "https://blob.example")
+    monkeypatch.setenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts")
+    monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://search.internal")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "w" * 32)
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    # Act
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    # Assert
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "PE_FEATURE_CHAT_HISTORY=true" in update
+    assert "CHAT_HISTORY_STORE=cosmos" in update
+    assert "WEB_SEARCH_ENABLED=true" in update
+    assert "WEB_SEARCH_MCP_URL=https://search.internal" in update
+    assert "WEB_SEARCH_MCP_API_KEY=secretref:web-search-mcp-api-key" in update
+    assert any(command[:3] == ["containerapp", "secret", "set"] for command in commands)
+
+
 def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retries(
     monkeypatch,
 ) -> None:

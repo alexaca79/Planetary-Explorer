@@ -118,6 +118,10 @@ param webSearchMcpUrl string = ''
 @description('Enable current-date and web-search MCP tools in the AnalystAgent.')
 param enableWebSearch bool = false
 
+@secure()
+@description('Shared API key for backend-to-Web Search MCP calls.')
+param webSearchMcpApiKey string = ''
+
 // UI feature flags surfaced via /api/config so the frontend can show or
 // lock controls without redeploying the bundle. These are independent of
 // the deploy* flags on the infra side — e.g. an operator can deploy the
@@ -241,6 +245,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
         {
           name: 'geofm-owner-signing-key'
           value: geoFmOwnerSigningKey
+        }
+      ] : [], !empty(webSearchMcpApiKey) ? [
+        {
+          name: 'web-search-mcp-api-key'
+          value: webSearchMcpApiKey
         }
       ] : [],
       // Forecast Agent provider URLs sourced from Key Vault via system MI.
@@ -509,6 +518,11 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'GEOFM_OWNER_SIGNING_KEY'
               secretRef: 'geofm-owner-signing-key'
+            }
+          ] : [], !empty(webSearchMcpApiKey) ? [
+            {
+              name: 'WEB_SEARCH_MCP_API_KEY'
+              secretRef: 'web-search-mcp-api-key'
             }
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the

@@ -144,6 +144,22 @@ def _contains_point(item: dict[str, Any], latitude: float, longitude: float) -> 
     )
 
 
+def _covers_bbox(
+    item: dict[str, Any],
+    bbox: tuple[float, float, float, float],
+) -> bool:
+    item_bbox = item.get("bbox") or []
+    if len(item_bbox) < 4:
+        return False
+    west, south, east, north = bbox
+    return (
+        float(item_bbox[0]) <= west
+        and float(item_bbox[1]) <= south
+        and float(item_bbox[2]) >= east
+        and float(item_bbox[3]) >= north
+    )
+
+
 def _cloud_cover(item: dict[str, Any]) -> float:
     """Return item-level cloud cover, sorting missing values last."""
     raw = (item.get("properties") or {}).get("eo:cloud_cover")
@@ -233,6 +249,7 @@ def _sample_sentinel_2_nbr(
     import planetary_computer as planetary_computer
     import rasterio
     from rasterio.enums import Resampling
+    from rasterio.vrt import WarpedVRT
 
     signed_item = planetary_computer.sign(item)
     assets = signed_item.get("assets") or {}
@@ -259,15 +276,8 @@ def _sample_sentinel_2_nbr(
         with rasterio.open(assets[nir_asset]["href"]) as nir_src, rasterio.open(
             assets[swir_asset]["href"]
         ) as swir_src:
-            raster_window = _window_for_bounds(nir_src, bbox)
+            raster_window = _window_for_bounds(swir_src, bbox)
             output_shape = _output_shape(raster_window)
-            nir = nir_src.read(
-                1,
-                window=raster_window,
-                out_shape=output_shape,
-                masked=True,
-                resampling=Resampling.bilinear,
-            ).astype("float32")
             swir = swir_src.read(
                 1,
                 window=raster_window,
@@ -275,6 +285,21 @@ def _sample_sentinel_2_nbr(
                 masked=True,
                 resampling=Resampling.bilinear,
             ).astype("float32")
+            with WarpedVRT(
+                nir_src,
+                crs=swir_src.crs,
+                transform=swir_src.transform,
+                width=swir_src.width,
+                height=swir_src.height,
+                resampling=Resampling.bilinear,
+            ) as aligned_nir:
+                nir = aligned_nir.read(
+                    1,
+                    window=raster_window,
+                    out_shape=output_shape,
+                    masked=True,
+                    resampling=Resampling.bilinear,
+                ).astype("float32")
 
             nir_values = np.asarray(nir.filled(np.nan), dtype="float32")
             swir_values = np.asarray(swir.filled(np.nan), dtype="float32")
@@ -284,14 +309,21 @@ def _sample_sentinel_2_nbr(
 
             if mask_asset and (assets.get(mask_asset) or {}).get("href"):
                 with rasterio.open(assets[mask_asset]["href"]) as mask_src:
-                    mask_window = _window_for_bounds(mask_src, bbox)
-                    scene_classification = mask_src.read(
-                        1,
-                        window=mask_window,
-                        out_shape=output_shape,
-                        masked=True,
+                    with WarpedVRT(
+                        mask_src,
+                        crs=swir_src.crs,
+                        transform=swir_src.transform,
+                        width=swir_src.width,
+                        height=swir_src.height,
                         resampling=Resampling.nearest,
-                    )
+                    ) as aligned_mask:
+                        scene_classification = aligned_mask.read(
+                            1,
+                            window=raster_window,
+                            out_shape=output_shape,
+                            masked=True,
+                            resampling=Resampling.nearest,
+                        )
                 valid &= np.isin(
                     np.asarray(scene_classification.filled(0)),
                     tuple(_VALID_SENTINEL_2_SCL_CLASSES),
@@ -368,11 +400,20 @@ def sample_temporal_nbr(
             f"No {collection} scenes intersect the extent during {window.stac_datetime}."
         )
 
+    covering_items = [item for item in items if _covers_bbox(item, bbox)]
+    if not covering_items:
+        raise RasterSamplingError(
+            f"No single {collection} scene fully covers the requested extent during "
+            f"{window.stac_datetime}; use a smaller extent or a mosaic workflow."
+        )
+
     latitude = (south + north) / 2
     longitude = (west + east) / 2
-    low_cloud_items = [item for item in items if _cloud_cover(item) < _LOW_CLOUD_THRESHOLD]
+    low_cloud_items = [
+        item for item in covering_items if _cloud_cover(item) < _LOW_CLOUD_THRESHOLD
+    ]
     candidates = rank_stac_candidates(
-        low_cloud_items or items,
+        low_cloud_items or covering_items,
         target=window.target,
         latitude=latitude,
         longitude=longitude,
@@ -390,6 +431,7 @@ def sample_temporal_nbr(
 
     detail = "; ".join(failures[:3])
     raise RasterSamplingError(
-        f"Found {len(items)} {collection} scenes near {when}, but none returned valid NBR pixels. "
+        f"Found {len(covering_items)} covering {collection} scenes near {when}, "
+        f"but none returned valid NBR pixels. "
         f"{detail}"
     )

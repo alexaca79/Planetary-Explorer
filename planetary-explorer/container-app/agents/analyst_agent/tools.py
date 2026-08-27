@@ -220,12 +220,30 @@ async def search_web(
             for citation in structured.get("citations", [])
             if isinstance(citation, dict) and citation.get("url")
         ]
-        out = {
-            "success": True,
-            "answer": structured.get("answer") or "",
-            "structured": structured,
-            "sources": sources,
-        }
+        cited_urls = {source["uri"] for source in sources}
+        for source_url in structured.get("source_urls", []) or []:
+            if isinstance(source_url, str) and source_url and source_url not in cited_urls:
+                sources.append(
+                    {
+                        "title": "Web source",
+                        "uri": source_url,
+                        "kind": "web",
+                    }
+                )
+                cited_urls.add(source_url)
+        answer = structured.get("answer") or ""
+        if not answer or not sources:
+            out = {
+                "success": False,
+                "error": "Azure Web Search returned no grounded answer with a usable source.",
+            }
+        else:
+            out = {
+                "success": True,
+                "answer": answer,
+                "structured": structured,
+                "sources": sources,
+            }
     except Exception as error:
         logger.exception("search_web failed")
         out = {"success": False, "error": str(error)}

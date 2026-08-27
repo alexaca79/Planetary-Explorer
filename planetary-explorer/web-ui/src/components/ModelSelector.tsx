@@ -82,6 +82,30 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     onReasoningEffortChangeRef.current = onReasoningEffortChange;
   }, [onReasoningEffortChange]);
 
+  useEffect(() => {
+    if (models.length === 0 || !selectedModel) return;
+    const fallbackModel = models.find((model) => model.isDefault)?.id || models[0].id;
+    const nextModel = models.some(
+      (model) => model.id === selectedModel && model.isAvailable,
+    )
+      ? selectedModel
+      : fallbackModel;
+    const capability = capabilities[nextModel] || DEFAULT_CAPABILITY;
+    const requestedEffort = selectedReasoningEffort || currentReasoningEffortRef.current;
+    const nextEffort = capability.reasoning_efforts.includes(requestedEffort)
+      ? requestedEffort
+      : capability.default_reasoning_effort;
+
+    setCurrentModel(nextModel);
+    setCurrentReasoningEffort(nextEffort);
+    localStorage.setItem('planetaryexplorer-model', nextModel);
+    localStorage.setItem('planetaryexplorer-reasoning-effort', nextEffort);
+    if (nextModel !== selectedModel) onModelChangeRef.current?.(nextModel);
+    if (nextEffort !== selectedReasoningEffort) {
+      onReasoningEffortChangeRef.current?.(nextEffort);
+    }
+  }, [capabilities, models, selectedModel, selectedReasoningEffort]);
+
   // Fetch available models from health endpoint
   useEffect(() => {
     const fetchAvailableModels = async () => {

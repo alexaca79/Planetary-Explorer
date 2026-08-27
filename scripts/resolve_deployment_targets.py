@@ -26,6 +26,7 @@ class DeploymentTargets:
 
     api_container_app_name: str = ""
     api_container_app_url: str = ""
+    container_apps_environment_name: str = ""
     frontend_web_app_name: str = ""
     frontend_app_service_plan_name: str = ""
     frontend_url: str = ""
@@ -120,6 +121,23 @@ def _api_url(container_apps: list[dict[str, object]], api_name: str) -> str:
     return f"https://{fqdn}" if fqdn else ""
 
 
+def _container_apps_environment_name(
+    container_apps: list[dict[str, object]],
+    api_name: str,
+) -> str:
+    selected = next(
+        (app for app in container_apps if _resource_name(app) == api_name),
+        None,
+    )
+    properties = selected.get("properties") if isinstance(selected, dict) else None
+    environment_id = (
+        properties.get("environmentId") or properties.get("managedEnvironmentId")
+        if isinstance(properties, dict)
+        else ""
+    )
+    return str(environment_id).rstrip("/").rsplit("/", maxsplit=1)[-1]
+
+
 def _plan_name(web_app: dict[str, object]) -> str:
     plan_id = str(web_app.get("appServicePlanId", "")).rstrip("/")
     return plan_id.rsplit("/", maxsplit=1)[-1] if plan_id else ""
@@ -195,6 +213,10 @@ def select_deployment_targets(
     return DeploymentTargets(
         api_container_app_name=resolved_api_name,
         api_container_app_url=_api_url(container_apps, resolved_api_name),
+        container_apps_environment_name=_container_apps_environment_name(
+            container_apps,
+            resolved_api_name,
+        ),
         frontend_web_app_name=resolved_web_name,
         frontend_app_service_plan_name=resolved_plan_name,
         frontend_url=resolved_frontend_url,
@@ -271,6 +293,9 @@ def write_azd_environment(targets: DeploymentTargets) -> None:
     values = {
         "API_CONTAINER_APP_NAME": targets.api_container_app_name,
         "API_CONTAINER_APP_URL": targets.api_container_app_url,
+        "EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME": (
+            targets.container_apps_environment_name
+        ),
         "AZURE_WEB_APP_NAME": targets.frontend_web_app_name,
         "AZURE_APP_SERVICE_PLAN_NAME": targets.frontend_app_service_plan_name,
         "FRONTEND_URL": targets.frontend_url,
@@ -278,9 +303,8 @@ def write_azd_environment(targets: DeploymentTargets) -> None:
         "DEPLOY_FRONTEND": str(targets.deploy_frontend).lower(),
     }
     for name, value in values.items():
-        if value != "":
-            run_command(["azd", "env", "set", name, str(value)])
-            logger.info("Adopting %s=%s", name, value)
+        run_command(["azd", "env", "set", name, str(value)])
+        logger.info("Adopting %s=%s", name, value)
 
 
 def validate_fresh_authentication(

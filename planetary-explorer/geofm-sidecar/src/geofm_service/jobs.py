@@ -9,7 +9,7 @@ import math
 import sqlite3
 import threading
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
@@ -424,6 +424,41 @@ class RunService:
             raise RunNotFound(f"Run '{run_id}' was not found.")
         return record
 
+    def try_claim(
+        self,
+        run_id: UUID,
+        worker_id: str,
+        *,
+        lease_seconds: int,
+    ) -> RunRecord | None:
+        """Claim a queued or expired running attempt with repository CAS."""
+        record = self.get(run_id)
+        if record.status in TERMINAL_STATUSES:
+            return None
+        now = datetime.now(UTC)
+        if (
+            record.status is RunStatus.RUNNING
+            and record.worker_id != worker_id
+            and record.lease_expires_at is not None
+            and record.lease_expires_at > now
+        ):
+            return None
+        expected_version = record.version
+        record.status = RunStatus.RUNNING
+        record.worker_id = worker_id
+        record.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        record.version = expected_version + 1
+        record.updated_at = now
+        try:
+            self._repository.save(record, expected_version=expected_version)
+        except RunConflict:
+            return None
+        except RunError:
+            raise
+        except Exception as exc:
+            raise RunRepositoryError(f"Run '{run_id}' could not be claimed.") from exc
+        return record
+
     def retry_for_owner(self, run_id: UUID, requested_by: str) -> RunRecord:
         """Reset one failed owned run and dispatch a new durable attempt."""
         record = self.get_for_owner(run_id, requested_by)
@@ -464,10 +499,13 @@ class RunService:
         artifacts: list[RunArtifact] | None = None,
         statistics: dict | None = None,
         features: list[dict] | None = None,
+        expected_worker_id: str | None = None,
     ) -> RunRecord:
         """Apply a valid lifecycle transition and persist it."""
         record = self.get(run_id)
         expected_version = record.version
+        if expected_worker_id is not None and record.worker_id != expected_worker_id:
+            raise RunConflict(f"Run '{run_id}' is owned by another worker.")
         if status not in ALLOWED_TRANSITIONS[record.status]:
             raise RunError(f"Invalid run transition from '{record.status}' to '{status}'.")
         record.status = status
@@ -483,6 +521,9 @@ class RunService:
             record.statistics = statistics
         if features is not None:
             record.features = features
+        if status in TERMINAL_STATUSES:
+            record.worker_id = None
+            record.lease_expires_at = None
         record.version = expected_version + 1
         record.updated_at = datetime.now(UTC)
         try:
