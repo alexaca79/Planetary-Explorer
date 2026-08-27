@@ -151,6 +151,7 @@ def test_given_web_search_environment_when_registry_discovered_then_server_is_en
 
     # Act
     registry = McpRegistry.discover()
+    monkeypatch.delenv("WEB_SEARCH_MCP_API_KEY")
 
     # Assert
     server = registry.get("web_search")

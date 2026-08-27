@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import os
 from datetime import UTC, datetime
@@ -255,6 +256,24 @@ class McpApiKeyMiddleware(BaseHTTPMiddleware):
                 status_code=503,
             )
         if not supplied or not hmac.compare_digest(supplied, expected):
+            supplied_fingerprint = (
+                hashlib.sha256(supplied.encode("utf-8")).hexdigest()[:12]
+                if supplied
+                else "none"
+            )
+            expected_fingerprint = hashlib.sha256(
+                expected.encode("utf-8")
+            ).hexdigest()[:12]
+            print(
+                "MCP_AUTH_REJECTED "
+                f"header_present={bool(supplied)} "
+                f"supplied_length={len(supplied)} "
+                f"expected_length={len(expected)} "
+                f"supplied_fingerprint={supplied_fingerprint} "
+                f"expected_fingerprint={expected_fingerprint} "
+                f"user_agent={request.headers.get('user-agent', '')}",
+                flush=True,
+            )
             return JSONResponse({"error": "Unauthorized."}, status_code=401)
         return await call_next(request)
 
