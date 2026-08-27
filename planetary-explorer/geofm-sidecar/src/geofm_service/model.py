@@ -266,7 +266,7 @@ def _to_patch_grid(features: object) -> np.ndarray:
         if second == third:
             return tensor.cpu().numpy().astype(np.float32)
         tokens, embed_dim = (second, third) if first == 1 else (first, second)
-        flat = tensor.reshape(-1, tensor.shape[-1])[-tokens:]
+        flat = tensor.reshape(-1, embed_dim)[-tokens:]
         side = math.isqrt(tokens)
         if side * side != tokens:
             flat = flat[1:]

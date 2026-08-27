@@ -470,10 +470,10 @@ def cluster_embeddings(
         raise WorkerError("Too few finite samples remain after quality masking.")
     centroids = _kmeans_plus_plus(samples, max_classes, seed)
     assignments = np.zeros(samples.shape[0], dtype=np.int64)
-    for _ in range(KMEANS_MAX_ITERATIONS):
+    for iteration in range(KMEANS_MAX_ITERATIONS):
         distances = _squared_distances(samples, centroids)
         updated = distances.argmin(axis=1)
-        if np.array_equal(updated, assignments) and _ > 0:
+        if iteration > 0 and np.array_equal(updated, assignments):
             assignments = updated
             break
         assignments = updated

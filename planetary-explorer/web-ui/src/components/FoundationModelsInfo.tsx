@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../services/authHelper';
+import { isHexColour } from '../utils/geofmOverlay';
 import './FoundationModelsInfo.css';
 
 export interface FoundationModelStatus {
@@ -256,7 +257,11 @@ const FoundationModelsInfo: React.FC<FoundationModelsInfoProps> = ({ apiBaseUrl 
                           <span key={`${scheme.scheme_id}-${label.class_value}`} title={label.description}>
                             <span
                               className="foundation-model-swatch"
-                              style={{ backgroundColor: label.colour_hex }}
+                              style={{
+                                backgroundColor: isHexColour(label.colour_hex)
+                                  ? label.colour_hex
+                                  : 'transparent',
+                              }}
                               aria-hidden="true"
                             />
                             {label.name}

@@ -84,7 +84,7 @@ export function getGeoFmFeatureOutline(feature: any): string {
   return isHexColour(colour) ? colour : GEOFM_CHANGE_OUTLINE;
 }
 
-function isHexColour(value: unknown): value is string {
+export function isHexColour(value: unknown): value is string {
   return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
