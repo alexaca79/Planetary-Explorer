@@ -167,6 +167,29 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     assert any(command[:3] == ["containerapp", "secret", "set"] for command in commands)
 
 
+def test_given_public_demo_when_reconciling_api_then_history_endpoints_are_removed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    commands: list[list[str]] = []
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_URL", raising=False)
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    # Act
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    # Assert
+    update = commands[0]
+    assert "PE_FEATURE_CHAT_HISTORY=false" in update
+    assert "CHAT_HISTORY_STORE=disabled" in update
+    assert "COSMOS_CHAT_ENDPOINT" in update
+    assert "CHAT_ARTIFACT_BLOB_ENDPOINT" in update
+    assert "--remove-env-vars" in update
+    assert not any(value.endswith("=") for value in update)
+
+
 def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retries(
     monkeypatch,
 ) -> None:

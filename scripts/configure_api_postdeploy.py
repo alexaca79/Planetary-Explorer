@@ -122,6 +122,7 @@ def _enabled(value: str) -> bool:
 def reconcile_api_optional_services(name: str, resource_group: str) -> None:
     """Apply optional-service outputs to a newly deployed or adopted API."""
     values: list[str] = []
+    removed_values: list[str] = []
     public_demo = _enabled(os.getenv("PUBLIC_DEMO_MODE", ""))
     chat_endpoint = os.getenv("AZURE_COSMOS_CHAT_HISTORY_ENDPOINT", "").strip()
     blob_endpoint = os.getenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
@@ -132,9 +133,16 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
                 [
                     "PE_FEATURE_CHAT_HISTORY=false",
                     "CHAT_HISTORY_STORE=disabled",
-                    "COSMOS_CHAT_ENDPOINT=",
                     "CHAT_ARTIFACT_STORE=disabled",
-                    "CHAT_ARTIFACT_BLOB_ENDPOINT=",
+                ]
+            )
+            removed_values.extend(
+                [
+                    "COSMOS_CHAT_ENDPOINT",
+                    "COSMOS_CHAT_DATABASE",
+                    "COSMOS_CHAT_CONTAINER",
+                    "CHAT_ARTIFACT_BLOB_ENDPOINT",
+                    "CHAT_ARTIFACT_CONTAINER",
                 ]
             )
         elif chat_endpoint and blob_endpoint:
@@ -223,21 +231,21 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
             ]
         )
 
-    if values:
-        run_az(
-            [
-                "containerapp",
-                "update",
-                "--name",
-                name,
-                "--resource-group",
-                resource_group,
-                "--set-env-vars",
-                *values,
-                "--output",
-                "none",
-            ]
-        )
+    if values or removed_values:
+        arguments = [
+            "containerapp",
+            "update",
+            "--name",
+            name,
+            "--resource-group",
+            resource_group,
+        ]
+        if values:
+            arguments.extend(["--set-env-vars", *values])
+        if removed_values:
+            arguments.extend(["--remove-env-vars", *removed_values])
+        arguments.extend(["--output", "none"])
+        run_az(arguments)
 
 
 def configure_logging() -> None:
