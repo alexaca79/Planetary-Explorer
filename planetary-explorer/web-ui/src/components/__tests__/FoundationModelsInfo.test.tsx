@@ -134,4 +134,86 @@ describe('FoundationModelsInfo', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('MCP connected');
     expect(screen.getByRole('dialog')).not.toHaveTextContent('unavailable');
   });
+
+  it('renders classification profiles, class schemes, and blocked deployment gates', async () => {
+    // Arrange
+    mockedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        checks: {
+          geospatial_foundation_models: {
+            status: 'connected',
+            enabled: true,
+            connected: true,
+            endpoint_host: 'geofm.example',
+            tool_count: 7,
+            tools: ['geofm_classify_aoi', 'geofm_list_class_schemes'],
+            models: [
+              {
+                profile: 'planaura_classify_s2',
+                model_id: 'NRCan/Planaura-1.0',
+                model_revision: 'fbbabfdcc0d5e48f7bd05c79b512563cf337742f',
+                approval_state: 'conditional',
+                supported_collections: ['sentinel-2-l2a'],
+                geographic_scope: 'Canada',
+                license: 'OGL-Canada-2.0',
+                capability: 'classify',
+                sensor_family: 'optical',
+                classification_mode: 'unsupervised',
+                class_scheme_id: 'planaura_unsupervised_v1',
+                mandatory_warnings: ['Classes are unsupervised clusters.'],
+              },
+              {
+                profile: 'planaura_classify_s1',
+                model_id: 'NRCan/Planaura-1.0',
+                model_revision: 'fbbabfdcc0d5e48f7bd05c79b512563cf337742f',
+                approval_state: 'blocked',
+                supported_collections: ['sentinel-1-rtc'],
+                geographic_scope: 'Canada',
+                license: 'OGL-Canada-2.0',
+                capability: 'classify',
+                sensor_family: 'sar',
+                classification_mode: 'unsupervised',
+                class_scheme_id: 'planaura_sar_surface_v1',
+                mandatory_warnings: [],
+              },
+            ],
+            class_schemes: [
+              {
+                scheme_id: 'planaura_unsupervised_v1',
+                version: '1.0.0',
+                source: 'PlanAura embedding clusters',
+                license: 'OGL-Canada-2.0',
+                labels: [
+                  {
+                    class_value: 1,
+                    name: 'Water-like',
+                    colour_hex: '#2b6cb0',
+                    description: 'High NDWI cluster.',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    } as Response);
+    render(<FoundationModelsInfo apiBaseUrl="https://api.example" />);
+
+    // Act
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /foundation models/i }));
+
+    // Assert
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Land cover classification');
+    expect(dialog).toHaveTextContent('SAR (radar)');
+    expect(dialog).toHaveTextContent('planaura_unsupervised_v1 (unsupervised)');
+    expect(dialog).toHaveTextContent('OGL-Canada-2.0');
+    expect(dialog).toHaveTextContent('Classes are unsupervised clusters.');
+    expect(dialog).toHaveTextContent('Not yet available in this deployment');
+    expect(dialog).toHaveTextContent('Published class schemes');
+    expect(dialog).toHaveTextContent('planaura_unsupervised_v1 v1.0.0');
+    expect(dialog).toHaveTextContent('Water-like');
+  });
 });

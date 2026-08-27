@@ -13,6 +13,26 @@ export interface FoundationModelStatus {
   supported_collections: string[];
   geographic_scope: string;
   license: string;
+  capability?: string;
+  sensor_family?: string;
+  classification_mode?: string;
+  class_scheme_id?: string;
+  mandatory_warnings?: string[];
+}
+
+export interface FoundationClassLabel {
+  class_value: number;
+  name: string;
+  colour_hex: string;
+  description: string;
+}
+
+export interface FoundationClassScheme {
+  scheme_id: string;
+  version: string;
+  source: string;
+  license: string;
+  labels: FoundationClassLabel[];
 }
 
 export interface FoundationModelsHealth {
@@ -23,6 +43,7 @@ export interface FoundationModelsHealth {
   tool_count: number;
   tools: string[];
   models: FoundationModelStatus[];
+  class_schemes?: FoundationClassScheme[];
 }
 
 interface FoundationModelsInfoProps {
@@ -37,6 +58,7 @@ const EMPTY_HEALTH: FoundationModelsHealth = {
   tool_count: 0,
   tools: [],
   models: [],
+  class_schemes: [],
 };
 
 const formatTool = (tool: string): string => {
@@ -46,11 +68,28 @@ const formatTool = (tool: string): string => {
     geofm_get_run: 'Run monitoring',
     geofm_retry_run: 'Run retry',
     geofm_cancel_run: 'Run cancellation',
+    geofm_classify_aoi: 'Land cover classification',
+    geofm_list_class_schemes: 'Class scheme registry',
   };
   return names[tool] || tool.replace(/^geofm_/, '').split('_').join(' ');
 };
 
 const shortRevision = (revision: string): string => revision ? revision.slice(0, 12) : 'Not reported';
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  change_detection: 'Contextual change',
+  classify: 'Land cover classification',
+};
+
+const SENSOR_LABELS: Record<string, string> = {
+  optical: 'Optical',
+  sar: 'SAR (radar)',
+  coarse_optical: 'Coarse optical',
+};
+
+/** A profile is only usable when its deployment gate is not blocked. */
+const isAvailable = (model: FoundationModelStatus): boolean =>
+  (model.approval_state || '').toLowerCase() !== 'blocked';
 
 const FoundationModelsInfo: React.FC<FoundationModelsInfoProps> = ({ apiBaseUrl = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -175,12 +214,59 @@ const FoundationModelsInfo: React.FC<FoundationModelsInfoProps> = ({ apiBaseUrl 
                   </div>
                   <dl className="foundation-model-facts">
                     <div><dt>Revision</dt><dd title={model.model_revision}>{shortRevision(model.model_revision)}</dd></div>
+                    <div><dt>Capability</dt><dd>{CAPABILITY_LABELS[model.capability || ''] || model.capability || 'Not reported'}</dd></div>
+                    <div><dt>Sensor</dt><dd>{SENSOR_LABELS[model.sensor_family || ''] || model.sensor_family || 'Not reported'}</dd></div>
                     <div><dt>Deployment gate</dt><dd>{model.approval_state || 'Not reported'}</dd></div>
                     <div><dt>Geographic scope</dt><dd>{model.geographic_scope || 'Not reported'}</dd></div>
                     <div><dt>Collections</dt><dd>{model.supported_collections.join(', ') || 'Not reported'}</dd></div>
+                    <div><dt>Licence</dt><dd>{model.license || 'Not reported'}</dd></div>
+                    {model.class_scheme_id && (
+                      <div><dt>Class scheme</dt><dd>{model.class_scheme_id}{model.classification_mode ? ` (${model.classification_mode})` : ''}</dd></div>
+                    )}
                   </dl>
+                  {!isAvailable(model) && (
+                    <p className="foundation-model-blocked">
+                      Not yet available in this deployment — this profile stays blocked
+                      until its validation report passes.
+                    </p>
+                  )}
+                  {(model.mandatory_warnings || []).length > 0 && (
+                    <ul className="foundation-model-warnings">
+                      {(model.mandatory_warnings || []).map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
                 </section>
               ))}
+
+              {(health.class_schemes || []).length > 0 && (
+                <section className="foundation-model-schemes">
+                  <h3>Published class schemes</h3>
+                  {(health.class_schemes || []).map((scheme) => (
+                    <div className="foundation-model-scheme" key={scheme.scheme_id}>
+                      <div className="foundation-model-scheme-name">
+                        {scheme.scheme_id}{scheme.version ? ` v${scheme.version}` : ''}
+                      </div>
+                      <div className="foundation-model-scheme-meta">
+                        {scheme.source || 'Source not reported'} · {scheme.license || 'Licence not reported'}
+                      </div>
+                      <div className="foundation-model-scheme-labels">
+                        {scheme.labels.map((label) => (
+                          <span key={`${scheme.scheme_id}-${label.class_value}`} title={label.description}>
+                            <span
+                              className="foundation-model-swatch"
+                              style={{ backgroundColor: label.colour_hex }}
+                              aria-hidden="true"
+                            />
+                            {label.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              )}
 
               {health.tools.length > 0 && (
                 <section className="foundation-model-tools">

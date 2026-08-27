@@ -3,10 +3,17 @@
 // Pin button relocated to top-left - cleaned up duplicates
 // Trigger frontend-only deploy to rg-planetaryexplorer-dev (no infra change)
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { Dataset, API_BASE_URL } from '../services/api';
 import { authenticatedFetch } from '../services/authHelper';
-import { getGeoFmMapFeatures } from '../utils/geofmOverlay';
+import {
+  GEOFM_MODULES,
+  getGeoFmClassLegend,
+  getGeoFmFeatureFill,
+  getGeoFmFeatureOutline,
+  getGeoFmMapFeatures,
+  type GeoFmModule,
+} from '../utils/geofmOverlay';
 // TileUrlGenerator removed - using backend-only tile URL generation (MPC best practice)
 import { getCollectionVisualization, getCollectionConfig } from '../config/collectionConfig';
 import { getCollectionConfig as getRenderingConfig } from '../utils/renderingConfig';
@@ -184,6 +191,16 @@ const MapView: React.FC<MapViewProps> = ({
     provider: 'azure' | 'leaflet';
     remove: () => void;
   } | null>(null);
+  // Categorical legend for the most recent completed classification run.
+  // Derived rather than stored so it clears with the response it came from.
+  const geofmClassLegend = useMemo(
+    () => (
+      selectedModule === 'classification'
+        ? getGeoFmClassLegend(lastChatResponse)
+        : null
+    ),
+    [lastChatResponse, selectedModule]
+  );
 
   // Mobility two-pin A->B state
   const [mobilityPinA, setMobilityPinA] = useState<{ lat: number; lng: number; marker: any } | null>(null);
@@ -1557,7 +1574,7 @@ const MapView: React.FC<MapViewProps> = ({
     if (
       features === null
       || features.length === 0
-      || selectedModule !== 'foundation_change'
+      || !GEOFM_MODULES.includes(selectedModule as GeoFmModule)
     ) {
       geofmOverlayRef.current?.remove();
       geofmOverlayRef.current = null;
@@ -1580,11 +1597,13 @@ const MapView: React.FC<MapViewProps> = ({
       map.sources.add(dataSource);
       dataSource.add(features);
 
+      // Classification features carry their own published palette; contextual
+      // change features do not, so fall back to the change colours.
       const polygonLayer = new window.atlas.layer.PolygonLayer(
         dataSource,
         `geofm-polygons-${Date.now()}`,
         {
-          fillColor: '#ef4444',
+          fillColor: ['case', ['has', 'class_colour'], ['get', 'class_colour'], '#ef4444'],
           fillOpacity: 0.34,
         }
       );
@@ -1592,7 +1611,7 @@ const MapView: React.FC<MapViewProps> = ({
         dataSource,
         `geofm-outlines-${Date.now()}`,
         {
-          strokeColor: '#7f1d1d',
+          strokeColor: ['case', ['has', 'class_colour'], ['get', 'class_colour'], '#7f1d1d'],
           strokeWidth: 2,
         }
       );
@@ -1614,12 +1633,12 @@ const MapView: React.FC<MapViewProps> = ({
       const layer = window.L.geoJSON(
         { type: 'FeatureCollection', features },
         {
-          style: {
-            color: '#7f1d1d',
+          style: (feature: any) => ({
+            color: getGeoFmFeatureOutline(feature),
             weight: 2,
-            fillColor: '#ef4444',
+            fillColor: getGeoFmFeatureFill(feature),
             fillOpacity: 0.34,
-          },
+          }),
         }
       ).addTo(map);
       geofmOverlayRef.current = {
@@ -4768,6 +4787,21 @@ const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
+    if (module === 'classification') {
+      console.log('MapView: Classification module selected - chat-driven flow');
+      setPinMode(false);
+      setVisionMode(false);
+      if (onModuleSelected) onModuleSelected(module);
+      if (onGeointAnalysis) {
+        onGeointAnalysis({
+          type: 'module_selected',
+          message: '**Classification selected.** Load a Sentinel-2 scene (or a Sentinel-1 RTC scene together with a co-located Sentinel-2 scene), frame the area on the map, then ask what land cover is present. Results are unsupervised PlanAura clusters reported with per-class confidence, not a validated land-cover product. GPU work still requires approval.'
+        });
+      }
+      setShowModulesMenu(false);
+      return;
+    }
+
     if (module === 'foundation_change') {
       console.log('MapView: Foundation Change module selected - chat-driven flow');
       setPinMode(false);
@@ -6286,6 +6320,36 @@ const MapView: React.FC<MapViewProps> = ({
                   </div>
                 </div>
 
+                {/* Classification Module */}
+                <div
+                  onClick={() => handleModuleSelect('classification')}
+                  style={{
+                    padding: '12px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    border: selectedModule === 'classification' ? '2px solid #0f766e' : '1px solid rgba(0, 0, 0, 0.1)',
+                    background: selectedModule === 'classification' ? 'rgba(15, 118, 110, 0.1)' : 'white',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedModule !== 'classification') {
+                      e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedModule !== 'classification') {
+                      e.currentTarget.style.background = 'white';
+                    }
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#1f2937', marginBottom: '4px' }}>
+                    Classification
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                    PlanAura land-cover clusters from Sentinel-1, -2 and -3 scenes
+                  </div>
+                </div>
+
                 {/* Site Audit Module */}
                 <div
                   onClick={() => handleModuleSelect('site_audit')}
@@ -6487,6 +6551,7 @@ const MapView: React.FC<MapViewProps> = ({
                      selectedModule === 'site_audit' ? 'Site Intel' :
                      selectedModule === 'resilience' ? 'Resilience' :
                      selectedModule === 'foundation_change' ? 'Foundation Change' :
+                     selectedModule === 'classification' ? 'Classification' :
                      selectedModule} selected
                 </div>
               )}
@@ -6961,10 +7026,13 @@ const MapView: React.FC<MapViewProps> = ({
         </div>
       )}
 
-      {/* Data Legend - shown when any visualizable data is displayed */}
+      {/* Data Legend - shown when any visualizable data is displayed.
+          A completed classification run swaps the continuous ramp for the
+          categorical class legend. */}
       <DataLegend 
         collection={lastCollection || ''}
         isVisible={showDataLegend && mapLoaded}
+        classLegend={mapLoaded ? geofmClassLegend : null}
       />
 
       {/* Get Started Button - positioned in bottom right */}

@@ -3,11 +3,19 @@
 
 import React, { useEffect, useState } from 'react';
 
+import type { GeoFmClassLegend } from '../utils/geofmOverlay';
+
 interface DataLegendProps {
   collection: string;
   isVisible: boolean;
   min?: number;
   max?: number;
+  /**
+   * Categorical class legend for a completed PlanAura classification run.
+   * When present it replaces the continuous ramp: classes are discrete
+   * labels, and rendering them on a gradient would misstate the result.
+   */
+  classLegend?: GeoFmClassLegend | null;
 }
 
 interface ColormapData {
@@ -20,7 +28,8 @@ const DataLegend: React.FC<DataLegendProps> = ({
   collection, 
   isVisible, 
   min = -100, 
-  max = 8848 // Mt. Everest height
+  max = 8848, // Mt. Everest height
+  classLegend = null
 }) => {
   const [colormapData, setColormapData] = useState<ColormapData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,6 +84,10 @@ const DataLegend: React.FC<DataLegendProps> = ({
       fetchColormap();
     }
   }, [collection, isVisible]);
+
+  if (classLegend && classLegend.entries.length > 0) {
+    return <ClassLegend legend={classLegend} />;
+  }
 
   if (!isVisible) return null;
   if (loading) {
@@ -388,5 +401,99 @@ const DataLegend: React.FC<DataLegendProps> = ({
     </div>
   );
 };
+
+/**
+ * Categorical legend for a PlanAura classification run.
+ *
+ * Every row carries the class colour, its share of the classified area and
+ * its mean confidence, and the panel always names the class scheme and
+ * states that the classes are unsupervised clusters. A class name shown
+ * without that provenance would overstate what the model produced.
+ */
+const ClassLegend: React.FC<{ legend: GeoFmClassLegend }> = ({ legend }) => (
+  <div
+    data-testid="geofm-class-legend"
+    style={{
+      position: 'absolute',
+      bottom: '20px',
+      right: '20px',
+      background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.85) 0%, rgba(248, 250, 252, 0.75) 50%, rgba(241, 245, 249, 0.85) 100%)',
+      padding: '12px',
+      borderRadius: '8px',
+      boxShadow: '0 2px 12px rgba(0, 0, 0, 0.15)',
+      backdropFilter: 'blur(8px)',
+      minWidth: '220px',
+      maxWidth: '280px',
+      fontSize: '12px',
+      zIndex: 10,
+      border: '1px solid rgba(0, 0, 0, 0.1)',
+      fontFamily: 'system-ui, -apple-system, sans-serif'
+    }}
+  >
+    <div style={{
+      fontWeight: '600',
+      marginBottom: '4px',
+      fontSize: '13px',
+      color: '#374151',
+      textAlign: 'center',
+      letterSpacing: '0.025em'
+    }}>
+      Land Cover Classes
+    </div>
+    <div style={{
+      fontSize: '10px',
+      color: '#6B7280',
+      textAlign: 'center',
+      marginBottom: '10px',
+      wordBreak: 'break-word'
+    }}>
+      Scheme {legend.schemeId}
+    </div>
+
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      {legend.entries.map((entry) => (
+        <div
+          key={entry.value}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: '14px',
+              height: '14px',
+              flexShrink: 0,
+              borderRadius: '3px',
+              backgroundColor: entry.colour,
+              border: '1px solid rgba(0, 0, 0, 0.25)'
+            }}
+          />
+          <span style={{ flex: 1, color: '#111827', fontWeight: '600' }}>
+            {entry.name}
+          </span>
+          <span style={{ fontSize: '10px', color: '#6B7280', whiteSpace: 'nowrap' }}>
+            {entry.percentOfClassified === null
+              ? '—'
+              : `${entry.percentOfClassified.toFixed(1)}%`}
+            {entry.meanConfidence === null
+              ? ''
+              : ` · conf ${entry.meanConfidence.toFixed(2)}`}
+          </span>
+        </div>
+      ))}
+    </div>
+
+    <div style={{
+      marginTop: '10px',
+      paddingTop: '8px',
+      borderTop: '1px solid rgba(0, 0, 0, 0.08)',
+      fontSize: '10px',
+      color: '#92400E',
+      lineHeight: '1.4'
+    }}>
+      Unsupervised clusters named from spectral signatures — indicative, not a
+      validated land-cover product. Cluster ids are only comparable within this run.
+    </div>
+  </div>
+);
 
 export default DataLegend;
