@@ -342,15 +342,15 @@ def validate_fresh_authentication(
         )
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
     """Resolve targets for a root script or azd preprovision hook."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    arguments = create_parser().parse_args()
+    parsed_arguments = create_parser().parse_args(arguments)
     environment_name = (
-        arguments.environment_name or os.getenv("AZURE_ENV_NAME", "")
+        parsed_arguments.environment_name or os.getenv("AZURE_ENV_NAME", "")
     ).strip()
     resource_group = (
-        arguments.resource_group
+        parsed_arguments.resource_group
         or os.getenv("AZURE_RESOURCE_GROUP", "")
         or (f"rg-{environment_name}" if environment_name else "")
     ).strip()
@@ -362,16 +362,16 @@ def main() -> int:
         targets = resolve_from_azure(
             resource_group=resource_group,
             environment_name=environment_name,
-            api_name=arguments.api_name
+            api_name=parsed_arguments.api_name
             or os.getenv("API_CONTAINER_APP_NAME", "").strip(),
-            web_name=arguments.web_name
+            web_name=parsed_arguments.web_name
             or os.getenv("AZURE_WEB_APP_NAME", "").strip(),
-            plan_name=arguments.plan_name
+            plan_name=parsed_arguments.plan_name
             or os.getenv("AZURE_APP_SERVICE_PLAN_NAME", "").strip(),
-            frontend_url=arguments.frontend_url
+            frontend_url=parsed_arguments.frontend_url
             or os.getenv("FRONTEND_URL", "").strip(),
         )
-        if arguments.write_azd_env:
+        if parsed_arguments.write_azd_env:
             validate_fresh_authentication(targets, dict(os.environ))
             write_azd_environment(targets)
         print(json.dumps(asdict(targets)))

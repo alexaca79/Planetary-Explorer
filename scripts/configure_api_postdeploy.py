@@ -476,18 +476,18 @@ def wait_for_geofm_readiness(
     raise RuntimeError("GeoFM dependency readiness did not become healthy.")
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
     """Configure a Container App target from arguments or azd environment."""
     configure_logging()
-    arguments = create_parser().parse_args()
+    parsed_arguments = create_parser().parse_args(arguments)
     default_name_variable = {
         "api": "AZURE_CONTAINER_APP_NAME",
         "geofm": "AZURE_GEOFM_MCP_CONTAINER_APP_NAME",
         "web-search": "AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME",
-    }[arguments.profile]
-    name = (arguments.name or os.getenv(default_name_variable, "")).strip()
+    }[parsed_arguments.profile]
+    name = (parsed_arguments.name or os.getenv(default_name_variable, "")).strip()
     resource_group = (
-        arguments.resource_group or os.getenv("AZURE_RESOURCE_GROUP", "")
+        parsed_arguments.resource_group or os.getenv("AZURE_RESOURCE_GROUP", "")
     ).strip()
     if not name or not resource_group:
         logger.error(
@@ -496,10 +496,10 @@ def main() -> int:
         return EXIT_FAILURE
 
     try:
-        if arguments.profile == "api":
+        if parsed_arguments.profile == "api":
             reconcile_api_optional_services(name, resource_group)
-        configure_container_app(name, resource_group, arguments.profile)
-        if arguments.profile == "geofm":
+        configure_container_app(name, resource_group, parsed_arguments.profile)
+        if parsed_arguments.profile == "geofm":
             wait_for_geofm_readiness(name, resource_group)
     except (
         KeyError,
@@ -509,10 +509,16 @@ def main() -> int:
         RuntimeError,
         subprocess.SubprocessError,
     ) as exc:
-        logger.error("%s postdeploy configuration failed: %s", arguments.profile, exc)
+        logger.error(
+            "%s postdeploy configuration failed: %s",
+            parsed_arguments.profile,
+            exc,
+        )
         return EXIT_FAILURE
 
-    logger.info("Configured %s ingress and health probes.", arguments.profile)
+    logger.info(
+        "Configured %s ingress and health probes.", parsed_arguments.profile
+    )
     return EXIT_SUCCESS
 
 

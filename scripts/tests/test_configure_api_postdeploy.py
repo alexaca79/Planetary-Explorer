@@ -150,6 +150,7 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     monkeypatch.setenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts")
     monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://search.internal")
     monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "w" * 32)
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
     monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
     monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
 

@@ -208,7 +208,8 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         ) -Raw
         foreach ($manifest in @($rootManifest, $nestedManifest)) {
             $manifest | Should -Match 'preprovision:'
-            $manifest | Should -Match 'resolve_deployment_targets\.py --write-azd-env'
+            $manifest | Should -Match 'resolve_azd_deployment_targets\.py'
+            $manifest | Should -Not -Match 'run:\s+\S+\.py\s+--'
         }
     }
 
