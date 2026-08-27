@@ -1190,6 +1190,25 @@ async def _close_mcp_catalog_client():
 
 
 @app.on_event("startup")
+async def _warm_mcp_runtime_registry():
+    """Resolve MCP endpoints and credentials before agent callbacks execute."""
+    try:
+        from mcp_runtime.registry import get_registry
+
+        servers = get_registry().all
+        logger.info(
+            "[MCP-REGISTRY] prewarmed servers=%s auth_configured=%s",
+            [server.server_id for server in servers],
+            {
+                server.server_id: bool(server.api_key)
+                for server in servers
+            },
+        )
+    except Exception as exc:  # pragma: no cover - defensive startup guard
+        logger.warning("[MCP-REGISTRY] prewarm failed: %s", exc)
+
+
+@app.on_event("startup")
 async def _prewarm_collection_index():
     """Build the live STAC collection index in the background.
 
