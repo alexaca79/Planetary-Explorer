@@ -85,7 +85,10 @@ def _resolve_api_name(
         and (
             _resource_name(app) == canonical_name
             or _service_tag(app) in {"api", "web"}
-            or _resource_name(app).startswith("ca-web-")
+            or (
+                not _service_tag(app)
+                and _resource_name(app).startswith("ca-web-")
+            )
         )
     }
     if explicit_name:
