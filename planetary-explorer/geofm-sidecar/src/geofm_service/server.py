@@ -29,16 +29,23 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from .contracts import EvidenceEnvelope, EvidenceReference, EvidenceRung, RunArtifact
+from .contracts import (
+    ClassifyAoiRequest,
+    CompareEpochsRequest,
+    EvidenceEnvelope,
+    EvidenceReference,
+    EvidenceRung,
+    RunArtifact,
+)
 from .jobs import (
+    DEFAULT_MAX_ACTIVE_RUNS_PER_OWNER,
     AzureQueueDispatcher,
     BlobRunRepository,
-    CompareEpochsRequest,
     NoopDispatcher,
     RunService,
     SQLiteRunRepository,
 )
-from .policy import PLAN_AURA_HLS
+from .policy import list_class_schemes, list_models
 from .stac import get_catalog
 
 mcp = FastMCP(
@@ -249,14 +256,72 @@ def _sign_artifacts(artifacts: list[RunArtifact]) -> list[RunArtifact]:
 @mcp.tool(name="geofm_list_models", annotations=READ_ONLY, structured_output=True)
 async def geofm_list_models() -> EvidenceEnvelope:
     """List exact GeoFM revisions, capabilities, and deployment gates."""
-    descriptor = PLAN_AURA_HLS.model_dump(mode="json")
+    descriptors = [descriptor.model_dump(mode="json") for descriptor in list_models()]
+    profiles = ", ".join(descriptor["profile"] for descriptor in descriptors)
     return EvidenceEnvelope(
         evidence_rung=EvidenceRung.CATALOGUE,
-        summary="One pinned GeoFM profile is available: PlanAura HLS.",
-        payload={"models": [descriptor]},
+        summary=f"{len(descriptors)} pinned GeoFM profiles are registered: {profiles}.",
+        payload={"models": descriptors},
         evidence=[
             EvidenceReference(kind="calculation", identifier="geofm_model_registry")
         ],
+    )
+
+
+@mcp.tool(name="geofm_list_class_schemes", annotations=READ_ONLY, structured_output=True)
+async def geofm_list_class_schemes() -> EvidenceEnvelope:
+    """List every published class scheme with its labels, source, and licence."""
+    schemes = [scheme.model_dump(mode="json") for scheme in list_class_schemes()]
+    return EvidenceEnvelope(
+        evidence_rung=EvidenceRung.CATALOGUE,
+        summary=f"{len(schemes)} pinned class schemes are registered.",
+        payload={"class_schemes": schemes},
+        evidence=[
+            EvidenceReference(kind="calculation", identifier="geofm_class_scheme_registry")
+        ],
+    )
+
+
+@mcp.tool(name="geofm_classify_aoi", annotations=SUBMIT, structured_output=True)
+async def geofm_classify_aoi(
+    request: ClassifyAoiRequest,
+    owner_signature: str,
+    owner_signature_expires_at: int,
+    owner_signature_nonce: str,
+) -> EvidenceEnvelope:
+    """Validate, persist, and enqueue a single-date PlanAura classification."""
+    _validate_owner_signature(
+        "submit",
+        request.requested_by,
+        request.model_dump(mode="json"),
+        owner_signature_expires_at,
+        owner_signature_nonce,
+        owner_signature,
+    )
+    record, created = await anyio.to_thread.run_sync(get_service().submit, request)
+    return EvidenceEnvelope(
+        evidence_rung=EvidenceRung.CATALOGUE,
+        summary=f"GeoFM classification run {record.run_id} is {record.status}.",
+        payload={
+            "run_id": str(record.run_id),
+            "status": record.status,
+            "created": created,
+            "attempt": record.attempt,
+            "model": record.selected_model["model_id"],
+            "model_revision": record.selected_model["model_revision"],
+            "profile": record.selected_model["profile"],
+            "class_scheme": request.class_scheme,
+            "classification_mode": record.selected_model["classification_mode"],
+            "warnings": record.warnings,
+        },
+        evidence=[
+            *(
+                EvidenceReference(kind="stac_item", identifier=item_id)
+                for item_id in request.item_ids
+            ),
+            EvidenceReference(kind="calculation", identifier=str(record.run_id)),
+        ],
+        warnings=record.warnings,
     )
 
 
@@ -494,7 +559,24 @@ def get_service() -> RunService:
         dispatcher,
         inventory_lookup=catalog.get_asset_inventory,
         allow_conditional_models=allow_conditional,
+        max_active_runs_per_owner=_max_active_runs_per_owner(),
     )
+
+
+def _max_active_runs_per_owner() -> int:
+    """Read the per-owner concurrency cap, failing closed on bad configuration."""
+    raw = os.getenv("GEOFM_MAX_ACTIVE_RUNS_PER_OWNER")
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_ACTIVE_RUNS_PER_OWNER
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "GEOFM_MAX_ACTIVE_RUNS_PER_OWNER must be a positive integer."
+        ) from exc
+    if value < 1:
+        raise RuntimeError("GEOFM_MAX_ACTIVE_RUNS_PER_OWNER must be a positive integer.")
+    return value
 
 
 def build_app():

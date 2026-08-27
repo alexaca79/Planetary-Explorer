@@ -8,7 +8,7 @@ import json
 import math
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -22,13 +22,35 @@ from shapely import box
 from shapely.geometry import shape
 from shapely.ops import transform
 
-from .contracts import CompareEpochsRequest, RunArtifact, RunRecord, RunStatus
-from .policy import ApprovalState, ModelDescriptor, get_model
+from .contracts import (
+    ClassifyAoiRequest,
+    RunArtifact,
+    RunRecord,
+    RunRequest,
+    RunStatus,
+)
+from .policy import (
+    ApprovalState,
+    Capability,
+    ClassScheme,
+    ModelDescriptor,
+    SensorFamily,
+    get_class_scheme,
+    get_fusion_model,
+    get_model,
+)
 
 GEOD = Geod(ellps="WGS84")
 UTC = timezone.utc
 CANADA_ENVELOPE = box(-141.1, 41.6, -52.5, 83.2)
+TRAINING_ENVELOPES: dict[str, object] = {"Canada": CANADA_ENVELOPE}
+SENSOR_BAND_SEMANTICS: dict[SensorFamily, tuple[str, ...]] = {
+    SensorFamily.OPTICAL: ("BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"),
+    SensorFamily.SAR: ("VV", "VH"),
+}
 TERMINAL_STATUSES = {RunStatus.COMPLETE, RunStatus.FAILED, RunStatus.CANCELLED}
+ACTIVE_STATUSES = {RunStatus.QUEUED, RunStatus.RUNNING}
+DEFAULT_MAX_ACTIVE_RUNS_PER_OWNER = 3
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.QUEUED: {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.FAILED},
     RunStatus.RUNNING: {
@@ -68,13 +90,20 @@ class ImageryObservation(BaseModel):
     collection: str = Field(min_length=1, max_length=256)
     asset_keys: frozenset[str] = Field(min_length=1)
     resolution_m: float = Field(gt=0)
+    asset_resolutions_m: dict[str, float] = Field(default_factory=dict)
     acquired_at: datetime
     tile_id: str | None = None
     geometry: dict
 
+    def band_resolutions_m(self, band_assets: Sequence[str]) -> tuple[float, ...]:
+        """Return the resolution of each requested band, item-wide when unknown."""
+        return tuple(
+            self.asset_resolutions_m.get(asset, self.resolution_m) for asset in band_assets
+        )
+
 
 class PreprocessingRecipe(BaseModel):
-    """Immutable recipe persisted after both epochs pass admission."""
+    """Immutable recipe persisted after every source item passes admission."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -102,6 +131,14 @@ class PreprocessingRecipe(BaseModel):
     mask_resampling: str = "nearest"
     cloud_masking: str = "hls_fmask"
     output_metric: str = "cosine_distance"
+    capability: Capability = Capability.CHANGE
+    sensor_family: SensorFamily = SensorFamily.OPTICAL
+    classification_mode: str | None = None
+    class_scheme_id: str | None = None
+    max_classes: int | None = None
+    minimum_confidence: float | None = None
+    fusion_collection: str | None = None
+    fusion_band_assets: tuple[str, ...] = ()
 
 
 class CompatibilityDecision(BaseModel):
@@ -116,7 +153,7 @@ class CompatibilityDecision(BaseModel):
 
 
 class AoiValidation(BaseModel):
-    """Validated AOI dimensions relative to the fixed PlanAura context."""
+    """Validated AOI dimensions relative to the selected profile's context."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -133,6 +170,10 @@ class RunRepository(Protocol):
     def create_or_get(self, record: RunRecord) -> tuple[RunRecord, bool]: ...
 
     def get(self, run_id: UUID) -> RunRecord | None: ...
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None: ...
+
+    def count_active_for_owner(self, requested_by: str) -> int: ...
 
     def save(self, record: RunRecord, *, expected_version: int) -> None: ...
 
@@ -172,6 +213,23 @@ class InMemoryRunRepository:
             record = self._records.get(run_id)
             return record.model_copy(deep=True) if record else None
 
+    def get_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
+        with self._lock:
+            run_id = self._by_idempotency.get(idempotency_key)
+            if run_id is None:
+                return None
+            record = self._records.get(run_id)
+            return record.model_copy(deep=True) if record else None
+
+    def count_active_for_owner(self, requested_by: str) -> int:
+        with self._lock:
+            return sum(
+                1
+                for record in self._records.values()
+                if record.status in ACTIVE_STATUSES
+                and record.request.requested_by == requested_by
+            )
+
     def save(self, record: RunRecord, *, expected_version: int) -> None:
         with self._lock:
             current = self._records.get(record.run_id)
@@ -206,17 +264,32 @@ class SQLiteRunRepository:
                 connection.execute(
                     "ALTER TABLE geofm_runs ADD COLUMN version INTEGER NOT NULL DEFAULT 0"
                 )
+            if "owner" not in columns:
+                connection.execute(
+                    "ALTER TABLE geofm_runs ADD COLUMN owner TEXT NOT NULL DEFAULT ''"
+                )
+            if "status" not in columns:
+                connection.execute(
+                    "ALTER TABLE geofm_runs ADD COLUMN status TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS geofm_runs_owner_status "
+                "ON geofm_runs(owner, status)"
+            )
 
     def create_or_get(self, record: RunRecord) -> tuple[RunRecord, bool]:
         with self._connect() as connection:
             try:
                 connection.execute(
-                    "INSERT INTO geofm_runs(run_id, idempotency_key, version, record_json) "
-                    "VALUES (?, ?, ?, ?)",
+                    "INSERT INTO geofm_runs("
+                    "run_id, idempotency_key, version, owner, status, record_json"
+                    ") VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         str(record.run_id),
                         record.idempotency_key,
                         record.version,
+                        record.request.requested_by,
+                        record.status.value,
                         record.model_dump_json(),
                     ),
                 )
@@ -240,13 +313,33 @@ class SQLiteRunRepository:
             ).fetchone()
         return RunRecord.model_validate_json(row[0]) if row else None
 
+    def get_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT record_json FROM geofm_runs WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return RunRecord.model_validate_json(row[0]) if row else None
+
+    def count_active_for_owner(self, requested_by: str) -> int:
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        active = [status.value for status in ACTIVE_STATUSES]
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM geofm_runs "
+                f"WHERE owner = ? AND status IN ({placeholders})",
+                (requested_by, *active),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def save(self, record: RunRecord, *, expected_version: int) -> None:
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE geofm_runs SET version = ?, record_json = ? "
+                "UPDATE geofm_runs SET version = ?, status = ?, record_json = ? "
                 "WHERE run_id = ? AND version = ?",
                 (
                     record.version,
+                    record.status.value,
                     record.model_dump_json(),
                     str(record.run_id),
                     expected_version,
@@ -279,7 +372,6 @@ class BlobRunRepository:
                 json.dumps({"run_id": str(record.run_id)}),
                 overwrite=False,
             )
-            return record, True
         except Exception as exc:
             if getattr(exc, "status_code", None) != 409:
                 raise
@@ -291,6 +383,11 @@ class BlobRunRepository:
                     "Idempotency pointer refers to a missing run."
                 ) from None
             return existing, False
+        self._container.get_blob_client(self._marker_name(record)).upload_blob(
+            json.dumps({"run_id": str(record.run_id)}),
+            overwrite=True,
+        )
+        return record, True
 
     def get(self, run_id: UUID) -> RunRecord | None:
         blob = self._container.get_blob_client(f"runs/{run_id}/run.json")
@@ -311,6 +408,31 @@ class BlobRunRepository:
         self._etags[(run_id, record.version)] = str(etag)
         return record
 
+    def get_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
+        blob = self._container.get_blob_client(f"idempotency/{idempotency_key}.json")
+        try:
+            pointer = json.loads(blob.download_blob().readall())
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 404:
+                return None
+            raise
+        return self.get(UUID(pointer["run_id"]))
+
+    def count_active_for_owner(self, requested_by: str) -> int:
+        prefix = f"owner-active/{self._owner_key(requested_by)}/"
+        active = 0
+        for blob in self._container.list_blobs(name_starts_with=prefix):
+            run_id = Path(str(blob.name)).stem
+            try:
+                record = self.get(UUID(run_id))
+            except (ValueError, RunRepositoryError):
+                record = None
+            if record is not None and record.status in ACTIVE_STATUSES:
+                active += 1
+                continue
+            self._delete_marker(f"{prefix}{run_id}.json")
+        return active
+
     def save(self, record: RunRecord, *, expected_version: int) -> None:
         etag = self._etags.get((record.run_id, expected_version))
         if not etag:
@@ -330,6 +452,23 @@ class BlobRunRepository:
         new_etag = response.get("etag") if isinstance(response, dict) else None
         if new_etag:
             self._etags[(record.run_id, record.version)] = str(new_etag)
+        if record.status in TERMINAL_STATUSES:
+            self._delete_marker(self._marker_name(record))
+
+    def _marker_name(self, record: RunRecord) -> str:
+        owner_key = self._owner_key(record.request.requested_by)
+        return f"owner-active/{owner_key}/{record.run_id}.json"
+
+    @staticmethod
+    def _owner_key(requested_by: str) -> str:
+        return hashlib.sha256(requested_by.encode("utf-8")).hexdigest()
+
+    def _delete_marker(self, name: str) -> None:
+        try:
+            self._container.get_blob_client(name).delete_blob()
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
 
 
 class AzureQueueDispatcher:
@@ -353,14 +492,53 @@ class RunService:
         *,
         inventory_lookup: Callable[[str], ImageryObservation],
         allow_conditional_models: bool = False,
+        max_active_runs_per_owner: int = DEFAULT_MAX_ACTIVE_RUNS_PER_OWNER,
     ) -> None:
         self._repository = repository
         self._dispatcher = dispatcher
         self._inventory_lookup = inventory_lookup
         self._allow_conditional_models = allow_conditional_models
+        self._max_active_runs_per_owner = max_active_runs_per_owner
 
-    def submit(self, request: CompareEpochsRequest) -> tuple[RunRecord, bool]:
-        """Validate, persist, and dispatch an idempotent comparison run."""
+    def submit(self, request: RunRequest) -> tuple[RunRecord, bool]:
+        """Validate, persist, and dispatch an idempotent GeoFM run."""
+        descriptor = self._resolve_descriptor(request)
+        aoi = validate_aoi(request.geometry, descriptor)
+        observations = tuple(
+            self._inventory_lookup(item_id) for item_id in request.source_item_ids
+        )
+        requested_shape = shape(request.geometry)
+        if any(
+            not shape(observation.geometry).covers(requested_shape)
+            for observation in observations
+        ):
+            raise RunError("AOI is not fully covered by every source item.")
+        compatibility = resolve_compatibility(descriptor, observations, request)
+        if not compatibility.compatible or compatibility.recipe is None:
+            raise RunError(
+                "Imagery is incompatible with PlanAura: "
+                + ", ".join(compatibility.errors)
+                + "."
+            )
+        idempotency_key = _request_hash(request)
+        self._enforce_owner_quota(request.requested_by, idempotency_key)
+        record = RunRecord(
+            idempotency_key=idempotency_key,
+            request=request,
+            selected_model=descriptor.model_dump(mode="json"),
+            preprocessing_recipe=compatibility.recipe.model_dump(mode="json"),
+            warnings=[*aoi.warnings, *compatibility.warnings],
+        )
+        stored, created = self._repository.create_or_get(record)
+        if created or stored.status is RunStatus.QUEUED:
+            try:
+                self._dispatcher.dispatch(stored)
+            except Exception as exc:
+                raise RunError("Run persisted but queue dispatch failed.") from exc
+        return stored, created
+
+    def _resolve_descriptor(self, request: RunRequest) -> ModelDescriptor:
+        """Fail closed on unknown, blocked, or unapproved profiles."""
         descriptor = get_model(request.profile)
         if descriptor.approval_state is ApprovalState.BLOCKED:
             raise RunError(f"Model profile '{request.profile}' is blocked.")
@@ -371,39 +549,50 @@ class RunService:
             raise RunError(
                 f"Model profile '{request.profile}' requires explicit deployment approval."
             )
-        aoi = validate_aoi(request.geometry, descriptor)
-        observations = (
-            self._inventory_lookup(request.item_id_epoch_a),
-            self._inventory_lookup(request.item_id_epoch_b),
+        expected = (
+            Capability.CLASSIFY
+            if isinstance(request, ClassifyAoiRequest)
+            else Capability.CHANGE
         )
-        requested_shape = shape(request.geometry)
-        if any(
-            not shape(observation.geometry).covers(requested_shape)
-            for observation in observations
-        ):
-            raise RunError("AOI is not fully covered by both source items.")
-        compatibility = resolve_compatibility(descriptor, observations)
-        if not compatibility.compatible or compatibility.recipe is None:
+        if descriptor.capability is not expected:
             raise RunError(
-                "Imagery is incompatible with PlanAura: "
-                + ", ".join(compatibility.errors)
-                + "."
+                f"Model profile '{request.profile}' cannot perform "
+                f"'{expected.value}' work."
             )
-        warnings = [*aoi.warnings, *compatibility.warnings]
-        record = RunRecord(
-            idempotency_key=_request_hash(request),
-            request=request,
-            selected_model=descriptor.model_dump(mode="json"),
-            preprocessing_recipe=compatibility.recipe.model_dump(mode="json"),
-            warnings=warnings,
-        )
-        stored, created = self._repository.create_or_get(record)
-        if created or stored.status is RunStatus.QUEUED:
-            try:
-                self._dispatcher.dispatch(stored)
-            except Exception as exc:
-                raise RunError("Run persisted but queue dispatch failed.") from exc
-        return stored, created
+        if isinstance(request, ClassifyAoiRequest):
+            scheme = self._resolve_class_scheme(descriptor, request.class_scheme)
+            if request.max_classes > len(scheme.labels):
+                raise RunError(
+                    f"Class scheme '{scheme.scheme_id}' publishes "
+                    f"{len(scheme.labels)} classes."
+                )
+        return descriptor
+
+    @staticmethod
+    def _resolve_class_scheme(
+        descriptor: ModelDescriptor,
+        requested_scheme: str,
+    ) -> ClassScheme:
+        """Bind a run to the exact scheme its profile publishes."""
+        if requested_scheme != descriptor.class_scheme_id:
+            raise RunError(
+                f"Model profile '{descriptor.profile.value}' publishes class scheme "
+                f"'{descriptor.class_scheme_id}'."
+            )
+        return get_class_scheme(requested_scheme)
+
+    def _enforce_owner_quota(self, requested_by: str, idempotency_key: str) -> None:
+        """Cap concurrent GPU work per owner, exempting idempotent resubmissions."""
+        if self._max_active_runs_per_owner <= 0:
+            return
+        if self._repository.get_by_idempotency_key(idempotency_key) is not None:
+            return
+        active = self._repository.count_active_for_owner(requested_by)
+        if active >= self._max_active_runs_per_owner:
+            raise RunError(
+                f"Too many active GeoFM runs ({active}). Wait for a run to finish "
+                "or cancel one before submitting another."
+            )
 
     def get(self, run_id: UUID) -> RunRecord:
         """Return one durable run or raise a specific error."""
@@ -574,12 +763,15 @@ def validate_aoi(geometry: dict, descriptor: ModelDescriptor) -> AoiValidation:
     maximum_side_m = descriptor.native_resolution_m * descriptor.tile_size_pixels
     if width_m > maximum_side_m or height_m > maximum_side_m:
         raise RunError(
-            f"AOI must fit inside PlanAura's {maximum_side_m / 1000:.2f} km square context."
+            f"AOI must fit inside the {descriptor.profile.value} "
+            f"{maximum_side_m / 1000:.2f} km square context."
         )
     area_m2, _ = GEOD.geometry_area_perimeter(parsed)
-    within_training_envelope = CANADA_ENVELOPE.covers(parsed)
+    envelope = TRAINING_ENVELOPES.get(descriptor.geographic_scope)
+    within_training_envelope = envelope is None or envelope.covers(parsed)
     warnings = () if within_training_envelope else (
-        "AOI is outside PlanAura's Canadian training envelope; treat results as indicative.",
+        f"AOI is outside PlanAura's {descriptor.geographic_scope} training "
+        "envelope; treat results as indicative.",
     )
     return AoiValidation(
         area_km2=abs(area_m2) / 1_000_000,
@@ -590,11 +782,110 @@ def validate_aoi(geometry: dict, descriptor: ModelDescriptor) -> AoiValidation:
     )
 
 
+def _check_observation(
+    descriptor: ModelDescriptor,
+    observation: ImageryObservation,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """Apply a single descriptor's asset, resolution and season rules."""
+    if observation.collection not in descriptor.supported_collections:
+        errors.append(f"unsupported_collection:{observation.item_id}")
+        return
+    required_bands = descriptor.band_mapping_by_collection[observation.collection]
+    missing = sorted(
+        (set(required_bands) | {descriptor.required_quality_asset}) - observation.asset_keys
+    )
+    if missing:
+        errors.append(f"missing_assets:{observation.item_id}:{','.join(missing)}")
+    accepted = descriptor.accepted_source_resolutions_m
+    observed = observation.band_resolutions_m(required_bands)
+    if any(
+        not any(
+            math.isclose(resolution, candidate, rel_tol=0.001, abs_tol=0.01)
+            for candidate in accepted
+        )
+        for resolution in observed
+    ):
+        errors.append(f"unsupported_resolution:{observation.item_id}")
+    if observation.acquired_at.month not in descriptor.preferred_months:
+        warnings.append(
+            f"{observation.item_id} is outside PlanAura's preferred June-September season."
+        )
+
+
+def _band_semantics(descriptor: ModelDescriptor, collection: str) -> tuple[str, ...]:
+    """Name each band, falling back to asset keys when no canonical mapping fits."""
+    assets = descriptor.band_mapping_by_collection[collection]
+    canonical = SENSOR_BAND_SEMANTICS.get(descriptor.sensor_family, ())
+    if len(canonical) == len(assets):
+        return canonical
+    return tuple(asset.upper().replace("-", "_") for asset in assets)
+
+
+def _build_recipe(
+    descriptor: ModelDescriptor,
+    collection: str,
+    request: RunRequest | None = None,
+    fusion: ModelDescriptor | None = None,
+    fusion_collection: str | None = None,
+) -> PreprocessingRecipe:
+    """Freeze the preprocessing contract for an admitted run."""
+    embedding_descriptor = fusion or descriptor
+    return PreprocessingRecipe(
+        collection=collection,
+        band_assets=descriptor.band_mapping_by_collection[collection],
+        band_semantics=_band_semantics(descriptor, collection),
+        quality_asset=descriptor.required_quality_asset,
+        target_resolution_m=descriptor.native_resolution_m,
+        tile_size_pixels=descriptor.tile_size_pixels,
+        patch_stride_pixels=descriptor.patch_stride_pixels,
+        normalization_mean=embedding_descriptor.normalization_mean,
+        normalization_std=embedding_descriptor.normalization_std,
+        source_no_data_value=descriptor.source_no_data_value,
+        model_no_data_value=descriptor.model_no_data_value,
+        minimum_valid_fraction=descriptor.minimum_valid_fraction,
+        cloud_masking=descriptor.quality_mask_strategy,
+        output_metric=(
+            "class_label"
+            if descriptor.capability is Capability.CLASSIFY
+            else "cosine_distance"
+        ),
+        capability=descriptor.capability,
+        sensor_family=descriptor.sensor_family,
+        classification_mode=(
+            descriptor.classification_mode.value if descriptor.classification_mode else None
+        ),
+        class_scheme_id=descriptor.class_scheme_id,
+        max_classes=getattr(request, "max_classes", None),
+        minimum_confidence=getattr(request, "minimum_confidence", None),
+        fusion_collection=fusion_collection,
+        fusion_band_assets=(
+            fusion.band_mapping_by_collection[fusion_collection]
+            if fusion is not None and fusion_collection is not None
+            else ()
+        ),
+    )
+
+
 def resolve_compatibility(
     descriptor: ModelDescriptor,
-    observations: tuple[ImageryObservation, ImageryObservation],
+    observations: Sequence[ImageryObservation],
+    request: RunRequest | None = None,
 ) -> CompatibilityDecision:
-    """Resolve pair suitability without reading raster bytes."""
+    """Resolve source-scene suitability without reading raster bytes."""
+    if descriptor.capability is Capability.CLASSIFY:
+        return _resolve_classification_compatibility(descriptor, observations, request)
+    return _resolve_change_compatibility(descriptor, observations)
+
+
+def _resolve_change_compatibility(
+    descriptor: ModelDescriptor,
+    observations: Sequence[ImageryObservation],
+) -> CompatibilityDecision:
+    """Resolve bi-temporal pair suitability."""
+    if len(observations) != 2:
+        return CompatibilityDecision(compatible=False, errors=("epoch_pair_required",))
     first, second = observations
     errors: list[str] = []
     warnings: list[str] = []
@@ -612,55 +903,89 @@ def resolve_compatibility(
         errors.append("seasonal_misalignment")
 
     for observation in observations:
-        if observation.collection not in descriptor.supported_collections:
-            errors.append(f"unsupported_collection:{observation.item_id}")
-            continue
-        required_bands = descriptor.band_mapping_by_collection[observation.collection]
-        missing = sorted(
-            (set(required_bands) | {descriptor.required_quality_asset})
-            - observation.asset_keys
-        )
-        if missing:
-            errors.append(f"missing_assets:{observation.item_id}:{','.join(missing)}")
-        if not math.isclose(
-            observation.resolution_m,
-            descriptor.native_resolution_m,
-            rel_tol=0.001,
-            abs_tol=0.01,
-        ):
-            errors.append(f"unsupported_resolution:{observation.item_id}")
-        if observation.acquired_at.month not in descriptor.preferred_months:
-            warnings.append(
-                f"{observation.item_id} is outside PlanAura's preferred June-September season."
-            )
+        _check_observation(descriptor, observation, errors, warnings)
     if errors:
         return CompatibilityDecision(
             compatible=False,
             errors=tuple(dict.fromkeys(errors)),
             warnings=tuple(dict.fromkeys(warnings)),
         )
-
-    recipe = PreprocessingRecipe(
-        collection=first.collection,
-        band_assets=descriptor.band_mapping_by_collection[first.collection],
-        quality_asset=descriptor.required_quality_asset,
-        target_resolution_m=descriptor.native_resolution_m,
-        tile_size_pixels=descriptor.tile_size_pixels,
-        patch_stride_pixels=descriptor.patch_stride_pixels,
-        normalization_mean=descriptor.normalization_mean,
-        normalization_std=descriptor.normalization_std,
-        source_no_data_value=descriptor.source_no_data_value,
-        model_no_data_value=descriptor.model_no_data_value,
-        minimum_valid_fraction=descriptor.minimum_valid_fraction,
-    )
     return CompatibilityDecision(
         compatible=True,
         warnings=tuple(dict.fromkeys(warnings)),
-        recipe=recipe,
+        recipe=_build_recipe(descriptor, first.collection),
     )
 
 
-def _request_hash(request: CompareEpochsRequest) -> str:
+def _resolve_classification_compatibility(
+    descriptor: ModelDescriptor,
+    observations: Sequence[ImageryObservation],
+    request: RunRequest | None,
+) -> CompatibilityDecision:
+    """Resolve single-date classification suitability, including SAR fusion."""
+    if not observations:
+        return CompatibilityDecision(compatible=False, errors=("source_scene_required",))
+    errors: list[str] = []
+    warnings: list[str] = [*descriptor.mandatory_warnings]
+    fusion_descriptor = get_fusion_model(descriptor)
+
+    primary = [
+        observation
+        for observation in observations
+        if observation.collection in descriptor.supported_collections
+    ]
+    fusion_scenes = (
+        [
+            observation
+            for observation in observations
+            if fusion_descriptor is not None
+            and observation.collection in fusion_descriptor.supported_collections
+        ]
+        if fusion_descriptor is not None
+        else []
+    )
+    unknown = [
+        observation
+        for observation in observations
+        if observation not in primary and observation not in fusion_scenes
+    ]
+    for observation in unknown:
+        errors.append(f"unsupported_collection:{observation.item_id}")
+
+    if not primary:
+        errors.append("primary_scene_required")
+    if len({observation.collection for observation in primary}) > 1:
+        errors.append("different_collections")
+    if fusion_descriptor is not None and not fusion_scenes:
+        errors.append("fusion_scene_required")
+
+    for observation in primary:
+        _check_observation(descriptor, observation, errors, warnings)
+    for observation in fusion_scenes:
+        _check_observation(fusion_descriptor, observation, errors, warnings)
+        if primary and _footprint_overlap(primary[0].geometry, observation.geometry) < 0.95:
+            errors.append(f"insufficient_footprint_overlap:{observation.item_id}")
+
+    if errors:
+        return CompatibilityDecision(
+            compatible=False,
+            errors=tuple(dict.fromkeys(errors)),
+            warnings=tuple(dict.fromkeys(warnings)),
+        )
+    return CompatibilityDecision(
+        compatible=True,
+        warnings=tuple(dict.fromkeys(warnings)),
+        recipe=_build_recipe(
+            descriptor,
+            primary[0].collection,
+            request=request,
+            fusion=fusion_descriptor,
+            fusion_collection=fusion_scenes[0].collection if fusion_scenes else None,
+        ),
+    )
+
+
+def _request_hash(request: RunRequest) -> str:
     canonical = json.dumps(
         request.model_dump(mode="json"),
         sort_keys=True,

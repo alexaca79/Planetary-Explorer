@@ -12,10 +12,10 @@ from pystac import Item
 from pystac_client import Client
 
 from .jobs import ImageryObservation, RunError
+from .policy import supported_collections
 
 DEFAULT_STAC_API = "https://planetarycomputer.microsoft.com/api/stac/v1"
 UTC = timezone.utc
-SUPPORTED_COLLECTIONS = ("hls2-s30", "hls2-l30")
 
 
 class StacItemSummary:
@@ -56,11 +56,13 @@ class PlanetaryComputerCatalog:
             or properties.get("mgrs:tile")
             or _tile_from_item_id(item.id)
         )
+        asset_resolutions = _extract_asset_resolutions_m(item)
         return ImageryObservation(
             item_id=item.id,
             collection=item.collection_id,
             asset_keys=frozenset(item.assets),
-            resolution_m=_extract_resolution_m(item),
+            resolution_m=_extract_resolution_m(item, asset_resolutions),
+            asset_resolutions_m=asset_resolutions,
             acquired_at=acquired_at,
             tile_id=str(tile_id) if tile_id else None,
             geometry=item.geometry,
@@ -92,13 +94,15 @@ class PlanetaryComputerCatalog:
         item = next(
             self._client.search(
                 ids=[item_id],
-                collections=list(SUPPORTED_COLLECTIONS),
+                collections=list(supported_collections()),
                 max_items=1,
             ).items(),
             None,
         )
         if item is None:
-            raise RunError(f"STAC item '{item_id}' was not found in an approved HLS collection.")
+            raise RunError(
+                f"STAC item '{item_id}' was not found in a GeoFM-approved collection."
+            )
         return item
 
 
@@ -115,38 +119,53 @@ def _acquired_at(item: Item) -> datetime:
     return acquired_at if acquired_at.tzinfo else acquired_at.replace(tzinfo=UTC)
 
 
-def _extract_resolution_m(item: Item) -> float:
-    candidates: list[float] = []
+def _asset_resolution_m(item_id: str, metadata: dict) -> float | None:
+    """Derive one asset's square-pixel resolution from STAC metadata."""
+    projection = metadata.get("proj:transform")
+    if isinstance(projection, list) and len(projection) >= 6:
+        width = math.hypot(float(projection[0]), float(projection[3]))
+        height = math.hypot(float(projection[1]), float(projection[4]))
+        if not math.isclose(width, height, rel_tol=0.001, abs_tol=0.01):
+            raise RunError(
+                f"STAC item '{item_id}' has non-square pixels ({width:g} by {height:g})."
+            )
+        return width
+    if metadata.get("gsd") is not None:
+        return float(metadata["gsd"])
+    return None
 
-    def add_metadata(metadata: dict) -> None:
-        if metadata.get("gsd") is not None:
-            candidates.append(float(metadata["gsd"]))
-        projection = metadata.get("proj:transform")
-        if isinstance(projection, list) and len(projection) >= 6:
-            width = math.hypot(float(projection[0]), float(projection[3]))
-            height = math.hypot(float(projection[1]), float(projection[4]))
-            if not math.isclose(width, height, rel_tol=0.001, abs_tol=0.01):
-                raise RunError(
-                    f"STAC item '{item.id}' has non-square pixels ({width:g} by {height:g})."
-                )
-            candidates.append(width)
 
-    add_metadata(item.properties)
-    for asset in item.assets.values():
-        add_metadata(asset.extra_fields)
-    if not candidates:
+def _extract_asset_resolutions_m(item: Item) -> dict[str, float]:
+    """Return the resolution of every asset that publishes one."""
+    item_level = _asset_resolution_m(item.id, item.properties)
+    resolutions: dict[str, float] = {}
+    for key, asset in item.assets.items():
+        resolution = _asset_resolution_m(item.id, asset.extra_fields)
+        if resolution is None:
+            resolution = item_level
+        if resolution is not None:
+            resolutions[key] = resolution
+    return resolutions
+
+
+def _extract_resolution_m(item: Item, asset_resolutions: dict[str, float]) -> float:
+    """Return the item's finest published resolution, failing closed when absent."""
+    item_level = _asset_resolution_m(item.id, item.properties)
+    if item_level is not None:
+        return item_level
+    if not asset_resolutions:
         raise RunError(
             f"STAC item '{item.id}' has no ground sample distance or projection transform."
         )
-    reference = candidates[0]
-    if any(
-        not math.isclose(reference, candidate, rel_tol=0.001, abs_tol=0.01)
-        for candidate in candidates[1:]
-    ):
-        raise RunError(f"STAC item '{item.id}' has conflicting resolutions.")
-    return reference
+    return min(asset_resolutions.values())
 
 
 def _tile_from_item_id(item_id: str) -> str | None:
-    parts = item_id.split(".")
-    return next((part[1:] for part in parts if part.startswith("T") and len(part) == 6), None)
+    """Recover an MGRS tile from HLS, Sentinel-2 or Sentinel-1 identifier conventions."""
+    for separator in (".", "_"):
+        for part in item_id.split(separator):
+            if part.startswith("T") and len(part) == 6 and part[1:].isalnum():
+                return part[1:]
+            if len(part) == 5 and part[:2].isdigit() and part[2:].isalpha():
+                return part
+    return None

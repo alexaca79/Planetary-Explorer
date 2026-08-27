@@ -38,8 +38,10 @@ def test_given_geofm_server_when_listing_tools_then_workflow_surface_is_complete
     # Assert
     assert {tool.name for tool in tools} == {
         "geofm_cancel_run",
+        "geofm_classify_aoi",
         "geofm_compare_epochs",
         "geofm_get_run",
+        "geofm_list_class_schemes",
         "geofm_list_models",
         "geofm_retry_run",
     }

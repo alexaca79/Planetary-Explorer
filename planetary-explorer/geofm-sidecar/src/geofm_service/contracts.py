@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -51,8 +51,11 @@ class EvidenceEnvelope(BaseModel):
         """Reject raster-like or embedding arrays before agent exposure."""
         forbidden_keys = {
             "band_data",
+            "class_probabilities",
             "embedding_table",
+            "feature_stack",
             "full_embedding",
+            "logits",
             "pixel_array",
             "pixels",
             "raster_values",
@@ -63,7 +66,12 @@ class EvidenceEnvelope(BaseModel):
                 for key, child in value.items():
                     normalized = key.casefold()
                     if normalized in forbidden_keys or normalized.startswith(
-                        ("raw_embedding", "raw_pixels", "raw_raster")
+                        (
+                            "raw_embedding",
+                            "raw_logits",
+                            "raw_pixels",
+                            "raw_raster",
+                        )
                     ):
                         raise ValueError(
                             f"Unreduced evidence is not allowed at '{path}.{key}'. "
@@ -93,6 +101,7 @@ class CompareEpochsRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["compare_epochs"] = "compare_epochs"
     geometry: GeoJson
     item_id_epoch_a: str = Field(min_length=1, max_length=512)
     item_id_epoch_b: str = Field(min_length=1, max_length=512)
@@ -101,6 +110,49 @@ class CompareEpochsRequest(BaseModel):
     requested_by: str = Field(min_length=1, max_length=256)
     threshold: float = Field(default=0.35, ge=0, le=2)
     max_features: int = Field(default=10, ge=1, le=100)
+
+    @property
+    def source_item_ids(self) -> tuple[str, ...]:
+        """Return every source item this request reads, in a stable order."""
+        return (self.item_id_epoch_a, self.item_id_epoch_b)
+
+
+class ClassifyAoiRequest(BaseModel):
+    """Fully specified single-epoch classification request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["classify_aoi"] = "classify_aoi"
+    geometry: GeoJson
+    item_ids: list[str] = Field(min_length=1, max_length=4)
+    profile: str = Field(min_length=1, max_length=64)
+    class_scheme: str = Field(min_length=1, max_length=64)
+    correlation_id: str = Field(min_length=1, max_length=128)
+    requested_by: str = Field(min_length=1, max_length=256)
+    minimum_confidence: float = Field(default=0.55, ge=0, le=1)
+    max_classes: int = Field(default=6, ge=2, le=64)
+    max_features: int = Field(default=25, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def reject_duplicate_items(self) -> ClassifyAoiRequest:
+        """Reject repeated source items so fusion inputs stay unambiguous."""
+        cleaned = [item.strip() for item in self.item_ids]
+        if any(not item for item in cleaned):
+            raise ValueError("Every classification source item id must be non-empty.")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("Classification source items must be distinct.")
+        return self
+
+    @property
+    def source_item_ids(self) -> tuple[str, ...]:
+        """Return every source item this request reads, in a stable order."""
+        return tuple(self.item_ids)
+
+
+RunRequest = Annotated[
+    CompareEpochsRequest | ClassifyAoiRequest,
+    Field(discriminator="kind"),
+]
 
 
 class RunArtifact(BaseModel):
@@ -125,7 +177,7 @@ class RunRecord(BaseModel):
     status: RunStatus = RunStatus.QUEUED
     worker_id: str | None = Field(default=None, max_length=128)
     lease_expires_at: datetime | None = None
-    request: CompareEpochsRequest
+    request: RunRequest
     selected_model: dict[str, JsonValue]
     preprocessing_recipe: dict[str, JsonValue]
     warnings: list[str] = Field(default_factory=list, max_length=20)
@@ -136,3 +188,13 @@ class RunRecord(BaseModel):
     error: str | None = Field(default=None, max_length=2000)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_legacy_request_kind(cls, value: object) -> object:
+        """Read runs persisted before the request union gained a discriminator."""
+        if isinstance(value, dict):
+            request = value.get("request")
+            if isinstance(request, dict) and "kind" not in request:
+                value = {**value, "request": {**request, "kind": "compare_epochs"}}
+        return value
