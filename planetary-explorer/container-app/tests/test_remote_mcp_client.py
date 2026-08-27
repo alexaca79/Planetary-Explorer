@@ -73,7 +73,7 @@ async def test_given_task_bound_transport_when_closed_then_owner_task_is_preserv
     # Arrange
     monkeypatch.setattr(
         remote_client_module,
-        "streamablehttp_client",
+        "streamable_http_client",
         lambda **_kwargs: _TaskBoundContext((object(), object(), None)),
     )
     monkeypatch.setattr(remote_client_module, "ClientSession", _FakeSession)
@@ -96,7 +96,7 @@ async def test_given_initialization_timeout_when_contexts_entered_then_stack_is_
     _BlockingSession.exited = False
     monkeypatch.setattr(
         remote_client_module,
-        "streamablehttp_client",
+        "streamable_http_client",
         lambda **_kwargs: transport,
     )
     monkeypatch.setattr(remote_client_module, "ClientSession", _BlockingSession)
@@ -118,7 +118,7 @@ async def test_given_cancellation_resistant_exit_when_deadline_expires_then_call
     _CancellationResistantExitSession.release = asyncio.Event()
     monkeypatch.setattr(
         remote_client_module,
-        "streamablehttp_client",
+        "streamable_http_client",
         lambda **_kwargs: _TaskBoundContext((object(), object(), None)),
     )
     monkeypatch.setattr(
@@ -159,7 +159,7 @@ async def test_given_concurrent_calls_when_first_lifecycle_is_active_then_second
 
     monkeypatch.setattr(
         remote_client_module,
-        "streamablehttp_client",
+        "streamable_http_client",
         lambda **_kwargs: _TaskBoundContext((object(), object(), None)),
     )
     monkeypatch.setattr(remote_client_module, "ClientSession", BlockingCallSession)
@@ -174,3 +174,30 @@ async def test_given_concurrent_calls_when_first_lifecycle_is_active_then_second
     finally:
         release.set()
     assert await first_call == {"payload": {"models": []}}
+
+
+@pytest.mark.asyncio
+async def test_given_api_key_when_opening_session_then_http_client_carries_header(
+    monkeypatch,
+) -> None:
+    # Arrange
+    captured_header = None
+
+    def transport(**kwargs):
+        nonlocal captured_header
+        captured_header = kwargs["http_client"].headers.get("X-API-Key")
+        return _TaskBoundContext((object(), object(), None))
+
+    monkeypatch.setattr(remote_client_module, "streamable_http_client", transport)
+    monkeypatch.setattr(remote_client_module, "ClientSession", _FakeSession)
+    client = RemoteMcpClient(
+        "https://web-search.example",
+        api_key="shared-secret",
+        request_timeout_seconds=1,
+    )
+
+    # Act
+    await client.call_raw("geofm_list_models", {})
+
+    # Assert
+    assert captured_header == "shared-secret"

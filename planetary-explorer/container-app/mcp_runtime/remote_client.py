@@ -8,8 +8,9 @@ import logging
 from contextlib import AsyncExitStack
 from typing import Any
 
+import httpx
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +129,17 @@ class RemoteMcpClient:
         headers = {"X-API-Key": self._api_key} if self._api_key else None
         stack = AsyncExitStack()
         try:
-            read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(
-                    url=f"{self._url}/mcp",
+            http_client = await stack.enter_async_context(
+                httpx.AsyncClient(
                     headers=headers,
+                    timeout=httpx.Timeout(self._request_timeout),
+                    follow_redirects=True,
+                )
+            )
+            read, write, _ = await stack.enter_async_context(
+                streamable_http_client(
+                    url=f"{self._url}/mcp",
+                    http_client=http_client,
                 )
             )
             session = await stack.enter_async_context(ClientSession(read, write))
