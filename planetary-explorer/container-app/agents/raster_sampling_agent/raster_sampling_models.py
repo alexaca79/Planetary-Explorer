@@ -25,6 +25,9 @@ class RasterSamplingInput(BaseModel):
     tile_urls: List[str] = Field(
         default_factory=list, description="Tile URLs currently rendered."
     )
+    stac_mode: Literal["public", "pro"] = Field(
+        "public", description="Catalog source used to rehydrate stable item IDs."
+    )
     screenshot_b64: Optional[str] = Field(
         None, description="Optional base64 screenshot for context (rarely used)."
     )

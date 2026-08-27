@@ -121,6 +121,7 @@ class RasterSamplingAnalyzer(Analyzer):
             loaded_collections=list(request.loaded_collections),
             stac_items=list(request.stac_items),
             tile_urls=list(request.tile_urls),
+            stac_mode="pro" if request.stac_mode == "pro" else "public",
             screenshot_b64=request.screenshot_b64,
             data_type=data_type,  # type: ignore[arg-type]
         )

@@ -96,6 +96,7 @@ def _build_request(question_override: Optional[str] = None, hint: Optional[str] 
         history=list(s.history),
         grounding=[],  # AnalystAgent owns chaining via tool sequence, not grounding field
         hint=hint or s.hint,
+        stac_mode=s.stac_mode,
     )
 
 
@@ -672,6 +673,7 @@ async def compare_temporal(
             history=[],
             grounding=[],
             hint=f"temporal_compare epoch={epoch_label} when={when}",
+            stac_mode=s.stac_mode,
         )
         if not analyzer.can_run(req):
             return {"success": False, "error": f"raster_sampling can't run for {epoch_label}"}

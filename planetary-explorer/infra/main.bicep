@@ -186,6 +186,9 @@ param enableMpcPro bool = false
 @description('STAC API base URL for the private GeoCatalog (MPC Pro). Surfaced to the API container as MPC_PRO_STAC_URL. Format: https://<gc>.<region>.geocatalog.spatio.azure.com/stac. Empty disables the Pro path even if enableMpcPro=true.')
 param mpcProStacUrl string = ''
 
+@description('Comma-separated exact Azure Storage FQDNs allowed to receive collection SAS tokens for MPC Pro raster sampling. Empty disables SAS signing.')
+param mpcProAssetHosts string = ''
+
 @description('Deploy the MPC Pro MCP sidecar. Off by default — image must exist in ACR first (no CI build step yet for mpc-mcp-sidecar/Dockerfile). When on, also flip USE_MPC_MCP on the backend after granting the sidecar MI Reader inside the GeoCatalog. See planetary-explorer/mpc-mcp-sidecar/README.md.')
 param deployMpcMcp bool = false
 
@@ -713,6 +716,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     enableFabric: enableFabric
     enableMpcPro: enableMpcPro
     mpcProStacUrl: mpcProStacUrl
+    mpcProAssetHosts: mpcProAssetHosts
     fabricWorkspaceId: fabricWorkspaceId
     fabricLakehouseId: fabricLakehouseId
     collectionSelectorMode: collectionSelectorMode

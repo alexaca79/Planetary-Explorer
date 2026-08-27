@@ -83,23 +83,25 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   }, [onReasoningEffortChange]);
 
   useEffect(() => {
-    if (models.length === 0 || !selectedModel) return;
+    if (!selectedModel || models.length === 0) return;
+
     const fallbackModel = models.find((model) => model.isDefault)?.id || models[0].id;
-    const nextModel = models.some(
-      (model) => model.id === selectedModel && model.isAvailable,
-    )
+    const nextModel = models.some((model) => model.id === selectedModel)
       ? selectedModel
       : fallbackModel;
     const capability = capabilities[nextModel] || DEFAULT_CAPABILITY;
-    const requestedEffort = selectedReasoningEffort || currentReasoningEffortRef.current;
-    const nextEffort = capability.reasoning_efforts.includes(requestedEffort)
-      ? requestedEffort
-      : capability.default_reasoning_effort;
+    const nextEffort = selectedReasoningEffort
+      ? capability.reasoning_efforts.includes(selectedReasoningEffort)
+        ? selectedReasoningEffort
+        : capability.default_reasoning_effort
+      : capability.reasoning_efforts.includes(currentReasoningEffortRef.current)
+          ? currentReasoningEffortRef.current
+          : capability.default_reasoning_effort;
 
+    currentModelRef.current = nextModel;
+    currentReasoningEffortRef.current = nextEffort;
     setCurrentModel(nextModel);
     setCurrentReasoningEffort(nextEffort);
-    localStorage.setItem('planetaryexplorer-model', nextModel);
-    localStorage.setItem('planetaryexplorer-reasoning-effort', nextEffort);
     if (nextModel !== selectedModel) onModelChangeRef.current?.(nextModel);
     if (nextEffort !== selectedReasoningEffort) {
       onReasoningEffortChangeRef.current?.(nextEffort);

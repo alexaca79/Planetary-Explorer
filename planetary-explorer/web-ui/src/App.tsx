@@ -9,6 +9,7 @@ import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
 import type { ChatHistoryContext } from './services/api';
+import { confirmFailedHistoryDiscard, restoredStacMode } from './utils/chatHistory';
 
 const queryClient = new QueryClient();
 
@@ -67,6 +68,7 @@ function App() {
   // the chat/map view.
 
   const [features, setFeatures] = useState<DeploymentFeatures>(DEFAULT_FEATURES);
+  const [hasUnsavedHistorySnapshot, setHasUnsavedHistorySnapshot] = useState(false);
 
   // Pull deployment feature flags once on mount. We treat any error as
   // "keep the defaults" so the UI stays functional even if the config
@@ -135,10 +137,14 @@ function App() {
   };
 
   const handleReturnToLanding = () => {
+    if (!confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     setAppState({ entered: false, entryTarget: null, selectedDataset: null, chatMode: false, initialQuery: undefined });
   };
 
-  const handleRestartSession = () => {
+  const handleRestartSession = (discardConfirmed = false) => {
+    if (!discardConfirmed && !confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     // Clear chat and dataset selection but stay in the app
     // Force chat component to re-render by updating session key
     setAppState(prev => ({ 
@@ -159,7 +165,8 @@ function App() {
   const handleRestoreChatContext = (context: ChatHistoryContext) => {
     if (context.selectedModel) handleModelChange(context.selectedModel);
     if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
-    if (context.stacMode) handleStacModeChange(context.stacMode);
+    const allowedStacMode = restoredStacMode(context.stacMode, features.mpcPro);
+    if (allowedStacMode) handleStacModeChange(allowedStacMode);
     setAppState(prev => ({
       ...prev,
       selectedDataset: context.selectedDataset
@@ -211,6 +218,8 @@ function App() {
               onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
+              onHistorySaveRiskChange={setHasUnsavedHistorySnapshot}
+              proEnabled={features.mpcPro}
             />
           </>
         )}

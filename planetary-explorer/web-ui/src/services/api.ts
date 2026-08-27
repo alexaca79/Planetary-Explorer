@@ -122,7 +122,8 @@ export interface ChatHistorySummary {
 
 export interface ChatHistorySession extends ChatHistorySummary {
   schemaVersion: number;
-  clientRevision: number;
+  revision: number;
+  appliedMutationId?: string;
   messages: ChatMessage[];
   context: ChatHistoryContext;
 }
@@ -143,12 +144,14 @@ export interface ChatHistoryContext {
 
 export interface ChatHistorySnapshot {
   title?: string;
-  clientRevision?: number;
+  expectedRevision: number;
+  mutationId: string;
   messages: ChatMessage[];
   context: ChatHistoryContext;
 }
 
 export interface MapContext {
+  stac_mode?: 'public' | 'pro';
   bounds?: {
     north: number;
     south: number;
@@ -159,11 +162,15 @@ export interface MapContext {
   };
   imagery_base64?: string; // Base64 screenshot from MapView canvas
   imagery_url?: string;
+  item_id?: string;
+  datetime?: string;
+  zoom_level?: number;
   current_collection?: string;
   tile_urls?: Array<{  // TiTiler URLs from prior STAC response for Vision Agent
     tilejson_url: string;
     item_id?: string;
     collection?: string;
+    bbox?: number[];
   }>;
   // Full STAC items captured by MapView after a search. Includes
   // `assets` with `href` URLs needed by the backend `sample_raster_value`
@@ -919,6 +926,9 @@ class ApiService {
         if (mapContext?.bounds) {
           requestData.map_bounds = mapContext.bounds;
         }
+        if (mapContext?.stac_mode) {
+          requestData.stac_mode = mapContext.stac_mode;
+        }
         //  NEW: Include STAC items with assets for NDVI/raster analysis
         if (mapContext?.stac_items?.length > 0) {
           requestData.stac_items = mapContext.stac_items;
@@ -964,6 +974,9 @@ class ApiService {
       }
       if (mapContext?.current_collection) {
         requestData.collection = mapContext.current_collection;
+      }
+      if (mapContext?.stac_mode) {
+        requestData.stac_mode = mapContext.stac_mode;
       }
       //  NEW: Include STAC items with assets for NDVI/raster analysis
       if (mapContext?.stac_items?.length > 0) {

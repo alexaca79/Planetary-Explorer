@@ -135,9 +135,11 @@ param enableMpcPro bool = false
 @description('STAC API base URL for the private GeoCatalog (MPC Pro). Surfaced to the API container as MPC_PRO_STAC_URL. Empty disables the Pro path even if enableMpcPro=true.')
 param mpcProStacUrl string = ''
 
+@description('Comma-separated exact Azure Storage FQDNs allowed to receive MPC Pro collection SAS tokens. Empty disables SAS signing.')
+param mpcProAssetHosts string = ''
+
 @description('Fabric workspace ID containing the lakehouse the backend queries. Surfaced as FABRIC_LAKEHOUSE_WORKSPACE_ID.')
 param fabricWorkspaceId string = ''
-
 @description('Fabric lakehouse ID inside ``fabricWorkspaceId``. Surfaced as FABRIC_LAKEHOUSE_ID.')
 param fabricLakehouseId string = ''
 
@@ -438,6 +440,10 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               // on the target catalog so the token request succeeds.
               name: 'MPC_PRO_STAC_URL'
               value: mpcProStacUrl
+            }
+            {
+              name: 'MPC_PRO_ASSET_HOSTS'
+              value: mpcProAssetHosts
             }
             {
               // Fabric lakehouse coordinates. Empty values are treated by

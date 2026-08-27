@@ -25,11 +25,13 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse, urlencode, parse_qsl
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 import aiohttp
 
@@ -38,9 +40,14 @@ logger = logging.getLogger(__name__)
 PRO_HOST_SUFFIX = ".geocatalog.spatio.azure.com"
 PRO_AUDIENCE = "https://geocatalog.spatio.azure.com"
 PRO_API_VERSION = "2025-04-30-preview"
+PRO_SAS_API_VERSION = "2026-04-15"
 
 _token_cache: Dict[str, tuple[str, float]] = {}
 _token_lock = asyncio.Lock()
+_sync_token_cache: Dict[str, tuple[str, float]] = {}
+_sync_token_lock = threading.Lock()
+_sas_token_cache: Dict[str, tuple[str, float]] = {}
+_sas_token_lock = threading.Lock()
 
 
 def is_pro_url(url: str) -> bool:
@@ -123,6 +130,191 @@ async def _acquire_token() -> str:
 async def _auth_headers() -> Dict[str, str]:
     tok = await _acquire_token()
     return {"Authorization": f"Bearer {tok}"}
+
+
+def _acquire_token_sync() -> str:
+    """Return a cached bearer token for synchronous Pro STAC lookups."""
+    now = time.time()
+    cached = _sync_token_cache.get(PRO_AUDIENCE)
+    if cached and cached[1] - now > 60:
+        return cached[0]
+
+    with _sync_token_lock:
+        cached = _sync_token_cache.get(PRO_AUDIENCE)
+        if cached and cached[1] - now > 60:
+            return cached[0]
+
+        from azure.identity import DefaultAzureCredential
+
+        credential = DefaultAzureCredential()
+        try:
+            token = credential.get_token(f"{PRO_AUDIENCE}/.default")
+            _sync_token_cache[PRO_AUDIENCE] = (token.token, token.expires_on)
+            return token.token
+        finally:
+            credential.close()
+
+
+def pro_get_item_sync(
+    collection_id: str,
+    item_id: str,
+    *,
+    timeout: float = 30.0,
+) -> Optional[Dict[str, Any]]:
+    """Fetch one Pro STAC item with managed-identity authentication."""
+    base = get_pro_stac_base()
+    if not base:
+        return None
+
+    import requests
+
+    item_url = (
+        f"{base}/collections/{quote(collection_id, safe='')}"
+        f"/items/{quote(item_id, safe='')}"
+    )
+    try:
+        response = requests.get(
+            _ensure_api_version(item_url),
+            headers={"Authorization": f"Bearer {_acquire_token_sync()}"},
+            timeout=timeout,
+        )
+        if response.status_code == 200:
+            body = response.json()
+            return body if isinstance(body, dict) else None
+        logger.warning(
+            "[PRO-STAC] item lookup returned %d for %s/%s",
+            response.status_code,
+            collection_id,
+            item_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[PRO-STAC] item lookup failed for %s/%s: %s",
+            collection_id,
+            item_id,
+            exc,
+        )
+    return None
+
+
+def pro_search_sync(
+    search_body: Dict[str, Any],
+    *,
+    timeout: float = 30.0,
+) -> list[Dict[str, Any]]:
+    """Search the configured Pro catalog with managed-identity authentication."""
+    base = get_pro_stac_base()
+    if not base:
+        return []
+
+    import requests
+
+    try:
+        response = requests.post(
+            _ensure_api_version(f"{base}/search"),
+            headers={
+                "Authorization": f"Bearer {_acquire_token_sync()}",
+                "Content-Type": "application/json",
+            },
+            json=search_body,
+            timeout=timeout,
+        )
+        if response.status_code == 200:
+            body = response.json()
+            features = body.get("features") if isinstance(body, dict) else None
+            return [feature for feature in features or [] if isinstance(feature, dict)]
+        logger.warning("[PRO-STAC] search returned %d", response.status_code)
+    except Exception as exc:
+        logger.warning("[PRO-STAC] search failed: %s", exc)
+    return []
+
+
+def pro_get_collection_sas_sync(
+    collection_id: str,
+    *,
+    timeout: float = 30.0,
+) -> Optional[str]:
+    """Return a short-lived collection SAS token from the GeoCatalog root."""
+    base = get_pro_stac_base()
+    if not base:
+        return None
+    root = base[:-len("/stac")] if base.endswith("/stac") else base
+    cache_key = f"{root}|{collection_id}"
+    now = time.time()
+    cached = _sas_token_cache.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    with _sas_token_lock:
+        cached = _sas_token_cache.get(cache_key)
+        if cached and cached[1] > now:
+            return cached[0]
+
+        import requests
+
+        token_url = (
+            f"{root}/sas/token/{quote(collection_id, safe='')}"
+            f"?api-version={PRO_SAS_API_VERSION}"
+        )
+        try:
+            response = requests.get(
+                token_url,
+                headers={"Authorization": f"Bearer {_acquire_token_sync()}"},
+                timeout=timeout,
+            )
+            if response.status_code == 200:
+                body = response.json()
+                token = body.get("token") if isinstance(body, dict) else None
+                if isinstance(token, str) and token:
+                    _sas_token_cache[cache_key] = (token, now + 300)
+                    return token
+            logger.warning(
+                "[PRO-STAC] SAS token request returned %d for collection %s",
+                response.status_code,
+                collection_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[PRO-STAC] SAS token request failed for collection %s: %s",
+                collection_id,
+                exc,
+            )
+    return None
+
+
+def pro_sign_item_assets_sync(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Append a collection SAS token to trusted unsigned HTTPS asset hrefs."""
+    signed = copy.deepcopy(item)
+    configured_hosts = {
+        host.strip().casefold()
+        for host in os.getenv("MPC_PRO_ASSET_HOSTS", "").split(",")
+        if host.strip()
+    }
+    if not configured_hosts:
+        return signed
+    collection_id = signed.get("collection")
+    if not isinstance(collection_id, str) or not collection_id:
+        return signed
+    token = pro_get_collection_sas_sync(collection_id)
+    if not token:
+        return signed
+    sas_query = token.lstrip("?")
+    for asset in (signed.get("assets") or {}).values():
+        if not isinstance(asset, dict):
+            continue
+        href = asset.get("href")
+        if not isinstance(href, str):
+            continue
+        parsed = urlparse(href)
+        host = (parsed.hostname or "").casefold()
+        if parsed.scheme != "https" or host not in configured_hosts:
+            continue
+        query_keys = {key.casefold() for key, _value in parse_qsl(parsed.query)}
+        if "sig" in query_keys:
+            continue
+        query = "&".join(part for part in (parsed.query, sas_query) if part)
+        asset["href"] = parsed._replace(query=query).geturl()
+    return signed
 
 
 async def pro_get(

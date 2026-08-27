@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiService, ChatHistorySession } from '../../services/api';
 import ChatHistoryDrawer from '../ChatHistoryDrawer';
 
-function renderDrawer(onLoad = vi.fn(), busy = false) {
+function renderDrawer(onLoad = vi.fn(), busy = false, onClose = vi.fn()) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -17,7 +17,7 @@ function renderDrawer(onLoad = vi.fn(), busy = false) {
         busy={busy}
         enabled
         open
-        onClose={vi.fn()}
+        onClose={onClose}
         onLoad={onLoad}
       />
     </QueryClientProvider>,
@@ -35,7 +35,7 @@ describe('ChatHistoryDrawer', () => {
     const session: ChatHistorySession = {
       sessionId: 'session-1',
       schemaVersion: 1,
-      clientRevision: 1,
+      revision: 1,
       title: 'Toronto flood scan',
       createdAt: '2026-08-26T12:00:00Z',
       updatedAt: '2026-08-26T12:01:00Z',
@@ -64,7 +64,7 @@ describe('ChatHistoryDrawer', () => {
     const currentSession: ChatHistorySession = {
       sessionId: 'session-2',
       schemaVersion: 1,
-      clientRevision: 1,
+      revision: 1,
       title: 'Current test',
       createdAt: '2026-08-26T12:00:00Z',
       updatedAt: '2026-08-26T12:01:00Z',
@@ -96,7 +96,7 @@ describe('ChatHistoryDrawer', () => {
     const session: ChatHistorySession = {
       sessionId: 'session-1',
       schemaVersion: 1,
-      clientRevision: 1,
+      revision: 1,
       title: 'Pending test',
       createdAt: '2026-08-26T12:00:00Z',
       updatedAt: '2026-08-26T12:01:00Z',
@@ -117,5 +117,34 @@ describe('ChatHistoryDrawer', () => {
     expect(openButton).toBeDisabled();
     fireEvent.click(openButton);
     expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps the drawer open when session loading is declined', async () => {
+    // Arrange
+    const session: ChatHistorySession = {
+      sessionId: 'session-1',
+      schemaVersion: 1,
+      revision: 1,
+      title: 'Unsaved current chat',
+      createdAt: '2026-08-26T12:00:00Z',
+      updatedAt: '2026-08-26T12:01:00Z',
+      messageCount: 1,
+      attachments: [],
+      messages: [{ role: 'user', content: 'Test', timestamp: new Date() }],
+      context: {},
+    };
+    vi.spyOn(apiService, 'listChatSessions').mockResolvedValue([session]);
+    vi.spyOn(apiService, 'getChatSession').mockResolvedValue(session);
+    const onClose = vi.fn();
+    renderDrawer(() => false, false, onClose);
+
+    // Act
+    await screen.findByText('Unsaved current chat');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Unsaved current chat' }));
+
+    // Assert
+    await waitFor(() => expect(apiService.getChatSession).toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('complementary', { name: 'Saved chat sessions' })).toBeInTheDocument();
   });
 });
