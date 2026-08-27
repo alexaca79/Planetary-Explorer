@@ -32,13 +32,25 @@ infra:
 
 hooks:
   preprovision:
-    kind: python
-    run: ./scripts/resolve_azd_deployment_targets.py
+    windows:
+      shell: pwsh
+      run: python ./scripts/resolve_azd_deployment_targets.py
+    posix:
+      shell: sh
+      run: python3 ./scripts/resolve_azd_deployment_targets.py
   postup:
-    - kind: python
-      run: ./scripts/deploy_optional_azd_services.py
-    - kind: python
-      run: ./scripts/configure_auth_postdeploy.py
+    - windows:
+        shell: pwsh
+        run: python ./scripts/deploy_optional_azd_services.py
+      posix:
+        shell: sh
+        run: python3 ./scripts/deploy_optional_azd_services.py
+    - windows:
+        shell: pwsh
+        run: python ./scripts/configure_auth_postdeploy.py
+      posix:
+        shell: sh
+        run: python3 ./scripts/configure_auth_postdeploy.py
 
 workflows:
   up:
@@ -66,12 +78,20 @@ services:
   api:
     project: ./planetary-explorer/container-app
     host: containerapp
-    language: python
+    language: docker
     resourceName: ${AZURE_CONTAINER_APP_NAME}
+    docker:
+      path: ./Dockerfile.complete
+      context: ..
+      remoteBuild: true
     hooks:
       postdeploy:
-        kind: python
-        run: ../../scripts/configure_api_postdeploy.py
+        windows:
+          shell: pwsh
+          run: python ../../scripts/configure_api_postdeploy.py
+        posix:
+          shell: sh
+          run: python3 ../../scripts/configure_api_postdeploy.py
 
   web-search-mcp:
     project: ./planetary-explorer/web-search-mcp
@@ -83,8 +103,12 @@ services:
       remoteBuild: true
     hooks:
       postdeploy:
-        kind: python
-        run: ../../scripts/configure_web_search_postdeploy.py
+        windows:
+          shell: pwsh
+          run: python ../../scripts/configure_web_search_postdeploy.py
+        posix:
+          shell: sh
+          run: python3 ../../scripts/configure_web_search_postdeploy.py
 
   geofm:
     project: ./planetary-explorer/geofm-sidecar
@@ -96,8 +120,12 @@ services:
       remoteBuild: true
     hooks:
       postdeploy:
-        kind: python
-        run: ../../scripts/configure_geofm_postdeploy.py
+        windows:
+          shell: pwsh
+          run: python ../../scripts/configure_geofm_postdeploy.py
+        posix:
+          shell: sh
+          run: python3 ../../scripts/configure_geofm_postdeploy.py
 
   geofm-worker:
     project: ./planetary-explorer/geofm-sidecar

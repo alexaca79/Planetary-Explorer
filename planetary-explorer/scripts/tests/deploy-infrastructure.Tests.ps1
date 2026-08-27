@@ -210,6 +210,9 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
             $manifest | Should -Match 'preprovision:'
             $manifest | Should -Match 'resolve_azd_deployment_targets\.py'
             $manifest | Should -Not -Match 'run:\s+\S+\.py\s+--'
+            $manifest | Should -Not -Match 'kind:\s+python'
+            $manifest | Should -Match 'shell:\s+pwsh'
+            $manifest | Should -Match 'shell:\s+sh'
         }
     }
 
