@@ -481,6 +481,34 @@ For values that don't have a workflow input (e.g. `fabricAdministrators`, `fabri
 
 The container exposes the effective config at `GET /api/config` → `features: { mpcPublic, mpcPro, fabric }` so the UI hides/locks controls accordingly. No code changes needed — set the toggles, redeploy, the UI adapts.
 
+#### GeoFM / PlanAura (Foundation Change + Classification)
+
+The PlanAura sidecar is **off by default** and has no workflow input — it is driven by
+Bicep parameters and `azd env` values, because it provisions a serverless **T4 GPU**
+worker that bills per run:
+
+| Parameter | Default | What it does |
+|---|---|---|
+| `deployGeoFm` / `DEPLOY_GEOFM` | `false` | Provisions the MCP control plane, the GPU worker, and the `geofm` blob + queue resources. Enables the **Foundation Change** and **Classification** modules. |
+| `geoFmMcpApiKey` / `GEOFM_MCP_API_KEY` | empty | Shared key authenticating backend-to-MCP transport. At least 32 random characters. |
+| `geoFmOwnerSigningKey` / `GEOFM_OWNER_SIGNING_KEY` | empty | **Distinct** key binding submit / get / retry / cancel to an authenticated owner. At least 32 random characters. |
+| `geoFmAllowConditional` | `false` | Releases `CONDITIONAL` profiles (`planaura_hls`, `planaura_classify_s2`). Enable only after the GPU smoke test passes. |
+| `GEOFM_MAX_ACTIVE_RUNS_PER_OWNER` | `3` | Caps concurrent GPU runs per owner. Classification invites bulk use, so review this against your budget. |
+
+```powershell
+azd env set DEPLOY_GEOFM true
+azd env set-secret GEOFM_MCP_API_KEY
+azd env set-secret GEOFM_OWNER_SIGNING_KEY
+azd up
+azd deploy geofm
+azd deploy geofm-worker
+```
+
+Read [`planetary-explorer/geofm-sidecar/README.md`](planetary-explorer/geofm-sidecar/README.md)
+for the full pre-flight checklist, and
+[`documentation/classification-mode.md`](documentation/classification-mode.md) for the
+end-user walkthrough of Classification mode.
+
 ---
 
 ## Step 10: Monitor Deployment

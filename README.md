@@ -91,7 +91,7 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 </details>
 
 <details>
-<summary><b>GEOINT Modules — Vision, Terrain, Mobility, Comparison, Building Damage</b></summary>
+<summary><b>GEOINT Modules — Vision, Terrain, Mobility, Comparison, Building Damage, Classification</b></summary>
 
 | Module | Query |
 |--------|-------|
@@ -101,6 +101,12 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 | **Comparison** | Show wildfire activity in Southern California in January 2025 and analyze how it evolved over 48 hours |
 | **Mobility** | Classify terrain traversability at these coordinates across 5 elevation layers |
 | **Building Damage** | Assess building damage using before/after satellite imagery at these coordinates |
+| **Classification** | Classify the land cover in this Sentinel-2 scene and show the area of each class |
+
+**Classification** runs the PlanAura geospatial foundation model over Sentinel-1, -2, and -3
+scenes and returns a class map, class polygons, and per-class statistics as hashed evidence.
+See the [Classification mode guide](documentation/classification-mode.md) for a step-by-step
+walkthrough, the honest limits of the results, and troubleshooting.
 
 </details>
 
