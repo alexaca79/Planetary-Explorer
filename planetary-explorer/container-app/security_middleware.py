@@ -5,12 +5,28 @@ from __future__ import annotations
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 
 DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 _BODY_METHODS = {"PATCH", "POST", "PUT"}
+_HEALTH_PROBE_PATHS = frozenset({"/api/health"})
+
+
+class HealthProbeTrustedHostMiddleware(TrustedHostMiddleware):
+    """Apply trusted-host checks except for Azure's read-only health probe."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope["type"] == "http"
+            and scope.get("method") in {"GET", "HEAD"}
+            and scope.get("path") in _HEALTH_PROBE_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
 
 
 def apply_security_headers(response: Response, request: Request) -> Response:

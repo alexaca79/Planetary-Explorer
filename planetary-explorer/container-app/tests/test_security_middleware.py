@@ -5,7 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 import auth_middleware
-from security_middleware import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
+from security_middleware import (
+    HealthProbeTrustedHostMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 
 def _security_client(*, max_body_bytes: int = 32) -> TestClient:
@@ -78,6 +82,33 @@ def test_given_cors_preflight_when_security_wraps_cors_then_both_header_sets_are
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://canada.example"
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_given_internal_host_when_requesting_health_then_only_health_bypasses_host_check() -> None:
+    # Arrange
+    app = FastAPI()
+
+    @app.get("/api/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/api/status")
+    async def status() -> dict[str, str]:
+        return {"status": "ok"}
+
+    app.add_middleware(
+        HealthProbeTrustedHostMiddleware,
+        allowed_hosts=["*.azurecontainerapps.io"],
+    )
+    client = TestClient(app)
+
+    # Act
+    health_response = client.get("/api/health", headers={"Host": "100.100.0.103"})
+    status_response = client.get("/api/status", headers={"Host": "100.100.0.103"})
+
+    # Assert
+    assert health_response.status_code == 200
+    assert status_response.status_code == 400
 
 
 def test_given_pro_collection_inventory_when_checking_open_paths_then_auth_is_required() -> None:

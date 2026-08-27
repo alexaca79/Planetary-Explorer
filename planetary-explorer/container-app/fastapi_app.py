@@ -7,7 +7,6 @@ from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 import json
 import logging
@@ -409,6 +408,7 @@ logger.info("[AUTH] Entra ID auth middleware registered")
 
 from security_middleware import (
     DEFAULT_MAX_REQUEST_BODY_BYTES,
+    HealthProbeTrustedHostMiddleware,
     RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
     apply_security_headers,
@@ -432,7 +432,7 @@ allowed_hosts = [
 ]
 if "*" in allowed_hosts and not public_demo_mode:
     raise RuntimeError("ALLOWED_HOSTS cannot contain '*' when authentication is enabled")
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+app.add_middleware(HealthProbeTrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 # CORS wraps auth and boundary checks so browser clients receive headers on
 # authentication, host-validation, and request-size failures.
