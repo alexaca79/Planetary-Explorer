@@ -283,14 +283,29 @@ def pro_get_collection_sas_sync(
 
 
 def pro_sign_item_assets_sync(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Append a collection SAS token to trusted unsigned HTTPS asset hrefs."""
+    """Keep only trusted HTTPS assets and append the collection SAS token."""
     signed = copy.deepcopy(item)
     configured_hosts = {
         host.strip().casefold()
         for host in os.getenv("MPC_PRO_ASSET_HOSTS", "").split(",")
         if host.strip()
     }
-    if not configured_hosts:
+    assets = signed.get("assets")
+    if not isinstance(assets, dict):
+        return signed
+    trusted_assets: Dict[str, Any] = {}
+    for asset_name, asset in assets.items():
+        if not isinstance(asset, dict):
+            continue
+        href = asset.get("href")
+        if not isinstance(href, str):
+            continue
+        parsed = urlparse(href)
+        host = (parsed.hostname or "").casefold()
+        if parsed.scheme == "https" and host in configured_hosts:
+            trusted_assets[str(asset_name)] = asset
+    signed["assets"] = trusted_assets
+    if not trusted_assets:
         return signed
     collection_id = signed.get("collection")
     if not isinstance(collection_id, str) or not collection_id:
@@ -299,16 +314,9 @@ def pro_sign_item_assets_sync(item: Dict[str, Any]) -> Dict[str, Any]:
     if not token:
         return signed
     sas_query = token.lstrip("?")
-    for asset in (signed.get("assets") or {}).values():
-        if not isinstance(asset, dict):
-            continue
+    for asset in trusted_assets.values():
         href = asset.get("href")
-        if not isinstance(href, str):
-            continue
         parsed = urlparse(href)
-        host = (parsed.hostname or "").casefold()
-        if parsed.scheme != "https" or host not in configured_hosts:
-            continue
         query_keys = {key.casefold() for key, _value in parse_qsl(parsed.query)}
         if "sig" in query_keys:
             continue

@@ -57,6 +57,16 @@ param publicDemoMode bool = false
 @description('Deploy durable per-user chat history in Cosmos DB with downloadable artifacts in Blob Storage.')
 param deployChatHistory bool = true
 
+@description('Comma-separated host names accepted by the API. Include custom API domains when configured.')
+param allowedHosts string = '*.azurecontainerapps.io'
+
+@description('Maximum accepted API request body size in bytes.')
+@minValue(1048576)
+param maxRequestBodyBytes int = 33554432
+
+@description('Expose interactive OpenAPI documentation routes.')
+param enableApiDocs bool = false
+
 @description('Microsoft Entra Client ID (Application ID)')
 param microsoftEntraClientId string = ''
 
@@ -680,6 +690,9 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     azureMapsSubscriptionKey: maps.outputs.primaryKey
     enableAuthentication: enableAuthentication
     publicDemoMode: publicDemoMode
+    allowedHosts: allowedHosts
+    maxRequestBodyBytes: maxRequestBodyBytes
+    enableApiDocs: enableApiDocs
     microsoftEntraClientId: microsoftEntraClientId
     microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret

@@ -133,7 +133,7 @@ class RemoteMcpClient:
                 httpx.AsyncClient(
                     headers=headers,
                     timeout=httpx.Timeout(self._request_timeout),
-                    follow_redirects=True,
+                    follow_redirects=False,
                 )
             )
             read, write, _ = await stack.enter_async_context(

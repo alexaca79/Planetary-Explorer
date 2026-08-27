@@ -41,6 +41,21 @@ def _create_client(
     return TestClient(app), repository
 
 
+def test_given_application_routes_when_registered_then_history_router_is_included_once() -> None:
+    # Arrange
+    import fastapi_app
+
+    # Act
+    matching_routes = [
+        route
+        for route in fastapi_app.app.routes
+        if getattr(route, "path", None) == "/api/chat-history/sessions"
+    ]
+
+    # Assert
+    assert len(matching_routes) == 1
+
+
 def test_given_saved_session_when_another_user_reads_then_returns_not_found() -> None:
     # Arrange
     client, _repository = _create_client()

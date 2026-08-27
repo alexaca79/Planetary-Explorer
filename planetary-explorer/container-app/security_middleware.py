@@ -6,6 +6,7 @@ import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -60,32 +61,62 @@ def apply_security_headers(response: Response, request: Request) -> Response:
     return response
 
 
-class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
+class _RequestBodyTooLarge(Exception):
+    """Stop request processing once the streamed body exceeds the limit."""
+
+
+class RequestBodyLimitMiddleware:
     """Reject oversized request bodies before endpoint processing."""
 
     def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES) -> None:
-        super().__init__(app)
         if max_body_bytes < 1:
             raise ValueError("max_body_bytes must be positive")
+        self.app = app
         self._max_body_bytes = max_body_bytes
 
-    async def dispatch(self, request: Request, call_next):
-        if request.method not in _BODY_METHODS:
-            return await call_next(request)
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("method") not in _BODY_METHODS:
+            await self.app(scope, receive, send)
+            return
 
-        content_length = request.headers.get("content-length")
+        content_length = Headers(scope=scope).get("content-length")
         if content_length:
             try:
                 declared_bytes = int(content_length)
             except ValueError:
-                return JSONResponse(status_code=400, content={"error": "Invalid Content-Length"})
+                response = JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid Content-Length"},
+                )
+                await response(scope, receive, send)
+                return
             if declared_bytes > self._max_body_bytes:
-                return JSONResponse(status_code=413, content={"error": "Request body too large"})
+                response = JSONResponse(
+                    status_code=413,
+                    content={"error": "Request body too large"},
+                )
+                await response(scope, receive, send)
+                return
 
-        body = await request.body()
-        if len(body) > self._max_body_bytes:
-            return JSONResponse(status_code=413, content={"error": "Request body too large"})
-        return await call_next(request)
+        received_bytes = 0
+
+        async def limited_receive():
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self._max_body_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            response = JSONResponse(
+                status_code=413,
+                content={"error": "Request body too large"},
+            )
+            await response(scope, receive, send)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

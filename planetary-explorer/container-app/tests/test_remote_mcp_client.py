@@ -182,10 +182,12 @@ async def test_given_api_key_when_opening_session_then_http_client_carries_heade
 ) -> None:
     # Arrange
     captured_header = None
+    follows_redirects = None
 
     def transport(**kwargs):
-        nonlocal captured_header
+        nonlocal captured_header, follows_redirects
         captured_header = kwargs["http_client"].headers.get("X-API-Key")
+        follows_redirects = kwargs["http_client"].follow_redirects
         return _TaskBoundContext((object(), object(), None))
 
     monkeypatch.setattr(remote_client_module, "streamable_http_client", transport)
@@ -201,3 +203,4 @@ async def test_given_api_key_when_opening_session_then_http_client_carries_heade
 
     # Assert
     assert captured_header == "shared-secret"
+    assert follows_redirects is False

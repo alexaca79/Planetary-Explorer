@@ -32,6 +32,12 @@ describe('chat legend derivation', () => {
     ]);
   });
 
+  it('derives a productivity legend for the Canadian MODIS GPP collection', () => {
+    const legend = legendForCollection('modis-17A2H-061');
+
+    expect(legend?.title).toBe('Vegetation productivity');
+  });
+
   it('does not invent a legend for an unknown text-only collection', () => {
     expect(legendForCollection('unknown-text-result')).toBeUndefined();
   });

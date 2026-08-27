@@ -58,7 +58,13 @@ export function legendForCollection(collection: string): ChatLegendDefinition | 
     };
   }
 
-  if (id.includes('17a3') || id.includes('npp') || id.includes('productivity')) {
+  if (
+    id.includes('17a2h')
+    || id.includes('17a3')
+    || id.includes('gpp')
+    || id.includes('npp')
+    || id.includes('productivity')
+  ) {
     return {
       title: 'Vegetation productivity',
       gradient: 'linear-gradient(90deg, #440154 0%, #2a788e 50%, #7ad151 100%)',

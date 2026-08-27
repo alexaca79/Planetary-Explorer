@@ -342,9 +342,7 @@ def test_pro_sign_item_assets_sync_appends_cached_collection_sas(monkeypatch):
     )
     assert second["assets"]["data"]["href"] == first["assets"]["data"]["href"]
     assert item["assets"]["data"]["href"].endswith("private.tif?version=1")
-    assert first["assets"]["external"]["href"] == "https://attacker.example/collect.tif"
-    assert "sig=" not in first["assets"]["attacker_blob"]["href"]
-    assert first["assets"]["plaintext"]["href"].startswith("http://")
+    assert set(first["assets"]) == {"data"}
     assert len(calls) == 1
     assert "/sas/token/private%20collection" in calls[0]["url"]
     assert calls[0]["url"].endswith(f"api-version={psc.PRO_SAS_API_VERSION}")
@@ -372,7 +370,8 @@ def test_pro_sign_item_assets_sync_without_allowlist_does_not_request_sas(monkey
     signed = psc.pro_sign_item_assets_sync(item)
 
     # Assert
-    assert signed == item
+    assert signed["assets"] == {}
+    assert item["assets"]["data"]["href"].endswith("private.tif")
 
 
 # ---------------------------------------------------------------------------

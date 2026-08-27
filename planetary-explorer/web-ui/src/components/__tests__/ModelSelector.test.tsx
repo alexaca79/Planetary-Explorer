@@ -49,6 +49,27 @@ describe('ModelSelector', () => {
     expect(localStorage.getItem('planetaryexplorer-model')).toBe('gpt-4o');
   });
 
+  it('clears an unvalidated model when deployment discovery fails', async () => {
+    // Arrange
+    mockedFetch.mockRejectedValue(new Error('health unavailable'));
+    const onModelChange = vi.fn();
+    const onAvailabilityChange = vi.fn();
+
+    // Act
+    render(
+      <ModelSelector
+        apiBaseUrl="https://api.example"
+        selectedModel="retired-model"
+        onModelChange={onModelChange}
+        onAvailabilityChange={onAvailabilityChange}
+      />
+    );
+
+    // Assert
+    await waitFor(() => expect(onAvailabilityChange).toHaveBeenCalledWith(false));
+    expect(onModelChange).toHaveBeenCalledWith('');
+  });
+
   it('lists every deployed GPT-5.6 model and its thinking levels', async () => {
     // Arrange
     localStorage.setItem('planetaryexplorer-model', 'gpt-5.6-sol');

@@ -20,6 +20,7 @@ interface ModelCapability {
 interface ModelSelectorProps {
   onModelChange?: (modelId: string) => void;
   onReasoningEffortChange?: (effort: string) => void;
+  onAvailabilityChange?: (ready: boolean) => void;
   selectedModel?: string;
   selectedReasoningEffort?: string;
   apiBaseUrl?: string;
@@ -45,6 +46,7 @@ const DEFAULT_CAPABILITY: ModelCapability = {
 const ModelSelector: React.FC<ModelSelectorProps> = ({
   onModelChange,
   onReasoningEffortChange,
+  onAvailabilityChange,
   selectedModel,
   selectedReasoningEffort,
   apiBaseUrl = '',
@@ -65,6 +67,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const currentReasoningEffortRef = useRef(currentReasoningEffort);
   const onModelChangeRef = useRef(onModelChange);
   const onReasoningEffortChangeRef = useRef(onReasoningEffortChange);
+  const onAvailabilityChangeRef = useRef(onAvailabilityChange);
 
   useEffect(() => {
     currentModelRef.current = currentModel;
@@ -81,6 +84,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   useEffect(() => {
     onReasoningEffortChangeRef.current = onReasoningEffortChange;
   }, [onReasoningEffortChange]);
+
+  useEffect(() => {
+    onAvailabilityChangeRef.current = onAvailabilityChange;
+  }, [onAvailabilityChange]);
 
   useEffect(() => {
     if (!selectedModel || models.length === 0) return;
@@ -106,6 +113,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
     if (nextEffort !== selectedReasoningEffort) {
       onReasoningEffortChangeRef.current?.(nextEffort);
     }
+    onAvailabilityChangeRef.current?.(true);
   }, [capabilities, models, selectedModel, selectedReasoningEffort]);
 
   // Fetch available models from health endpoint
@@ -145,9 +153,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
           setCurrentReasoningEffort(nextEffort);
           localStorage.setItem('planetaryexplorer-reasoning-effort', nextEffort);
           onReasoningEffortChangeRef.current?.(nextEffort);
+          onAvailabilityChangeRef.current?.(true);
+        } else {
+          onModelChangeRef.current?.('');
+          onAvailabilityChangeRef.current?.(false);
         }
       } catch (err) {
         console.error('Failed to fetch model availability:', err);
+        onModelChangeRef.current?.('');
+        onAvailabilityChangeRef.current?.(false);
       }
     };
 

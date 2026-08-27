@@ -1,5 +1,8 @@
 """Tests for the FastAPI HTTP security boundary."""
 
+import json
+
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
@@ -38,6 +41,49 @@ def test_given_oversized_body_when_posting_then_request_is_rejected() -> None:
     # Assert
     assert response.status_code == 413
     assert response.json() == {"error": "Request body too large"}
+
+
+@pytest.mark.asyncio
+async def test_given_chunked_body_without_length_when_limit_crossed_then_stream_stops() -> None:
+    # Arrange
+    downstream_chunks: list[bytes] = []
+
+    async def app(_scope, receive, _send) -> None:
+        while True:
+            message = await receive()
+            downstream_chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+
+    middleware = RequestBodyLimitMiddleware(app, max_body_bytes=8)
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"12345", "more_body": True},
+            {"type": "http.request", "body": b"67890", "more_body": False},
+        ]
+    )
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return next(messages)
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/echo",
+        "headers": [],
+    }
+
+    # Act
+    await middleware(scope, receive, send)
+
+    # Assert
+    assert downstream_chunks == [b"12345"]
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"]) == {"error": "Request body too large"}
 
 
 def test_given_https_request_when_responding_then_security_headers_are_present() -> None:

@@ -183,6 +183,11 @@ def _is_sensitive_key(normalized_key: str) -> bool:
 
 def _sanitize_string(value: str, *, limit: int = MAX_MESSAGE_CONTENT_CHARS) -> str:
     redacted = _URL_PATTERN.sub(lambda match: _redact_sensitive_url(match.group(0)), value)
+    redacted = re.sub(
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+",
+        "Bearer <redacted>",
+        redacted,
+    )
 
     def redact_assignment(match: re.Match[str]) -> str:
         key = match.group("key")
@@ -192,11 +197,6 @@ def _sanitize_string(value: str, *, limit: int = MAX_MESSAGE_CONTENT_CHARS) -> s
         return f"{key}{match.group('separator')}<redacted>"
 
     redacted = _ASSIGNMENT_PATTERN.sub(redact_assignment, redacted)
-    redacted = re.sub(
-        r"(?i)\bBearer\s+[A-Za-z0-9._~-]+",
-        "Bearer <redacted>",
-        redacted,
-    )
     return redacted[:limit]
 
 
@@ -981,7 +981,7 @@ def get_chat_history_repository() -> ChatHistoryRepository:
         )
     if mode == "disabled":
         raise ChatHistoryError("Chat history is disabled in this deployment.")
-    if endpoint:
+    if mode == "cosmos" and endpoint:
         _history_repository = CosmosChatHistoryRepository(
             endpoint,
             os.environ.get("COSMOS_CHAT_DATABASE", "planetary-explorer"),
@@ -1008,7 +1008,7 @@ def get_artifact_store() -> ArtifactStore:
         )
     if mode == "disabled":
         raise ChatHistoryError("Chat artifacts are disabled in this deployment.")
-    if endpoint:
+    if mode == "blob" and endpoint:
         _artifact_store = BlobArtifactStore(
             endpoint,
             os.environ.get("CHAT_ARTIFACT_CONTAINER", "chat-artifacts"),

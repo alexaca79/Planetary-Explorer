@@ -365,14 +365,6 @@ from chat_history_api import router as chat_history_router
 
 app.include_router(chat_history_router)
 
-from chat_history_api import router as chat_history_router
-
-app.include_router(chat_history_router)
-
-from chat_history_api import router as chat_history_router
-
-app.include_router(chat_history_router)
-
 # Configure CORS origins from environment variable
 cors_origins_str = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
 cors_origin_tokens = [
@@ -4002,7 +3994,11 @@ async def sites_audit(request: Request):
     try:
         from agents.site_intel import audit_site_v2, is_available
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Site Intel MAF workflow unavailable: {exc}")
+        logger.exception("[SITE_AUDIT] MAF workflow import failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Site Intel is temporarily unavailable.",
+        ) from exc
     if not is_available():
         raise HTTPException(
             status_code=503,
@@ -4019,10 +4015,17 @@ async def sites_audit(request: Request):
             user_query=user_query,
         ))
     except fabric_client.FabricNotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        logger.warning("[SITE_AUDIT] data source unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Site Intel data is temporarily unavailable.",
+        ) from exc
     except Exception as exc:
         logger.exception("[SITE_AUDIT] MAF workflow failed")
-        raise HTTPException(status_code=502, detail=f"Site Intel workflow error: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail="Site Intel analysis failed.",
+        ) from exc
 
 
 @app.post("/api/sites/audit/stream")
@@ -4054,7 +4057,11 @@ async def sites_audit_stream(request: Request):
     try:
         from agents.site_intel import audit_site_v2_stream, is_available
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"site_intel unavailable: {exc}")
+        logger.exception("[SITE_AUDIT] streaming workflow import failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Site Intel is temporarily unavailable.",
+        ) from exc
     if not is_available():
         raise HTTPException(status_code=503, detail="agent_framework not installed")
 
@@ -4074,9 +4081,9 @@ async def sites_audit_stream(request: Request):
         try:
             async for event in merge_with_trace(_source()):
                 yield f"data: {_json.dumps(event, default=str)}\n\n"
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("[SITE_AUDIT] stream failed")
-            yield f"event: error\ndata: {_json.dumps({'error': str(exc)})}\n\n"
+            yield f"event: error\ndata: {_json.dumps({'error': 'Site Intel stream failed.'})}\n\n"
 
     return StreamingResponse(
         _sse(),
@@ -10760,14 +10767,14 @@ async def geoint_forecast(request: Request):
 
     Body:
         {
-            "latitude": 38.9,
-            "longitude": -77.0,
+            "latitude": 43.6532,
+            "longitude": -79.3832,
             "lead_hours": 72,
             "variables": ["t2m","precip","u10","v10"],   # optional
             "grid_size": 8,                              # optional
             "providers": ["aurora-1.x","earth2-fcn"],    # optional, defaults to all
-            "user_query": "Forecast over DC next 3 days", # optional NL question
-            "location_label": "Washington, DC"            # optional
+            "user_query": "Forecast over Toronto next 3 days", # optional NL question
+            "location_label": "Toronto, Ontario"               # optional
         }
 
     Returns the Forecast Agent dossier (ensemble summary + per-provider grids).
@@ -10806,7 +10813,11 @@ async def geoint_forecast(request: Request):
     try:
         from agents.forecast import ForecastAgentQuery, forecast, is_available
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"Forecast Agent not importable: {exc}")
+        logger.exception("forecast agent import failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Forecast Agent is temporarily unavailable.",
+        ) from exc
 
     if not is_available():
         raise HTTPException(
@@ -10828,11 +10839,17 @@ async def geoint_forecast(request: Request):
     try:
         dossier = await forecast(agent_query)
     except RuntimeError as exc:
-        # Most likely "no providers configured" — surface as 503.
-        raise HTTPException(status_code=503, detail=str(exc))
+        logger.warning("forecast agent unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Forecast providers are temporarily unavailable.",
+        ) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("forecast agent failed")
-        raise HTTPException(status_code=500, detail=f"Forecast Agent error: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="Forecast Agent execution failed.",
+        ) from exc
 
     return {
         "status": "success",

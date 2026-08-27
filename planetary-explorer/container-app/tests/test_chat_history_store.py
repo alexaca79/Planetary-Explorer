@@ -265,7 +265,8 @@ def test_given_connection_secrets_when_normalized_then_fields_and_assignments_ar
                     "client_secret: oauth-secret api-key=api-secret "
                     "subscription_key: sub-secret SAS=sas-secret "
                     "sv=2026-01-01&sp=r&sig=raw-sas-secret "
-                    "client_secret=\"quoted-secret\""
+                    "client_secret=\"quoted-secret\" "
+                    "Authorization: Bearer eyJhbGciOi.test-token/signature=="
                 ),
                 "toolTrace": [
                     {
@@ -304,6 +305,7 @@ def test_given_connection_secrets_when_normalized_then_fields_and_assignments_ar
     assert "sas-secret" not in message["content"]
     assert "raw-sas-secret" not in message["content"]
     assert "quoted-secret" not in message["content"]
+    assert "test-token" not in message["content"]
     assert "AccountKey=<redacted>" in message["content"]
     assert "SharedAccessKey=<redacted>" in message["content"]
     assert "AZURE_STORAGE_ACCOUNT_KEY=<redacted>" in message["content"]
@@ -312,6 +314,7 @@ def test_given_connection_secrets_when_normalized_then_fields_and_assignments_ar
     assert "subscription_key:<redacted>" in message["content"]
     assert "SAS=<redacted>" in message["content"]
     assert "sig=<redacted>" in message["content"]
+    assert "Authorization:<redacted>" in message["content"]
 
 
 @pytest.mark.asyncio
@@ -404,6 +407,26 @@ def test_given_disabled_modes_with_endpoints_when_resolved_then_stores_remain_di
         chat_history_store.get_chat_history_repository()
     with pytest.raises(ChatHistoryError, match="artifacts are disabled"):
         chat_history_store.get_artifact_store()
+
+
+def test_given_memory_modes_with_cloud_endpoints_when_resolved_then_memory_remains_authoritative(
+    monkeypatch,
+) -> None:
+    # Arrange
+    monkeypatch.setattr(chat_history_store, "_history_repository", None)
+    monkeypatch.setattr(chat_history_store, "_artifact_store", None)
+    monkeypatch.setenv("CHAT_HISTORY_STORE", "memory")
+    monkeypatch.setenv("COSMOS_CHAT_ENDPOINT", "https://cosmos.example")
+    monkeypatch.setenv("CHAT_ARTIFACT_STORE", "memory")
+    monkeypatch.setenv("CHAT_ARTIFACT_BLOB_ENDPOINT", "https://blob.example")
+
+    # Act
+    repository = chat_history_store.get_chat_history_repository()
+    artifact_store = chat_history_store.get_artifact_store()
+
+    # Assert
+    assert isinstance(repository, InMemoryChatHistoryRepository)
+    assert isinstance(artifact_store, InMemoryArtifactStore)
 
 
 def test_given_unknown_store_modes_when_resolved_then_configuration_fails_closed(

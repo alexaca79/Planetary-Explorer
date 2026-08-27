@@ -56,6 +56,7 @@ function App() {
   // publishing it here. Until then, requests omit model and let the API choose
   // its configured default.
   const [selectedModel, setSelectedModel] = useState<string>('');
+  const [modelSelectionReady, setModelSelectionReady] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
     return localStorage.getItem('planetaryexplorer-reasoning-effort') || 'none';
   });
@@ -163,7 +164,10 @@ function App() {
   };
 
   const handleRestoreChatContext = (context: ChatHistoryContext) => {
-    if (context.selectedModel) handleModelChange(context.selectedModel);
+    if (context.selectedModel) {
+      setModelSelectionReady(false);
+      handleModelChange(context.selectedModel);
+    }
     if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
     const allowedStacMode = restoredStacMode(context.stacMode, features.mpcPro);
     if (allowedStacMode) handleStacModeChange(allowedStacMode);
@@ -187,6 +191,7 @@ function App() {
             onModelChange={handleModelChange}
             selectedModel={selectedModel}
             onReasoningEffortChange={handleReasoningEffortChange}
+            onModelAvailabilityChange={setModelSelectionReady}
             selectedReasoningEffort={reasoningEffort}
             stacMode={stacMode}
             onStacModeChange={handleStacModeChange}
@@ -200,6 +205,7 @@ function App() {
               onModelChange={handleModelChange}
               selectedModel={selectedModel}
               onReasoningEffortChange={handleReasoningEffortChange}
+              onModelAvailabilityChange={setModelSelectionReady}
               selectedReasoningEffort={reasoningEffort}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
@@ -212,8 +218,8 @@ function App() {
               onRestartSession={handleRestartSession}
               geointMode={geointMode}
               onGeointToggle={setGeointMode}
-              selectedModel={selectedModel}
-              reasoningEffort={reasoningEffort}
+              selectedModel={modelSelectionReady ? selectedModel : ''}
+              reasoningEffort={modelSelectionReady ? reasoningEffort : undefined}
               chatHistoryEnabled={features.chatHistory}
               onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
