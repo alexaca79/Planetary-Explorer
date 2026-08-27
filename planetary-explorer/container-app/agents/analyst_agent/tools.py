@@ -797,7 +797,7 @@ def _select_geofm_pair(
     raise ValueError("Load at least two HLS scenes from the same collection before using GeoFM.")
 
 
-def _geofm_aoi() -> Dict[str, Any]:
+def _geofm_aoi(max_side_m: float = 15_360) -> Dict[str, Any]:
     from pyproj import Geod
 
     session = get_session()
@@ -810,9 +810,11 @@ def _geofm_aoi() -> Dict[str, Any]:
         center_lat = (south + north) / 2
         width_m = abs(geod.inv(west, center_lat, east, center_lat)[2])
         height_m = abs(geod.inv(center_lon, south, center_lon, north)[2])
-        if width_m > 15_360 or height_m > 15_360:
+        if width_m > max_side_m or height_m > max_side_m:
+            side_km = max_side_m / 1000
             raise ValueError(
-                "Zoom the map to an area no larger than 15.36 km by 15.36 km for PlanAura."
+                f"Zoom the map to an area no larger than {side_km:.2f} km by "
+                f"{side_km:.2f} km for this PlanAura profile."
             )
     elif session.pin:
         latitude, longitude = session.pin
@@ -865,19 +867,90 @@ def _geofm_result(result: Any) -> Dict[str, Any]:
         "error": structured.get("error"),
     }
     features = structured.get("features")
+    statistics = structured.get("statistics") or {}
     if status == "complete" and isinstance(features, list) and features:
-        out["visualizations"] = [
+        if statistics.get("class_scheme_id"):
+            out["visualizations"] = _geofm_class_visualizations(
+                features,
+                statistics,
+                structured.get("artifacts") or [],
+            )
+        else:
+            out["visualizations"] = [
+                {
+                    "kind": "vector_layer",
+                    "title": "PlanAura contextual change",
+                    "spec": {
+                        "data": {"type": "FeatureCollection", "features": features},
+                        "metric": "cosine_distance",
+                        "threshold": statistics.get("threshold"),
+                    },
+                }
+            ]
+    return out
+
+
+def _geofm_class_visualizations(
+    features: List[Dict[str, Any]],
+    statistics: Dict[str, Any],
+    artifacts: List[Any],
+) -> List[Dict[str, Any]]:
+    """Build the class raster and vector overlays for a completed classification."""
+    legend = [
+        {
+            "value": entry.get("class_value"),
+            "name": entry.get("class_name"),
+            "colour": next(
+                (
+                    feature.get("properties", {}).get("class_colour")
+                    for feature in features
+                    if feature.get("properties", {}).get("class_value")
+                    == entry.get("class_value")
+                ),
+                None,
+            ),
+            "area_km2": entry.get("area_km2"),
+            "percent_of_classified": entry.get("percent_of_classified"),
+            "mean_confidence": entry.get("mean_confidence"),
+        }
+        for entry in statistics.get("classes") or []
+    ]
+    visualizations: List[Dict[str, Any]] = []
+    class_map = next(
+        (
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact, dict) and artifact.get("kind") == "class_map"
+        ),
+        None,
+    )
+    if class_map and class_map.get("uri"):
+        visualizations.append(
             {
-                "kind": "vector_layer",
-                "title": "PlanAura contextual change",
+                "kind": "raster_layer",
+                "title": "PlanAura class map",
                 "spec": {
-                    "data": {"type": "FeatureCollection", "features": features},
-                    "metric": "cosine_distance",
-                    "threshold": (structured.get("statistics") or {}).get("threshold"),
+                    "url": class_map["uri"],
+                    "metric": "class_label",
+                    "class_scheme_id": statistics.get("class_scheme_id"),
+                    "legend": legend,
+                    "no_data_value": 255,
                 },
             }
-        ]
-    return out
+        )
+    visualizations.append(
+        {
+            "kind": "vector_layer",
+            "title": "PlanAura class polygons",
+            "spec": {
+                "data": {"type": "FeatureCollection", "features": features},
+                "metric": "class_label",
+                "class_scheme_id": statistics.get("class_scheme_id"),
+                "legend": legend,
+            },
+        }
+    )
+    return visualizations
 
 
 async def list_geofm_models() -> Dict[str, Any]:
@@ -1089,6 +1162,193 @@ async def ask_user_to_clarify(
     return out
 
 
+CLASSIFICATION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "sentinel-2-l2a": {
+        "profile": "planaura_classify_s2",
+        "class_scheme": "planaura_unsupervised_v1",
+        "max_side_m": 15_360,
+    },
+    "sentinel-1-rtc": {
+        "profile": "planaura_classify_s1",
+        "class_scheme": "planaura_sar_surface_v1",
+        "max_side_m": 5_120,
+        "fusion_collection": "sentinel-2-l2a",
+    },
+    "sentinel-3-olci-wfr-l2-netcdf": {
+        "profile": "planaura_classify_s3",
+        "class_scheme": "planaura_coarse_regime_v1",
+        "max_side_m": 153_600,
+    },
+    "sentinel-3-slstr-wst-l2-netcdf": {
+        "profile": "planaura_classify_s3",
+        "class_scheme": "planaura_coarse_regime_v1",
+        "max_side_m": 153_600,
+    },
+}
+
+
+def _classification_profile(collection: Optional[str]) -> Dict[str, Any]:
+    """Resolve the classification profile a collection maps to, or fail closed."""
+    session = get_session()
+    if collection:
+        chosen = collection
+    else:
+        loaded = [
+            str(item.get("collection") or item.get("collection_id") or "")
+            for item in session.stac_items
+            if isinstance(item, dict)
+        ]
+        chosen = next(
+            (name for name in loaded if name in CLASSIFICATION_PROFILES),
+            "",
+        )
+    settings = CLASSIFICATION_PROFILES.get(chosen)
+    if settings is None:
+        supported = ", ".join(sorted(CLASSIFICATION_PROFILES))
+        raise ValueError(
+            f"Classification supports only {supported}. Load a supported Sentinel scene first."
+        )
+    return {"collection": chosen, **settings}
+
+
+def _select_classification_scenes(
+    collection: str,
+    item_ids: Optional[List[str]],
+    fusion_collection: Optional[str],
+) -> List[str]:
+    """Pick the best loaded scene for a collection, plus a fusion scene when required."""
+    session = get_session()
+    by_collection: Dict[str, List[Dict[str, Any]]] = {}
+    for item in session.stac_items:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        name = str(item.get("collection") or item.get("collection_id") or "")
+        by_collection.setdefault(name, []).append(item)
+
+    if item_ids:
+        known = {
+            str(item["id"])
+            for items in by_collection.values()
+            for item in items
+        }
+        missing = [item_id for item_id in item_ids if item_id not in known]
+        if missing:
+            raise ValueError(
+                f"These items are not loaded in this map session: {', '.join(missing)}."
+            )
+        return list(dict.fromkeys(item_ids))
+
+    primary = by_collection.get(collection) or []
+    if not primary:
+        raise ValueError(f"Load a {collection} scene before requesting a classification.")
+    selected = [str(_best_classification_scene(primary)["id"])]
+    if fusion_collection:
+        fusion = by_collection.get(fusion_collection) or []
+        if not fusion:
+            raise ValueError(
+                f"SAR classification also needs a co-located {fusion_collection} scene."
+            )
+        selected.append(str(_best_classification_scene(fusion)["id"]))
+    return selected
+
+
+def _best_classification_scene(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Rank loaded scenes by low cloud cover first, then recency."""
+
+    def rank(item: Dict[str, Any]) -> tuple:
+        properties = item.get("properties") or {}
+        cloud = properties.get("eo:cloud_cover")
+        try:
+            cloud_value = float(cloud)
+        except (TypeError, ValueError):
+            cloud_value = 100.0
+        return (cloud_value, -_parse_stac_datetime(item).timestamp())
+
+    return sorted(items, key=rank)[0]
+
+
+async def list_geofm_class_schemes() -> Dict[str, Any]:
+    """List published classification schemes with labels, source, and licence."""
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    client = TracedMcpClient.from_geofm(turn_id=get_session().session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        out = _geofm_result(await client.call("geofm_list_class_schemes", {}))
+    except Exception as error:
+        logger.exception("list_geofm_class_schemes failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("list_geofm_class_schemes", out)
+    return out
+
+
+async def classify_with_geofm(
+    collection: Optional[str] = None,
+    item_ids: Optional[List[str]] = None,
+    min_confidence: float = 0.55,
+    max_classes: int = 6,
+    max_features: int = 25,
+) -> Dict[str, Any]:
+    """Submit a durable PlanAura land-cover classification for a loaded Sentinel scene.
+
+    Leave ``collection`` and ``item_ids`` empty to classify the best loaded
+    Sentinel scene. Sentinel-1 additionally requires a co-located Sentinel-2
+    scene because SAR backscatter alone cannot determine land cover. The
+    operation requires user approval because it starts billed GPU work.
+    """
+    from mcp_runtime.traced_client import TracedMcpClient
+
+    session = get_session()
+    client = TracedMcpClient.from_geofm(turn_id=session.session_id)
+    if client is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error": "GeoFM is not enabled in this Planetary Explorer environment.",
+        }
+    try:
+        settings = _classification_profile(collection)
+        selected = _select_classification_scenes(
+            settings["collection"],
+            item_ids,
+            settings.get("fusion_collection"),
+        )
+        requested_by = session.authenticated_user_id or f"session:{session.session_id}"
+        request = {
+            "kind": "classify_aoi",
+            "geometry": _geofm_aoi(max_side_m=settings["max_side_m"]),
+            "item_ids": selected,
+            "profile": settings["profile"],
+            "class_scheme": settings["class_scheme"],
+            "correlation_id": session.session_id,
+            "requested_by": requested_by,
+            "minimum_confidence": min_confidence,
+            "max_classes": max_classes,
+            "max_features": max_features,
+        }
+        out = _geofm_result(
+            await client.call(
+                "geofm_classify_aoi",
+                {
+                    "request": request,
+                    **_geofm_owner_proof("submit", requested_by, request),
+                },
+            )
+        )
+    except PermissionError:
+        out = {"success": False, "error": "GeoFM submission was not approved."}
+    except Exception as error:
+        logger.exception("classify_with_geofm failed")
+        out = {"success": False, "error": str(error)}
+    _record_evidence("classify_with_geofm", out)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool registry — feed to AsyncFunctionTool
 # ---------------------------------------------------------------------------
@@ -1113,7 +1373,9 @@ def create_analyst_functions():
         compute_netcdf_trend,
         compare_temporal,
         list_geofm_models,
+        list_geofm_class_schemes,
         compare_with_geofm,
+        classify_with_geofm,
         get_geofm_run,
         retry_geofm_run,
         cancel_geofm_run,

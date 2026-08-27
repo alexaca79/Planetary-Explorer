@@ -413,7 +413,7 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
 
 def _has_model_backed_geofm_evidence(structured: Dict[str, Any]) -> bool:
     """Return whether a GeoFM tool produced completed model evidence."""
-    for tool_name in ("compare_with_geofm", "get_geofm_run"):
+    for tool_name in ("compare_with_geofm", "classify_with_geofm", "get_geofm_run"):
         payload = structured.get(tool_name)
         if not isinstance(payload, dict) or not payload.get("success"):
             continue

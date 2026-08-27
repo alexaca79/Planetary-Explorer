@@ -25,6 +25,10 @@ from .action_router import is_explicit_web_request
 
 logger = logging.getLogger(__name__)
 
+# Geointelligence modules that route straight to ANALYZE with a live
+# GeoFM registry preflight, bypassing the clarifier and ActionRouter.
+GEOFM_MODULES = frozenset({"foundation_change", "classification"})
+
 
 def _extract_collection_meta(stac_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build compact per-collection metadata from raw STAC item dicts.
@@ -200,7 +204,7 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         history=list(history) if isinstance(history, list) else [],
         stac_items=list(stac_items),
         tile_urls=list(tile_urls),
-        hint="foundation_change" if geoint_module == "foundation_change" else None,
+        hint=geoint_module if geoint_module in GEOFM_MODULES else None,
         geoint_module=geoint_module,
         model=body.get("model"),
         reasoning_effort=str(body.get("reasoning_effort") or "none"),
@@ -322,16 +326,17 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
                 _q[:60],
             )
     decision: ActionDecision
-    if request.geoint_module == "foundation_change":
+    if request.geoint_module in GEOFM_MODULES:
         decision = ActionDecision(
             action="ANALYZE",
             analysis_question=request.question,
-            reasoning="foundation_change_module",
+            reasoning=f"{request.geoint_module}_module",
             confidence=1.0,
         )
         logger.info(
-            "[PIPELINE-V2] foundation_change module -> ANALYZE "
-            "(skipped clarifier route and ActionRouter)"
+            "[PIPELINE-V2] %s module -> ANALYZE "
+            "(skipped clarifier route and ActionRouter)",
+            request.geoint_module,
         )
     elif is_explicit_web_request(request.question):
         decision = ActionDecision(

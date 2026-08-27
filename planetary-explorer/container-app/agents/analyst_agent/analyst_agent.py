@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Modules whose every turn must start from a live GeoFM registry read.
+GEOFM_PREFLIGHT_MODULES = frozenset({"foundation_change", "classification"})
+
 
 def _serialize_tool_result_for_model(result: Any) -> str:
     from mcp_runtime import redact_sensitive_value
@@ -424,7 +427,7 @@ class AnalystAgent:
         async with lock:
             if invocation.stop_requested:
                 raise asyncio.CancelledError
-            if request.geoint_module == "foundation_change":
+            if request.geoint_module in GEOFM_PREFLIGHT_MODULES:
                 provider_task = asyncio.create_task(
                     self._invoke_with_preflight(request, invocation)
                 )
@@ -461,14 +464,19 @@ class AnalystAgent:
 
     async def _invoke_with_preflight(self, request, invocation: AnalystInvocation):
         """Run mandatory module preflight and the selected model provider."""
-        if request.geoint_module == "foundation_change":
-            from .tools import list_geofm_models
+        if request.geoint_module in GEOFM_PREFLIGHT_MODULES:
+            from .tools import list_geofm_class_schemes, list_geofm_models
 
             geofm_context = await list_geofm_models()
+            if request.geoint_module == "classification":
+                geofm_context = {
+                    "models": geofm_context,
+                    "class_schemes": await list_geofm_class_schemes(),
+                }
             request = request.model_copy(
                 update={
                     "geofm_context": geofm_context,
-                    "hint": "foundation_change",
+                    "hint": request.geoint_module,
                 }
             )
         if invocation.stop_requested:
@@ -868,6 +876,22 @@ class AnalystAgent:
                 "contextual-change tools. Submit compare_with_geofm only when two "
                 "compatible HLS scenes are available and the user approves billed "
                 "GPU work."
+            )
+        elif request.geoint_module == "classification":
+            module_instruction = (
+                "\n\n[Classification Module]\n"
+                "The Geospatial Foundation Models registry and the published class "
+                "schemes were already queried for this turn. Use that preflight "
+                "result and prioritize classify_with_geofm. Choose the profile from "
+                "the loaded collection: sentinel-2-l2a for cloud-free land cover, "
+                "sentinel-1-rtc for all-weather surface state (a co-located "
+                "Sentinel-2 scene is also required), sentinel-3-* for coarse "
+                "regional regimes. If the preflight shows a profile is blocked or "
+                "not approved in this deployment, say so plainly instead of "
+                "submitting. Submit only when the user approves billed GPU work.\n"
+                "Results are unsupervised clusters, not validated land cover. Never "
+                "report a class name without its confidence and the class-scheme id, "
+                "and repeat every warning the run returned verbatim."
             )
 
         return (

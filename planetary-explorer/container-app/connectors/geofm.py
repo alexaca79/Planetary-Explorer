@@ -56,6 +56,7 @@ async def get_health_snapshot() -> dict[str, Any]:
         "tool_count": 0,
         "tools": [],
         "models": [],
+        "class_schemes": [],
     }
     if not base["enabled"]:
         return {**base, "status": "disabled"}
@@ -82,11 +83,21 @@ async def _probe_health_snapshot(base: dict[str, Any]) -> dict[str, Any]:
                 "supported_collections": model.get("supported_collections", []),
                 "geographic_scope": model.get("geographic_scope", ""),
                 "license": model.get("license", ""),
+                "capability": model.get("capability", ""),
+                "sensor_family": model.get("sensor_family", ""),
+                "classification_mode": model.get("classification_mode", ""),
+                "class_scheme_id": model.get("class_scheme_id", ""),
+                "mandatory_warnings": model.get("mandatory_warnings", []),
             }
             for model in models
             if isinstance(model, dict)
         ]
         tools = list(client.available_tools)
+        class_schemes = (
+            await _list_class_schemes(client)
+            if "geofm_list_class_schemes" in tools
+            else []
+        )
         return {
             **base,
             "status": "connected",
@@ -94,7 +105,39 @@ async def _probe_health_snapshot(base: dict[str, Any]) -> dict[str, Any]:
             "tool_count": len(tools),
             "tools": tools,
             "models": normalized_models,
+            "class_schemes": class_schemes,
         }
     except Exception as exc:
         logger.warning("GeoFM health probe failed: %s", exc)
         return {**base, "status": "degraded"}
+
+
+async def _list_class_schemes(client: RemoteMcpClient) -> list[dict[str, Any]]:
+    """Fetch published class schemes, degrading to an empty list on failure."""
+    try:
+        result = await client.call_raw("geofm_list_class_schemes", {})
+    except Exception as exc:
+        logger.warning("GeoFM class scheme probe failed: %s", exc)
+        return []
+    payload = result.get("payload", {}) if isinstance(result, dict) else {}
+    schemes = payload.get("class_schemes", [])
+    return [
+        {
+            "scheme_id": scheme.get("scheme_id", ""),
+            "version": scheme.get("version", ""),
+            "source": scheme.get("source", ""),
+            "license": scheme.get("license", ""),
+            "labels": [
+                {
+                    "class_value": label.get("class_value"),
+                    "name": label.get("name", ""),
+                    "colour_hex": label.get("colour_hex", ""),
+                    "description": label.get("description", ""),
+                }
+                for label in scheme.get("labels", [])
+                if isinstance(label, dict)
+            ],
+        }
+        for scheme in schemes
+        if isinstance(scheme, dict)
+    ]
