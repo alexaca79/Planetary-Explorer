@@ -167,6 +167,57 @@ async def test_given_untrusted_explicit_ids_when_submitting_then_loaded_pair_is_
 
 
 @pytest.mark.asyncio
+async def test_given_string_numeric_options_when_submitting_then_request_is_normalized(
+    monkeypatch,
+) -> None:
+    # Arrange
+    fake = FakeGeoFmClient(
+        {
+            "summary": "GeoFM run run-1 is queued.",
+            "payload": {"run_id": "run-1", "status": "queued"},
+            "evidence": [],
+        }
+    )
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+
+    # Act
+    result = await compare_with_geofm(threshold="0.7", max_features="100")
+
+    # Assert
+    request = fake.calls[0][1]["request"]
+    assert result["success"] is True
+    assert request["threshold"] == 0.7
+    assert request["max_features"] == 100
+
+
+@pytest.mark.asyncio
+async def test_given_fractional_feature_limit_when_submitting_then_request_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    fake = FakeGeoFmClient({})
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+
+    # Act
+    result = await compare_with_geofm(max_features="10.5")
+
+    # Assert
+    assert result["success"] is False
+    assert "integer" in result["error"]
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("datetime_value", [None, "2024-07-15T00:00:00Z"])
 async def test_given_ambiguous_explicit_hls_pair_when_submitting_then_request_is_rejected(
     monkeypatch,

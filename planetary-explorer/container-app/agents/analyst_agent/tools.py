@@ -925,6 +925,15 @@ async def compare_with_geofm(
             "error": "GeoFM is not enabled in this Planetary Explorer environment.",
         }
     try:
+        normalized_threshold = float(threshold)
+        max_features_number = float(max_features)
+        if not max_features_number.is_integer():
+            raise ValueError("GeoFM max_features must be an integer.")
+        normalized_max_features = int(max_features_number)
+        if not 0 <= normalized_threshold <= 2:
+            raise ValueError("GeoFM threshold must be between 0 and 2.")
+        if not 1 <= normalized_max_features <= 100:
+            raise ValueError("GeoFM max_features must be between 1 and 100.")
         loaded_item_ids = {
             str(item.get("id"))
             for item in session.stac_items
@@ -950,8 +959,8 @@ async def compare_with_geofm(
             "profile": "planaura_hls",
             "correlation_id": session.session_id,
             "requested_by": requested_by,
-            "threshold": threshold,
-            "max_features": max_features,
+            "threshold": normalized_threshold,
+            "max_features": normalized_max_features,
         }
         out = _geofm_result(
             await client.call(
