@@ -23,6 +23,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from .messages import DimensionResult, PlannedSpec, RetrievalBundle, SiteSpec
+
 logger = logging.getLogger(__name__)
 
 # ── Agent Framework imports (graceful fallback) ──────────────────────────────
@@ -61,8 +63,6 @@ from agents.site_audit import (  # noqa: E402
     DEFAULT_WORKSPACE_ID,
 )
 
-from .messages import DimensionResult, PlannedSpec, RetrievalBundle, SiteSpec
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Confidence scoring
@@ -91,6 +91,18 @@ def _confidence_from_rows(row_count: int) -> str:
     return "high"
 
 
+def _table_provenance(table: str, frame: Any) -> dict[str, Any]:
+    source = str(frame.attrs.get("source") or "fabric_lakehouse")
+    provenance: dict[str, Any] = {
+        "source": source,
+        "table": table,
+        "rows": int(len(frame)),
+    }
+    if source == "bundled_seed":
+        provenance["authoritative"] = False
+    return provenance
+
+
 def _skipped(dim: str) -> DimensionResult:
     """Stub :class:`DimensionResult` for dimensions the planner deselected.
 
@@ -117,7 +129,6 @@ def _skipped(dim: str) -> DimensionResult:
 # A small in-process LRU keyed by (workspace, lakehouse, assertion-prefix)
 # and bounded by TTL eliminates the duplicate I/O without making the cache
 # stale across deploys (process restart clears it).
-import time  # noqa: E402
 
 _RETRIEVAL_CACHE_TTL_SECONDS = int(os.getenv("SITE_INTEL_CACHE_TTL", "600"))
 _RETRIEVAL_CACHE_MAX = 16
@@ -247,8 +258,7 @@ class GridExecutor(Executor):  # type: ignore[misc]
                 score=dim.score,
                 summary=dim.summary,
                 evidence=dim.evidence,
-                provenance=[{"source": "fabric_lakehouse", "table": "power_infrastructure",
-                             "rows": int(len(bundle.power))}],
+                provenance=[_table_provenance("power_infrastructure", bundle.power)],
             ))
 
 
@@ -276,8 +286,7 @@ class WaterExecutor(Executor):  # type: ignore[misc]
                 score=dim.score,
                 summary=dim.summary,
                 evidence=dim.evidence,
-                provenance=[{"source": "fabric_lakehouse", "table": "water_assets",
-                             "rows": int(len(bundle.water))}],
+                provenance=[_table_provenance("water_assets", bundle.water)],
             ))
 
 
@@ -305,8 +314,7 @@ class CompetitionExecutor(Executor):  # type: ignore[misc]
                 score=dim.score,
                 summary=dim.summary,
                 evidence=dim.evidence,
-                provenance=[{"source": "fabric_lakehouse", "table": "existing_data_centers",
-                             "rows": int(len(bundle.dcs))}],
+                provenance=[_table_provenance("existing_data_centers", bundle.dcs)],
             ))
 
 
@@ -334,8 +342,7 @@ class LandExecutor(Executor):  # type: ignore[misc]
                 score=dim.score,
                 summary=dim.summary,
                 evidence=dim.evidence,
-                provenance=[{"source": "fabric_lakehouse", "table": "candidate_sites",
-                             "rows": int(len(bundle.sites))}],
+                provenance=[_table_provenance("candidate_sites", bundle.sites)],
             ))
 
 

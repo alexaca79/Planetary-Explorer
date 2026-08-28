@@ -1,4 +1,4 @@
-// Public Container App running the weather-stub server. This is a
+// Internal Container App running the weather-stub server. This is a
 // **CPU-only** mock of Microsoft Aurora + NVIDIA Earth-2 FCN scoring
 // endpoints, used to prove the Forecast Agent wiring end-to-end
 // without GPU quota.
@@ -54,7 +54,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
     managedEnvironmentId: containerAppsEnvironment.id
     configuration: {
       ingress: {
-        external: true
+        external: false
         targetPort: isBootstrapImage ? 80 : 8080
         allowInsecure: false
         transport: 'auto'

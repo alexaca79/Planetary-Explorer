@@ -23,12 +23,14 @@ DataFrames are cached in-process for 1 hour.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -50,6 +52,9 @@ STORAGE_SCOPE = "https://storage.azure.com/.default"
 DEFAULT_WORKSPACE_ID = os.getenv("FABRIC_LAKEHOUSE_WORKSPACE_ID", "")
 DEFAULT_LAKEHOUSE_ID = os.getenv("FABRIC_LAKEHOUSE_ID", "")
 ONELAKE_REGION = os.getenv("FABRIC_ONELAKE_REGION", "westus")
+_SEED_TABLES_PATH = (
+    Path(__file__).resolve().parent / "site_intel" / "seed_data" / "tables.json"
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Auto-resume: wake a paused Fabric F-SKU capacity on demand
@@ -131,6 +136,23 @@ def _table_uri(table: str, workspace_id: str, lakehouse_id: str) -> str:
         f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/"
         f"{lakehouse_id}/Tables/{table}"
     )
+
+
+@lru_cache(maxsize=1)
+def _load_seed_tables() -> dict[str, list[dict[str, Any]]]:
+    payload = json.loads(_SEED_TABLES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Site Intel seed data must be a JSON object.")
+    return payload
+
+
+def _load_seed_table(table: str) -> pd.DataFrame:
+    records = _load_seed_tables().get(table)
+    if not isinstance(records, list):
+        raise RuntimeError(f"Site Intel seed table is missing: {table}")
+    frame = pd.DataFrame.from_records(records)
+    frame.attrs["source"] = "bundled_seed"
+    return frame
 
 
 def _is_capacity_paused_error(exc: BaseException) -> bool:
@@ -226,6 +248,16 @@ async def _load_table(
         if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
             return cached[1]
 
+        if not workspace_id or not lakehouse_id:
+            logger.info(
+                "[SITE_AUDIT] Fabric IDs are not configured; loading bundled seed table %s",
+                table,
+            )
+            df = await asyncio.to_thread(_load_seed_table, table)
+            _TABLE_CACHE[table] = (time.time(), df)
+            _TABLE_VERSIONS[table] = None
+            return df
+
         token = await fabric_client.exchange_user_token(user_assertion, STORAGE_SCOPE)
 
         # deltalake reads are blocking; run in a thread.
@@ -258,6 +290,7 @@ async def _load_table(
             # Refresh OBO token (the previous one may now be near expiry) and retry once.
             token = await fabric_client.exchange_user_token(user_assertion, STORAGE_SCOPE)
             df, version = await asyncio.to_thread(_read)
+        df.attrs["source"] = "fabric_lakehouse"
         _TABLE_CACHE[table] = (time.time(), df)
         _TABLE_VERSIONS[table] = version
         logger.info(

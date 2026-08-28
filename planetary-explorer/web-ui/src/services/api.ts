@@ -1361,10 +1361,10 @@ class ApiService {
       throw new Error('API service not initialized');
     }
     const body: Record<string, any> = {
-      region_filter: params.regionFilter ?? 'TX',
       horizon_days: params.horizonDays ?? 7,
       hazards: params.hazards ?? ['heat', 'wildfire'],
     };
+    if (params.regionFilter) body.region_filter = params.regionFilter;
     if (params.userQuery) body.user_query = params.userQuery;
     // Investigative phrasings (counterfactuals, comparisons, similarity)
     // route through the planner-loop endpoint; everything else goes to
@@ -1417,10 +1417,10 @@ class ApiService {
     const baseURL = this.api?.defaults.baseURL || '';
     const url = `${baseURL.replace(/\/$/, '')}/api/resilience/assess/smart/stream`;
     const body: Record<string, any> = {
-      region_filter: params.regionFilter ?? 'TX',
       horizon_days: params.horizonDays ?? 7,
       hazards: params.hazards ?? ['heat', 'wildfire'],
     };
+    if (params.regionFilter) body.region_filter = params.regionFilter;
     if (params.userQuery) body.user_query = params.userQuery;
 
     // Forward the same Authorization header axios would have sent so

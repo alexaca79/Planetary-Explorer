@@ -175,6 +175,7 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         $apiBicep | Should -Match "name: 'AURORA_ENDPOINT_URL'"
         $apiBicep | Should -Match "name: 'EARTH2_FCN_ENDPOINT_URL'"
         $weatherBicep | Should -Match "var isBootstrapImage = startsWith\(imageName, 'mcr\.microsoft\.com/'\)"
+        $weatherBicep | Should -Match 'external: false'
         $weatherBicep | Should -Match 'targetPort: isBootstrapImage \? 80 : 8080'
         $weatherBicep | Should -Match 'probes: isBootstrapImage \? \[\] : \['
         $script:DeploymentScript | Should -Match 'AZURE_WEATHER_STUB_URL\.value'

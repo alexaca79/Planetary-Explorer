@@ -15,6 +15,25 @@ LAKEHOUSE_SEED = Path(__file__).resolve().parents[3] / "data" / "lakehouse_seed"
 
 
 @pytest.mark.asyncio
+async def test_given_missing_fabric_ids_when_table_loads_then_uses_bundled_seed() -> None:
+    # Arrange
+    site_audit._TABLE_CACHE.clear()
+    site_audit._TABLE_VERSIONS.clear()
+    site_audit._load_seed_tables.cache_clear()
+
+    try:
+        # Act
+        frame = await site_audit._load_table("candidate_sites", "assertion", "", "")
+
+        # Assert
+        assert frame.attrs["source"] == "bundled_seed"
+        assert frame["site_id"].str.startswith("ca-").all()
+    finally:
+        site_audit._TABLE_CACHE.clear()
+        site_audit._TABLE_VERSIONS.clear()
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(not workflow.is_available(), reason="agent_framework not installed")
 async def test_given_canadian_seed_when_site_workflow_runs_then_maf_yields_dossier(
     monkeypatch,
@@ -31,7 +50,9 @@ async def test_given_canadian_seed_when_site_workflow_runs_then_maf_yields_dossi
         _workspace_id: str,
         _lakehouse_id: str,
     ) -> pd.DataFrame:
-        return pd.read_parquet(LAKEHOUSE_SEED / f"{table}.parquet")
+        frame = pd.read_parquet(LAKEHOUSE_SEED / f"{table}.parquet")
+        frame.attrs["source"] = "bundled_seed"
+        return frame
 
     async def score_hazards(
         _lat: float,
@@ -87,5 +108,7 @@ async def test_given_canadian_seed_when_site_workflow_runs_then_maf_yields_dossi
     }
     assert any(
         row.get("table") == "candidate_sites"
+        and row.get("source") == "bundled_seed"
+        and row.get("authoritative") is False
         for row in dossier["data_provenance"]
     )

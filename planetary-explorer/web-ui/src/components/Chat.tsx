@@ -1408,6 +1408,7 @@ const Chat: React.FC<ChatProps> = ({
             const sum = dossier?.summaries || {};
             const evidence = Array.isArray(dossier?.evidence) ? dossier.evidence : [];
             const provenance = Array.isArray(dossier?.data_provenance) ? dossier.data_provenance : [];
+            const usesBundledSeed = provenance.some((p: any) => p?.source === 'bundled_seed');
 
             const fmt = (v: any) => (typeof v === 'number' ? v.toFixed(1) : String(v ?? '—'));
             // Format a Fabric Lakehouse row as a single inline citation
@@ -1421,30 +1422,31 @@ const Chat: React.FC<ChatProps> = ({
               const name = e?.name || e?.title || e?.id || '(unnamed)';
               const dist = typeof e?.distance_mi === 'number' ? `${e.distance_mi.toFixed(1)} mi` : null;
               const linkable = (label: string, url?: string) => (url ? `[${label}](${url})` : label);
+              const sourceLabel = e?.source_authority === 'synthetic_demo' ? 'Demo seed' : 'Fabric';
               switch (k) {
                 case 'nearest_substation':
                 case 'power_substation':
                 case 'transmission_line': {
                   const kv = e?.voltage_kv ? `${e.voltage_kv} kV` : null;
                   const parts = [name, kv, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · power · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · power · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'nearest_water':
                 case 'water_asset': {
                   const huc = e?.huc_code ? `HUC ${e.huc_code}` : null;
                   const parts = [name, huc, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · water · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · water · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'nearest_data_center':
                 case 'existing_data_center': {
                   const mw = e?.capacity_mw ? `${e.capacity_mw} MW` : null;
                   const parts = [name, mw, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · data center · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · data center · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'candidate_site_match':
                 case 'parcel_match': {
                   const parts = [name, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · candidate site · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · candidate site · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'permitting_doc': {
                   const meta = [e?.doc_type, e?.state, e?.doc_date, dist]
@@ -1571,6 +1573,7 @@ const Chat: React.FC<ChatProps> = ({
             // AI Search uses search_score; PC uses dataset order).
             if (evidence.length > 0) {
               const fabricLines: string[] = [];
+              const seedLines: string[] = [];
               const aiSearchLines: string[] = [];
               const mpcLines: string[] = [];
               const weatherLines: string[] = [];
@@ -1579,6 +1582,7 @@ const Chat: React.FC<ChatProps> = ({
                 const f = fabricRowLine(e);
                 if (f) {
                   if (e?.kind === 'permitting_doc') aiSearchLines.push(f);
+                  else if (e?.source_authority === 'synthetic_demo' || usesBundledSeed) seedLines.push(f);
                   else fabricLines.push(f);
                   continue;
                 }
@@ -1614,6 +1618,7 @@ const Chat: React.FC<ChatProps> = ({
               };
 
               pushGroup('Evidence · Fabric Lakehouse', fabricLines);
+              pushGroup('Evidence · Bundled Canadian demo data', seedLines);
               pushGroup('Evidence · Azure AI Search (permitting)', aiSearchFinal);
               pushGroup('Evidence · Planetary Computer', mpcLines);
               pushGroup('Evidence · Live Weather', weatherLines);
@@ -1630,7 +1635,8 @@ const Chat: React.FC<ChatProps> = ({
             // backing dataset so the reader sees the surface area at a
             // glance without re-reading the per-row citations.
             if (provenance.length > 0) {
-              const fabricRows = provenance.filter((p: any) => p.source === 'fabric_lakehouse' || p.table);
+              const fabricRows = provenance.filter((p: any) => p.source === 'fabric_lakehouse');
+              const seedRows = provenance.filter((p: any) => p.source === 'bundled_seed');
               const pcCollections = new Set<string>();
               const aiIndices = new Set<string>();
               let weatherCount = 0;
@@ -1653,6 +1659,13 @@ const Chat: React.FC<ChatProps> = ({
               const parts: string[] = [];
               if (fabricRows.length > 0) {
                 parts.push(`Fabric Lakehouse (${fabricRows.length} table${fabricRows.length === 1 ? '' : 's'} · ${fmtCount(totalRows)} rows)`);
+              }
+              if (seedRows.length > 0) {
+                const seedRowCount = seedRows.reduce(
+                  (acc: number, p: any) => acc + (typeof p.rows === 'number' ? p.rows : 0),
+                  0
+                );
+                parts.push(`Bundled Canadian demo data (${seedRows.length} table${seedRows.length === 1 ? '' : 's'} · ${fmtCount(seedRowCount)} rows · non-authoritative)`);
               }
               if (pcCollections.size > 0) {
                 parts.push(`Planetary Computer (${pcCollections.size} collection${pcCollections.size === 1 ? '' : 's'})`);
