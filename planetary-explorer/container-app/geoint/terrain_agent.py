@@ -521,6 +521,25 @@ Be specific and quantitative where possible."""
                     "error": str(e),
                     "session_id": session_id
                 }
+
+    async def analyze(
+        self,
+        session_id: str,
+        user_message: str,
+        latitude: float,
+        longitude: float,
+        screenshot_base64: Optional[str] = None,
+        radius_km: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Analyze terrain through the public chat contract."""
+        return await self.chat(
+            session_id=session_id,
+            user_message=user_message,
+            latitude=latitude,
+            longitude=longitude,
+            screenshot_base64=screenshot_base64,
+            radius_km=radius_km,
+        )
     
     async def get_session_history(self, session_id: str) -> List[Dict[str, str]]:
         """Get conversation history for a session from the Agent Service thread."""
