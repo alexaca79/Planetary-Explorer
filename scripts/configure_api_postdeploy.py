@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 EXIT_SUCCESS = 0
@@ -197,6 +198,19 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
                 "WEB_SEARCH_ENABLED=true",
                 f"WEB_SEARCH_MCP_URL={web_search_url}",
                 "WEB_SEARCH_MCP_API_KEY=secretref:web-search-mcp-api-key",
+            ]
+        )
+
+    weather_stub_url = os.getenv("AZURE_WEATHER_STUB_URL", "").strip().rstrip("/")
+    if weather_stub_url:
+        parsed_weather_url = urlsplit(weather_stub_url)
+        if parsed_weather_url.scheme != "https" or not parsed_weather_url.hostname:
+            raise RuntimeError("AZURE_WEATHER_STUB_URL must be an absolute HTTPS URL.")
+        values.extend(
+            [
+                "FORECAST_AGENT_ENABLED=1",
+                f"AURORA_ENDPOINT_URL={weather_stub_url}",
+                f"EARTH2_FCN_ENDPOINT_URL={weather_stub_url}",
             ]
         )
 

@@ -646,6 +646,21 @@ module webSearchMcpFoundryAccess './shared/foundry-role.bicep' = if (shouldDeplo
   }
 }
 
+module weatherStub './app/weather-stub.bicep' = if (deployWeatherStub) {
+  name: 'weather-stub'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}weather-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+    containerRegistryName: registry.outputs.name
+    imageName: weatherStubImageName
+    minReplicas: 0
+    maxReplicas: 2
+  }
+}
+
 module frontend './app/frontend.bicep' = if (deployFrontend) {
   name: 'frontend'
   scope: rg
@@ -739,6 +754,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     keyVaultName: deployAIFoundry ? (keyVault.?outputs.?name ?? '') : ''
     keyVaultUri: deployAIFoundry ? (keyVault.?outputs.?uri ?? '') : ''
     forecastAgentEnabled: forecastAgentEnabled
+    weatherStubUrl: deployWeatherStub ? (weatherStub.?outputs.?uri ?? '') : ''
     auroraEndpointUrlConfigured: !empty(auroraEndpointUrl)
     earth2FcnEndpointUrlConfigured: !empty(earth2FcnEndpointUrl)
     maiWeatherEndpointUrlConfigured: !empty(maiWeatherEndpointUrl)
@@ -910,6 +926,10 @@ output AZURE_MCP_CONTAINER_APP_FQDN string = mcp.?outputs.?fqdn ?? ''
 // Azure Web Search MCP outputs (empty when deployWebSearchMcp = false).
 output AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME string = webSearchMcp.?outputs.?name ?? ''
 output AZURE_WEB_SEARCH_MCP_URL string = webSearchMcp.?outputs.?uri ?? ''
+
+// CPU weather stub outputs (empty when deployWeatherStub = false).
+output AZURE_WEATHER_STUB_CONTAINER_APP_NAME string = weatherStub.?outputs.?name ?? ''
+output AZURE_WEATHER_STUB_URL string = weatherStub.?outputs.?uri ?? ''
 
 // MPC Pro MCP sidecar outputs (empty when deployMpcMcp = false). The
 // principalId is what an operator pastes into the GeoCatalog instance's

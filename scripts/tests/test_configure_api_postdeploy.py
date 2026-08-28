@@ -150,6 +150,7 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     monkeypatch.setenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts")
     monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://search.internal")
     monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "w" * 32)
+    monkeypatch.setenv("AZURE_WEATHER_STUB_URL", "https://weather.example")
     monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
     monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
     monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
@@ -164,6 +165,9 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     assert "WEB_SEARCH_ENABLED=true" in update
     assert "WEB_SEARCH_MCP_URL=https://search.internal" in update
     assert "WEB_SEARCH_MCP_API_KEY=secretref:web-search-mcp-api-key" in update
+    assert "FORECAST_AGENT_ENABLED=1" in update
+    assert "AURORA_ENDPOINT_URL=https://weather.example" in update
+    assert "EARTH2_FCN_ENDPOINT_URL=https://weather.example" in update
     assert any(command[:3] == ["containerapp", "secret", "set"] for command in commands)
 
 

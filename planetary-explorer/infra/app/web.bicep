@@ -163,6 +163,9 @@ param keyVaultUri string = ''
 @description('Master switch for the Forecast Agent. Surfaced as FORECAST_AGENT_ENABLED ("1"/"0").')
 param forecastAgentEnabled bool = true
 
+@description('Direct CPU weather stub URL. When set, it supplies Aurora and Earth-2 demo providers without Key Vault.')
+param weatherStubUrl string = ''
+
 @description('True when aurora-endpoint-url secret exists in the vault. Gates the Container App secret + env var so we never reference a non-existent KV secret.')
 param auroraEndpointUrlConfigured bool = false
 
@@ -533,6 +536,18 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the
           // secrets[] entries above; secretRef name must match secret name).
+          (!empty(weatherStubUrl) && !auroraEndpointUrlConfigured) ? [
+            {
+              name: 'AURORA_ENDPOINT_URL'
+              value: weatherStubUrl
+            }
+          ] : [],
+          (!empty(weatherStubUrl) && !earth2FcnEndpointUrlConfigured) ? [
+            {
+              name: 'EARTH2_FCN_ENDPOINT_URL'
+              value: weatherStubUrl
+            }
+          ] : [],
           (!empty(keyVaultName) && auroraEndpointUrlConfigured) ? [
             {
               name: 'AURORA_ENDPOINT_URL'
