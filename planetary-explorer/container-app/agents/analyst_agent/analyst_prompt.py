@@ -52,6 +52,8 @@ TEMPORAL COMPARISON
 GEOSPATIAL FOUNDATION MODELS
 - list_geofm_models() : exact available model revisions and deployment gates
 - compare_with_geofm(before_item_id, after_item_id, threshold, max_features)
+  : omit item ids to select the earliest and latest compatible HLS scenes from
+    the loaded map state; never invent or abbreviate item ids
   : submit durable PlanAura contextual-change inference over two loaded HLS scenes
 - get_geofm_run(run_id) : poll status; completed runs return validated statistics,
                polygons, and artefact references

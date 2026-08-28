@@ -925,7 +925,21 @@ async def compare_with_geofm(
             "error": "GeoFM is not enabled in this Planetary Explorer environment.",
         }
     try:
-        epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
+        loaded_item_ids = {
+            str(item.get("id"))
+            for item in session.stac_items
+            if isinstance(item, dict) and item.get("id")
+        }
+        explicit_pair_is_loaded = bool(
+            before_item_id
+            and after_item_id
+            and before_item_id in loaded_item_ids
+            and after_item_id in loaded_item_ids
+        )
+        epoch_a, epoch_b = _select_geofm_pair(
+            before_item_id if explicit_pair_is_loaded else None,
+            after_item_id if explicit_pair_is_loaded else None,
+        )
         requested_by = (
             session.authenticated_user_id or f"session:{session.session_id}"
         )
