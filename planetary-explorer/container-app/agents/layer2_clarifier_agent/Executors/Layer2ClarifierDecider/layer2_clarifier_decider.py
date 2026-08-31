@@ -73,7 +73,10 @@ def build_layer2_clarifier_workflow():
             "Use Layer2ClarifierAgent.decide() directly instead."
         )
     decider = Layer2ClarifierDecider()
-    return WorkflowBuilder(start_executor=decider).build()  # type: ignore[arg-type]
+    return WorkflowBuilder(
+        start_executor=decider,
+        output_from=[decider],
+    ).build()  # type: ignore[arg-type]
 
 
 _DECIDER_SINGLETON: Optional[Layer2ClarifierDecider] = None

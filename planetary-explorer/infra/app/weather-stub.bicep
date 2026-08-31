@@ -1,4 +1,4 @@
-// Public Container App running the weather-stub server. This is a
+// Internal Container App running the weather-stub server. This is a
 // **CPU-only** mock of Microsoft Aurora + NVIDIA Earth-2 FCN scoring
 // endpoints, used to prove the Forecast Agent wiring end-to-end
 // without GPU quota.
@@ -40,6 +40,9 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' e
   name: containerRegistryName
 }
 
+var isBootstrapImage = startsWith(imageName, 'mcr.microsoft.com/')
+var resolvedImage = contains(imageName, '/') ? imageName : '${containerRegistry.properties.loginServer}/${imageName}'
+
 resource app 'Microsoft.App/containerApps@2023-05-01' = {
   name: name
   location: location
@@ -51,8 +54,8 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
     managedEnvironmentId: containerAppsEnvironment.id
     configuration: {
       ingress: {
-        external: true
-        targetPort: 8080
+        external: false
+        targetPort: isBootstrapImage ? 80 : 8080
         allowInsecure: false
         transport: 'auto'
         traffic: [
@@ -68,7 +71,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
           value: stubApiKey
         }
       ]
-      registries: [
+      registries: isBootstrapImage ? [] : [
         {
           server: containerRegistry.properties.loginServer
           identity: 'system'
@@ -79,7 +82,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'weather-stub'
-          image: '${containerRegistry.properties.loginServer}/${imageName}'
+          image: resolvedImage
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'
@@ -102,7 +105,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               }
             ]
           )
-          probes: [
+          probes: isBootstrapImage ? [] : [
             {
               type: 'Liveness'
               httpGet: {

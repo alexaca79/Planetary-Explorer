@@ -96,6 +96,7 @@ def _build_request(question_override: Optional[str] = None, hint: Optional[str] 
         history=list(s.history),
         grounding=[],  # AnalystAgent owns chaining via tool sequence, not grounding field
         hint=hint or s.hint,
+        stac_mode=s.stac_mode,
     )
 
 
@@ -672,6 +673,7 @@ async def compare_temporal(
             history=[],
             grounding=[],
             hint=f"temporal_compare epoch={epoch_label} when={when}",
+            stac_mode=s.stac_mode,
         )
         if not analyzer.can_run(req):
             return {"success": False, "error": f"raster_sampling can't run for {epoch_label}"}
@@ -923,7 +925,30 @@ async def compare_with_geofm(
             "error": "GeoFM is not enabled in this Planetary Explorer environment.",
         }
     try:
-        epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
+        normalized_threshold = float(threshold)
+        max_features_number = float(max_features)
+        if not max_features_number.is_integer():
+            raise ValueError("GeoFM max_features must be an integer.")
+        normalized_max_features = int(max_features_number)
+        if not 0 <= normalized_threshold <= 2:
+            raise ValueError("GeoFM threshold must be between 0 and 2.")
+        if not 1 <= normalized_max_features <= 100:
+            raise ValueError("GeoFM max_features must be between 1 and 100.")
+        loaded_item_ids = {
+            str(item.get("id"))
+            for item in session.stac_items
+            if isinstance(item, dict) and item.get("id")
+        }
+        explicit_pair_is_loaded = bool(
+            before_item_id
+            and after_item_id
+            and before_item_id in loaded_item_ids
+            and after_item_id in loaded_item_ids
+        )
+        epoch_a, epoch_b = _select_geofm_pair(
+            before_item_id if explicit_pair_is_loaded else None,
+            after_item_id if explicit_pair_is_loaded else None,
+        )
         requested_by = (
             session.authenticated_user_id or f"session:{session.session_id}"
         )
@@ -934,8 +959,8 @@ async def compare_with_geofm(
             "profile": "planaura_hls",
             "correlation_id": session.session_id,
             "requested_by": requested_by,
-            "threshold": threshold,
-            "max_features": max_features,
+            "threshold": normalized_threshold,
+            "max_features": normalized_max_features,
         }
         out = _geofm_result(
             await client.call(

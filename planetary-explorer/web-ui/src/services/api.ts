@@ -16,9 +16,7 @@ const apiCredentials: RequestCredentials = isDevelopment ? 'omit' : 'include';
 // 1. Development: Use localhost backend
 // 2. Production with build-time env var: Use configured backend URL  
 // 3. Fallback: Use current origin (works if frontend and backend are on same domain)
-const API_BASE = isDevelopment 
-  ? 'http://localhost:8000'
-  : (import.meta.env.VITE_API_BASE_URL || window.location.origin);
+const API_BASE = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 
 // Only log API configuration in development mode
 if (isDevelopment) {
@@ -39,6 +37,19 @@ export interface Dataset {
   title: string;
   description: string;
   type?: string;
+}
+
+export interface ChatLegendDefinition {
+  title: string;
+  gradient?: string;
+  minLabel?: string;
+  maxLabel?: string;
+  items: Array<{
+    color: string;
+    label: string;
+    description?: string;
+  }>;
+  note?: string;
 }
 
 export interface ChatMessage {
@@ -71,6 +82,7 @@ export interface ChatMessage {
     pro_configured?: boolean | null;
     pro_unconfigured_short_circuit?: boolean;
   };
+  legend?: ChatLegendDefinition;
   // MCP tool-trace rows captured from the agent's streaming SSE channel
   // (e.g. /api/resilience/assess/smart/stream). When present, the chat
   // panel renders <TraceDrawer rows={toolTrace}/> beneath the message so
@@ -110,7 +122,8 @@ export interface ChatHistorySummary {
 
 export interface ChatHistorySession extends ChatHistorySummary {
   schemaVersion: number;
-  clientRevision: number;
+  revision: number;
+  appliedMutationId?: string;
   messages: ChatMessage[];
   context: ChatHistoryContext;
 }
@@ -131,12 +144,14 @@ export interface ChatHistoryContext {
 
 export interface ChatHistorySnapshot {
   title?: string;
-  clientRevision?: number;
+  expectedRevision: number;
+  mutationId: string;
   messages: ChatMessage[];
   context: ChatHistoryContext;
 }
 
 export interface MapContext {
+  stac_mode?: 'public' | 'pro';
   bounds?: {
     north: number;
     south: number;
@@ -147,11 +162,15 @@ export interface MapContext {
   };
   imagery_base64?: string; // Base64 screenshot from MapView canvas
   imagery_url?: string;
+  item_id?: string;
+  datetime?: string;
+  zoom_level?: number;
   current_collection?: string;
   tile_urls?: Array<{  // TiTiler URLs from prior STAC response for Vision Agent
     tilejson_url: string;
     item_id?: string;
     collection?: string;
+    bbox?: number[];
   }>;
   // Full STAC items captured by MapView after a search. Includes
   // `assets` with `href` URLs needed by the backend `sample_raster_value`
@@ -907,6 +926,9 @@ class ApiService {
         if (mapContext?.bounds) {
           requestData.map_bounds = mapContext.bounds;
         }
+        if (mapContext?.stac_mode) {
+          requestData.stac_mode = mapContext.stac_mode;
+        }
         //  NEW: Include STAC items with assets for NDVI/raster analysis
         if (mapContext?.stac_items?.length > 0) {
           requestData.stac_items = mapContext.stac_items;
@@ -952,6 +974,9 @@ class ApiService {
       }
       if (mapContext?.current_collection) {
         requestData.collection = mapContext.current_collection;
+      }
+      if (mapContext?.stac_mode) {
+        requestData.stac_mode = mapContext.stac_mode;
       }
       //  NEW: Include STAC items with assets for NDVI/raster analysis
       if (mapContext?.stac_items?.length > 0) {
@@ -1336,10 +1361,10 @@ class ApiService {
       throw new Error('API service not initialized');
     }
     const body: Record<string, any> = {
-      region_filter: params.regionFilter ?? 'TX',
       horizon_days: params.horizonDays ?? 7,
       hazards: params.hazards ?? ['heat', 'wildfire'],
     };
+    if (params.regionFilter) body.region_filter = params.regionFilter;
     if (params.userQuery) body.user_query = params.userQuery;
     // Investigative phrasings (counterfactuals, comparisons, similarity)
     // route through the planner-loop endpoint; everything else goes to
@@ -1392,10 +1417,10 @@ class ApiService {
     const baseURL = this.api?.defaults.baseURL || '';
     const url = `${baseURL.replace(/\/$/, '')}/api/resilience/assess/smart/stream`;
     const body: Record<string, any> = {
-      region_filter: params.regionFilter ?? 'TX',
       horizon_days: params.horizonDays ?? 7,
       hazards: params.hazards ?? ['heat', 'wildfire'],
     };
+    if (params.regionFilter) body.region_filter = params.regionFilter;
     if (params.userQuery) body.user_query = params.userQuery;
 
     // Forward the same Authorization header axios would have sent so

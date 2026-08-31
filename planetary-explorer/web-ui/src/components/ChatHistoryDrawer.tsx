@@ -26,7 +26,7 @@ interface ChatHistoryDrawerProps {
   enabled: boolean;
   open: boolean;
   onClose: () => void;
-  onLoad: (session: ChatHistorySession) => void;
+  onLoad: (session: ChatHistorySession) => boolean | void;
   onActiveSessionDeleted?: () => void;
 }
 
@@ -109,8 +109,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
 
   const openSession = (sessionId: string) => runAction(`open:${sessionId}`, async () => {
     const session = await apiService.getChatSession(sessionId);
-    onLoad(session);
-    onClose();
+    if (onLoad(session) !== false) onClose();
   });
 
   const exportSession = (session: ChatHistorySummary) => runAction(`export:${session.sessionId}`, async () => {

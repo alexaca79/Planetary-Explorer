@@ -1,6 +1,7 @@
 """Shared HTTP client logic for stub / NIM-shaped scoring endpoints."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -18,6 +19,45 @@ from .provider import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_S = float(os.getenv("WEATHER_PROVIDER_TIMEOUT_S", "30"))
+_DEFAULT_ATTEMPTS = max(1, int(os.getenv("WEATHER_PROVIDER_ATTEMPTS", "2")))
+_DEFAULT_RETRY_DELAY_S = max(
+    0.0,
+    float(os.getenv("WEATHER_PROVIDER_RETRY_DELAY_S", "1")),
+)
+
+
+async def _post_json_with_cold_start_retry(
+    *,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """POST JSON, retrying only transport failures caused by cold starts."""
+    for attempt in range(1, _DEFAULT_ATTEMPTS + 1):
+        try:
+            timeout = aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_S)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise RuntimeError(
+                            f"scoring endpoint returned {resp.status}: {text[:200]}"
+                        )
+                    return await resp.json()
+        except (aiohttp.ClientConnectionError, TimeoutError) as exc:
+            if attempt >= _DEFAULT_ATTEMPTS:
+                raise
+            logger.info(
+                "weather provider transport attempt %d/%d failed during "
+                "activation (%s); retrying",
+                attempt,
+                _DEFAULT_ATTEMPTS,
+                type(exc).__name__,
+            )
+            if _DEFAULT_RETRY_DELAY_S:
+                await asyncio.sleep(_DEFAULT_RETRY_DELAY_S)
+
+    raise RuntimeError("weather provider request exhausted without a result")
 
 
 async def call_score_endpoint(
@@ -46,16 +86,14 @@ async def call_score_endpoint(
     }
 
     started = time.perf_counter()
-    timeout = aiohttp.ClientTimeout(total=_DEFAULT_TIMEOUT_S)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(
-                    f"{provider_id} scoring endpoint returned "
-                    f"{resp.status}: {text[:200]}"
-                )
-            body: dict[str, Any] = await resp.json()
+    try:
+        body = await _post_json_with_cold_start_retry(
+            url=url,
+            headers=headers,
+            payload=payload,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"{provider_id} {exc}") from exc
     latency_ms = int((time.perf_counter() - started) * 1000)
 
     extras: dict[str, Any] = {}

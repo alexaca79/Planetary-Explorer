@@ -12,13 +12,14 @@ from web_search_mcp.server import (
     build_app,
     get_current_datetime,
     mcp,
+    readiness,
     web_search,
 )
 
 HEADERS = {
     "Accept": "application/json, text/event-stream",
     "Content-Type": "application/json",
-    "X-API-Key": "test-web-search-key",
+    "X-API-Key": "test-web-search-key-32-characters!",
 }
 
 
@@ -125,7 +126,7 @@ def test_given_required_protocol_methods_when_called_then_each_returns_http_succ
         "https://example.services.ai.azure.com/api/projects/planetary",
     )
     monkeypatch.setenv("FOUNDRY_MODEL", "gpt-4o")
-    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "test-web-search-key")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", HEADERS["X-API-Key"])
     calls = [
         {
             "jsonrpc": "2.0",
@@ -174,3 +175,23 @@ def test_given_required_protocol_methods_when_called_then_each_returns_http_succ
     assert missing_key_status == 401
     assert invalid_key_status == 401
     assert statuses == [200, 200, 200, 200, 200, 200]
+
+
+@pytest.mark.parametrize("api_key", ["", "too-short"])
+def test_given_missing_or_short_api_key_when_checking_readiness_then_service_is_degraded(
+    monkeypatch,
+    api_key: str,
+) -> None:
+    # Arrange
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://example.services.ai.azure.com/api/projects/planetary",
+    )
+    monkeypatch.setenv("FOUNDRY_MODEL", "gpt-4o")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", api_key)
+
+    # Act
+    response = anyio.run(readiness)
+
+    # Assert
+    assert response.status_code == 503

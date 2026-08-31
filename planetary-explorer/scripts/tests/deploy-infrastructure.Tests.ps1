@@ -156,6 +156,32 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         $script:DeploymentScript | Should -Match 'acr import'
     }
 
+    It 'Provisions and reconciles the optional weather stub' {
+        $mainBicep = Get-Content (
+            Join-Path $PSScriptRoot '../../infra/main.bicep'
+        ) -Raw
+        $apiBicep = Get-Content (
+            Join-Path $PSScriptRoot '../../infra/app/web.bicep'
+        ) -Raw
+        $weatherBicep = Get-Content (
+            Join-Path $PSScriptRoot '../../infra/app/weather-stub.bicep'
+        ) -Raw
+        $postDeploy = Get-Content (
+            Join-Path $PSScriptRoot '../../../scripts/configure_api_postdeploy.py'
+        ) -Raw
+        $mainBicep | Should -Match "module weatherStub './app/weather-stub\.bicep'"
+        $mainBicep | Should -Match 'output AZURE_WEATHER_STUB_URL'
+        $mainBicep | Should -Match 'weatherStubUrl: deployWeatherStub'
+        $apiBicep | Should -Match "name: 'AURORA_ENDPOINT_URL'"
+        $apiBicep | Should -Match "name: 'EARTH2_FCN_ENDPOINT_URL'"
+        $weatherBicep | Should -Match "var isBootstrapImage = startsWith\(imageName, 'mcr\.microsoft\.com/'\)"
+        $weatherBicep | Should -Match 'external: false'
+        $weatherBicep | Should -Match 'targetPort: isBootstrapImage \? 80 : 8080'
+        $weatherBicep | Should -Match 'probes: isBootstrapImage \? \[\] : \['
+        $script:DeploymentScript | Should -Match 'AZURE_WEATHER_STUB_URL\.value'
+        $postDeploy | Should -Match 'AZURE_WEATHER_STUB_URL'
+    }
+
     It 'Does not interpolate free-form dispatch inputs into shell source' {
         $freeFormInputs = @(
             'web_app_name',
@@ -208,7 +234,11 @@ Describe 'deploy-infrastructure release gates' -Tag 'Unit' {
         ) -Raw
         foreach ($manifest in @($rootManifest, $nestedManifest)) {
             $manifest | Should -Match 'preprovision:'
-            $manifest | Should -Match 'resolve_deployment_targets\.py --write-azd-env'
+            $manifest | Should -Match 'resolve_azd_deployment_targets\.py'
+            $manifest | Should -Not -Match 'run:\s+\S+\.py\s+--'
+            $manifest | Should -Not -Match 'kind:\s+python'
+            $manifest | Should -Match 'shell:\s+pwsh'
+            $manifest | Should -Match 'shell:\s+sh'
         }
     }
 

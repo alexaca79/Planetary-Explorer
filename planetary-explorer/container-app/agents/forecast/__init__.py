@@ -18,15 +18,12 @@ Topology
     AggregatorExecutor       (compose dossier, compute ensemble spread,
                               gracefully degrade if a provider failed)
 
-Same gating idiom as Resilience: ``FORECAST_AGENT_ENABLED=1`` plus
-``is_available()`` for the MAF import. Non-MAF code path
-(``forecast_direct``) is also exposed so the API endpoint still works
-when ``agent_framework`` isn't installed.
+The module requires ``FORECAST_AGENT_ENABLED=1`` and an available Microsoft
+Agent Framework runtime. It does not provide a non-MAF execution path.
 """
 
 from .workflow import (
     forecast,
-    forecast_direct,
     is_available,
 )
 from .messages import (
@@ -36,7 +33,6 @@ from .messages import (
 
 __all__ = [
     "forecast",
-    "forecast_direct",
     "is_available",
     "ForecastAgentQuery",
     "ForecastDossier",

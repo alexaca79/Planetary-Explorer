@@ -280,7 +280,7 @@ const STACInfoButton: React.FC = () => {
               <div className="stac-footer-info">
                 <span>{collectionsData?.metadata.total_collections || 47}/{collectionsData?.metadata.total_collections || 47} Collections Operational</span>
                 <span>-</span>
-                <span>Last Updated: {collectionsData?.metadata.last_updated || 'November 2025'}</span>
+                <span>Last Updated: {collectionsData?.metadata.last_updated || 'August 2026'}</span>
                 <span>-</span>
                 <a 
                   href="https://planetarycomputer.microsoft.com/catalog" 

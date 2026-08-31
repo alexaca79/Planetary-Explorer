@@ -1,4 +1,7 @@
-#  Client Connection Guide
+---
+title: Planetary Explorer MCP Client Connection Guide
+description: Connect MCP clients using Canadian geospatial examples from 2026.
+---
 
 This guide shows you how to connect various AI assistants and applications to your Planetary Explorer MCP server.
 
@@ -99,10 +102,10 @@ What would you like to analyze?
 ### Example Usage
 
 ```
-You: Show me recent wildfire activity in California using MODIS data
+You: Show MODIS thermal anomalies across Alberta from May 1 to August 26, 2026
 
 Claude: *Calls analyze_satellite_imagery tool*
-I found 22 active fire detections in California from MODIS data over the past 7 days...
+I found 2026 MODIS thermal-anomaly detections across Alberta...
 [Displays map visualization]
 
 You: What's the terrain like in those areas?
@@ -177,19 +180,19 @@ export APIM_KEY="your-subscription-key"
 
 **In Python file:**
 ```python
-# Get Sentinel-2 imagery of Seattle with low cloud cover
+# Get Sentinel-2 imagery of Toronto in summer 2026 with low cloud cover
 # Copilot: *Calls Planetary Explorer MCP server*
 
 import httpx
 
-async def get_seattle_imagery():
+async def get_toronto_imagery():
     # Generated code using MCP server context
     response = await client.call_tool(
         "analyze_satellite_imagery",
         {
-            "query": "Sentinel-2 imagery of Seattle",
-            "location": "Seattle, WA",
-            "timeframe": "2024-10-01/2024-10-31",
+            "query": "Sentinel-2 imagery of Toronto from 2026-06-01 to 2026-08-26",
+            "location": "Toronto, Ontario, Canada",
+            "timeframe": "2026-06-01/2026-08-26",
             "collections": ["sentinel-2"],
             "cloud_cover_max": 10
         }
@@ -199,14 +202,14 @@ async def get_seattle_imagery():
 
 **In Jupyter Notebook:**
 ```python
-# Get terrain analysis for Mount Rainier
+# Get terrain analysis for Banff
 # Copilot: *Generates code using Planetary Explorer MCP tools*
 
 from planetary_explorer_client import PlanetaryExplorerClient
 
 client = PlanetaryExplorerClient()
 terrain = client.analyze_terrain(
-    location="Mount Rainier, WA",
+  location="Banff, Alberta, Canada",
     analysis_types=["slope", "aspect", "hillshade"],
     resolution=30
 )
@@ -314,9 +317,9 @@ async def main():
     result = await client.call_tool(
         "analyze_satellite_imagery",
         {
-            "query": "Show me wildfires in California",
-            "location": "California",
-            "timeframe": "2024-08-01/2024-08-31",
+            "query": "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
+            "location": "Alberta, Canada",
+            "timeframe": "2026-05-01/2026-08-26",
             "collections": ["modis"]
         }
     )
@@ -446,15 +449,15 @@ async def demo():
     
     # Analyze wildfires
     wildfire_result = await client.analyze_satellite_imagery(
-        query="Active wildfires",
-        location="California",
-        timeframe="2024-08-01/2024-08-31",
+        query="Thermal anomalies in Alberta during 2026",
+        location="Alberta, Canada",
+        timeframe="2026-05-01/2026-08-26",
         collections=["modis"]
     )
     
     # Analyze terrain
     terrain_result = await client.analyze_terrain(
-        location="Grand Canyon, Arizona",
+        location="Banff, Alberta, Canada",
         analysis_types=["slope", "hillshade", "aspect"],
         resolution=30
     )
@@ -551,9 +554,9 @@ async function main() {
 
   // Analyze satellite imagery
   const result = await client.callTool('analyze_satellite_imagery', {
-    query: 'Show me wildfires in California',
-    location: 'California',
-    timeframe: '2024-08-01/2024-08-31',
+    query: 'Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26',
+    location: 'Alberta, Canada',
+    timeframe: '2026-05-01/2026-08-26',
     collections: ['modis'],
   });
   console.log('Analysis result:', result);
@@ -586,9 +589,9 @@ const SatelliteAnalysis: React.FC = () => {
     setLoading(true);
     try {
       const data = await client.callTool('analyze_satellite_imagery', {
-        query: 'Active wildfires',
-        location: 'California',
-        timeframe: '2024-08-01/2024-08-31',
+        query: 'Thermal anomalies in Alberta during 2026',
+        location: 'Alberta, Canada',
+        timeframe: '2026-05-01/2026-08-26',
         collections: ['modis'],
       });
       setResult(data);
@@ -639,9 +642,9 @@ curl -X POST https://your-mcp-server.azurewebsites.net/tools/call \
   -d '{
     "name": "analyze_satellite_imagery",
     "arguments": {
-      "query": "Wildfires in California",
-      "location": "California",
-      "timeframe": "2024-08-01/2024-08-31"
+      "query": "Thermal anomalies in Alberta during 2026",
+      "location": "Alberta, Canada",
+      "timeframe": "2026-05-01/2026-08-26"
     }
   }'
 
@@ -675,9 +678,9 @@ Write-Host "Available tools: $($toolsResponse.tools | ForEach-Object { $_.name }
 $analysisBody = @{
     name = "analyze_satellite_imagery"
     arguments = @{
-        query = "Wildfires in California"
-        location = "California"
-        timeframe = "2024-08-01/2024-08-31"
+        query = "Thermal anomalies in Alberta during 2026"
+        location = "Alberta, Canada"
+        timeframe = "2026-05-01/2026-08-26"
         collections = @("modis")
     }
 } | ConvertTo-Json -Depth 10
@@ -735,8 +738,8 @@ async def test_connection():
         "analyze_satellite_imagery",
         {
             "query": "Test query",
-            "location": "San Francisco, CA",
-            "timeframe": "2024-01-01/2024-01-31"
+            "location": "Toronto, Ontario, Canada",
+            "timeframe": "2026-06-01/2026-08-26"
         }
     )
     assert result is not None, "Tool execution failed"

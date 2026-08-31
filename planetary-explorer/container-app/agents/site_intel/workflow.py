@@ -17,9 +17,8 @@ Topology
                                                                   ▼
                                                               Review (yields)
 
-API mirrors :func:`agents.site_audit.audit_site` so the FastAPI route can
-swap implementations behind ``SITE_AUDIT_V2=1`` without changing its
-response contract.
+The API contract remains compatible with the original site-audit response,
+but execution always uses this MAF workflow.
 """
 
 from __future__ import annotations
@@ -99,7 +98,10 @@ def _build_workflow(
     # ride into the fan-in via the same typed channel as the scorers.
     scorers_and_meta = [grid, water, competition, land, hazard, precedent, meta]
 
-    builder = WorkflowBuilder(start_executor=planner)  # type: ignore[call-arg]
+    builder = WorkflowBuilder(  # type: ignore[call-arg]
+        start_executor=planner,
+        output_from=[review],
+    )
     builder = builder.add_edge(planner, retrieval)
     builder = builder.add_fan_out_edges(retrieval, scorers_and_meta)
     builder = builder.add_fan_in_edges(scorers_and_meta, aggregator)
@@ -122,14 +124,14 @@ async def audit_site_v2(
     :class:`WorkflowBuilder` graph (planner → fan-out → 6 scorers + meta →
     fan-in aggregator → evidence → review).
 
-    Returns the same JSON shape as v1 plus ``engine: "maf_workflow_v2"``,
+    Returns the site-audit JSON shape plus ``engine: "maf_workflow_v2"``,
     ``planner: {...}``, ``skipped_dimensions: [...]``, and (when
     ``SITE_REVIEW=1``) a ``review: {...}`` block.
     """
     if not is_available():
         raise RuntimeError(
             "audit_site_v2 called but Microsoft Agent Framework is not "
-            "installed. Set SITE_AUDIT_V2=0 or install agent-framework-core."
+            "installed. Install agent-framework-core to run Site Intel."
         )
 
     ws = workspace_id or DEFAULT_WORKSPACE_ID
@@ -178,7 +180,7 @@ async def audit_site_v2_stream(
     if not is_available():
         raise RuntimeError(
             "audit_site_v2_stream called but Microsoft Agent Framework is not "
-            "installed. Set SITE_AUDIT_V2=0 or install agent-framework-core."
+            "installed. Install agent-framework-core to run Site Intel."
         )
 
     ws = workspace_id or DEFAULT_WORKSPACE_ID

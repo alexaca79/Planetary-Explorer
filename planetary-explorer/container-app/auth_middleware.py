@@ -80,7 +80,6 @@ if M365_APP_CLIENT_ID:
 OPEN_PATHS: Set[str] = {
     "/api/health",
     "/api/config",
-    "/api/pro/collections",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -131,6 +130,16 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             "1",
             "yes",
         )
+        dev_bypass = os.environ.get("RESILIENCE_DEV_BYPASS_AUTH", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if dev_bypass and not explicitly_disabled:
+            raise RuntimeError(
+                "RESILIENCE_DEV_BYPASS_AUTH requires DISABLE_AUTH=true"
+            )
         entra_configured = bool(TENANT_ID.strip() and CLIENT_ID.strip())
         self._enabled = not explicitly_disabled
         if self._enabled and entra_configured:
@@ -243,22 +252,6 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
         # --- Auth disabled — pass through ---
         if not self._enabled:
-            return await call_next(request)
-
-        # --- Dev-mode bypass for M365 / Copilot Studio testing before
-        #     Entra admin consent is in place. Logs a warning every request
-        #     so this can't quietly leak into production.
-        if os.environ.get("RESILIENCE_DEV_BYPASS_AUTH", "0").lower() in ("1", "true", "yes", "on"):
-            logger.warning(
-                "[AUTH] RESILIENCE_DEV_BYPASS_AUTH active — bypassing auth on %s %s",
-                request.method,
-                path,
-            )
-            request.state.user = {
-                "sub": "dev-bypass",
-                "preferred_username": "dev-bypass@local",
-                "auth_source": "dev_bypass",
-            }
             return await call_next(request)
 
         # ----------------------------------------------------------------

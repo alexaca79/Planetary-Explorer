@@ -1,8 +1,4 @@
-"""Ensemble / dossier assembly — pure functions, no MAF dependency.
-
-Pulled out so the direct (non-MAF) code path and the MAF aggregator share
-identical math.
-"""
+"""Pure ensemble and dossier helpers for the Forecast Agent MAF workflow."""
 from __future__ import annotations
 
 import statistics

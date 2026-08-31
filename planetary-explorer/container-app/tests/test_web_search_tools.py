@@ -151,6 +151,7 @@ def test_given_web_search_environment_when_registry_discovered_then_server_is_en
 
     # Act
     registry = McpRegistry.discover()
+    monkeypatch.delenv("WEB_SEARCH_MCP_API_KEY")
 
     # Assert
     server = registry.get("web_search")
@@ -175,6 +176,25 @@ def test_given_web_search_environment_when_client_built_then_tracing_is_enabled(
     assert client is not None
     assert client.server_id == "web_search"
     assert client.turn_id == "web-search-turn"
+
+
+def test_given_prewarmed_registry_when_callback_env_is_empty_then_key_is_retained(
+    monkeypatch,
+) -> None:
+    # Arrange
+    monkeypatch.setenv("WEB_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("WEB_SEARCH_MCP_URL", "https://web-search.internal/mcp")
+    monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "registry-secret")
+    get_registry.cache_clear()
+    get_registry()
+    monkeypatch.delenv("WEB_SEARCH_MCP_API_KEY")
+
+    # Act
+    client = TracedMcpClient.from_web_search(turn_id="callback-turn")
+
+    # Assert
+    assert client is not None
+    assert client.underlying._api_key == "registry-secret"
 
 
 def test_given_analyst_prompt_when_read_then_current_date_cannot_use_model_memory() -> None:

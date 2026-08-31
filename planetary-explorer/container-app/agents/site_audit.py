@@ -23,12 +23,14 @@ DataFrames are cached in-process for 1 hour.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -50,6 +52,9 @@ STORAGE_SCOPE = "https://storage.azure.com/.default"
 DEFAULT_WORKSPACE_ID = os.getenv("FABRIC_LAKEHOUSE_WORKSPACE_ID", "")
 DEFAULT_LAKEHOUSE_ID = os.getenv("FABRIC_LAKEHOUSE_ID", "")
 ONELAKE_REGION = os.getenv("FABRIC_ONELAKE_REGION", "westus")
+_SEED_TABLES_PATH = (
+    Path(__file__).resolve().parent / "site_intel" / "seed_data" / "tables.json"
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Auto-resume: wake a paused Fabric F-SKU capacity on demand
@@ -131,6 +136,23 @@ def _table_uri(table: str, workspace_id: str, lakehouse_id: str) -> str:
         f"abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/"
         f"{lakehouse_id}/Tables/{table}"
     )
+
+
+@lru_cache(maxsize=1)
+def _load_seed_tables() -> dict[str, list[dict[str, Any]]]:
+    payload = json.loads(_SEED_TABLES_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Site Intel seed data must be a JSON object.")
+    return payload
+
+
+def _load_seed_table(table: str) -> pd.DataFrame:
+    records = _load_seed_tables().get(table)
+    if not isinstance(records, list):
+        raise RuntimeError(f"Site Intel seed table is missing: {table}")
+    frame = pd.DataFrame.from_records(records)
+    frame.attrs["source"] = "bundled_seed"
+    return frame
 
 
 def _is_capacity_paused_error(exc: BaseException) -> bool:
@@ -226,6 +248,16 @@ async def _load_table(
         if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
             return cached[1]
 
+        if not workspace_id or not lakehouse_id:
+            logger.info(
+                "[SITE_AUDIT] Fabric IDs are not configured; loading bundled seed table %s",
+                table,
+            )
+            df = await asyncio.to_thread(_load_seed_table, table)
+            _TABLE_CACHE[table] = (time.time(), df)
+            _TABLE_VERSIONS[table] = None
+            return df
+
         token = await fabric_client.exchange_user_token(user_assertion, STORAGE_SCOPE)
 
         # deltalake reads are blocking; run in a thread.
@@ -258,6 +290,7 @@ async def _load_table(
             # Refresh OBO token (the previous one may now be near expiry) and retry once.
             token = await fabric_client.exchange_user_token(user_assertion, STORAGE_SCOPE)
             df, version = await asyncio.to_thread(_read)
+        df.attrs["source"] = "fabric_lakehouse"
         _TABLE_CACHE[table] = (time.time(), df)
         _TABLE_VERSIONS[table] = version
         logger.info(
@@ -1007,113 +1040,17 @@ def _build_provenance(
     return out
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Public entry point
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-async def audit_site(
-    *,
-    user_assertion: str,
-    lat: float,
-    lng: float,
-    claimed_mw: float,
-    user_query: str | None = None,
-    workspace_id: str | None = None,
-    lakehouse_id: str | None = None,
-) -> dict[str, Any]:
-    """Produce a structured siting dossier for (lat, lng, claimed_mw).
-
-    Returns
-    -------
-    dict
-        {
-          "input": {...},
-          "scores": {power, water, hazards, competition, parcel, overall},
-          "summaries": {...},
-          "evidence": [...],     # flat list across dimensions, with `kind`
-          "data_provenance": [...]  # which Lakehouse tables were consulted
-        }
-    """
-    ws = workspace_id or DEFAULT_WORKSPACE_ID
-    lh = lakehouse_id or DEFAULT_LAKEHOUSE_ID
-
-    # Run all six data calls concurrently:
-    #   • 4 Delta tables from OneLake (Fabric)
-    #   • 1 MPC raster sample (Planetary Computer)
-    #   • 1 AI Search query    (Azure AI Search)
-    sites, power, water, dcs, hazards_r, precedent_r = await asyncio.gather(
-        _load_table("candidate_sites", user_assertion, ws, lh),
-        _load_table("power_infrastructure", user_assertion, ws, lh),
-        _load_table("water_assets", user_assertion, ws, lh),
-        _load_table("existing_data_centers", user_assertion, ws, lh),
-        _score_hazards_with_mpc(lat, lng, user_query),
-        _score_precedent_with_search(user_assertion, ws, lat, lng, claimed_mw),
-    )
-
-    power_r = _score_power(lat, lng, claimed_mw, power)
-    water_r = _score_water(lat, lng, water)
-    competition_r = _score_competition(lat, lng, dcs)
-    parcel_r = _score_parcel_match(lat, lng, sites)
-
-    # Overall score: weighted average reflecting siting team priorities.
-    # Power dominates because grid is the binding constraint; precedent is
-    # included as a regulatory-confidence factor.
-    weights = {
-        "power": 0.35,
-        "water": 0.15,
-        "hazards": 0.15,
-        "competition": 0.10,
-        "parcel": 0.10,
-        "precedent": 0.15,
-    }
-    overall = (
-        power_r.score * weights["power"]
-        + water_r.score * weights["water"]
-        + hazards_r.score * weights["hazards"]
-        + competition_r.score * weights["competition"]
-        + parcel_r.score * weights["parcel"]
-        + precedent_r.score * weights["precedent"]
-    )
-
-    return {
-        "input": {"lat": lat, "lng": lng, "claimed_mw": claimed_mw},
-        "scores": {
-            "power": round(power_r.score, 1),
-            "water": round(water_r.score, 1),
-            "hazards": round(hazards_r.score, 1),
-            "competition": round(competition_r.score, 1),
-            "parcel_match": round(parcel_r.score, 1),
-            "precedent": round(precedent_r.score, 1),
-            "overall": round(overall, 1),
-            "weights": weights,
-        },
-        "summaries": {
-            "power": power_r.summary,
-            "water": water_r.summary,
-            "hazards": hazards_r.summary,
-            "competition": competition_r.summary,
-            "parcel_match": parcel_r.summary,
-            "precedent": precedent_r.summary,
-        },
-        "evidence": (
-            power_r.evidence
-            + water_r.evidence
-            + competition_r.evidence
-            + parcel_r.evidence
-            + hazards_r.evidence
-            + precedent_r.evidence
-        ),
-        "data_provenance": _build_provenance(
-            fabric_tables=[
-                ("candidate_sites", sites),
-                ("power_infrastructure", power),
-                ("water_assets", water),
-                ("existing_data_centers", dcs),
-            ],
-            hazards_evidence=hazards_r.evidence,
-            user_query=user_query,
-        ),
-        "lakehouse": {"workspace_id": ws, "lakehouse_id": lh},
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+__all__ = [
+    "DEFAULT_LAKEHOUSE_ID",
+    "DEFAULT_WORKSPACE_ID",
+    "DimensionResult",
+    "_MPC_ANCHOR_COLLECTIONS",
+    "_build_provenance",
+    "_load_table",
+    "_score_competition",
+    "_score_hazards_with_mpc",
+    "_score_parcel_match",
+    "_score_power",
+    "_score_precedent_with_search",
+    "_score_water",
+]

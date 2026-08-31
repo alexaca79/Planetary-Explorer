@@ -49,7 +49,7 @@ export default function CatalogPanel({
             </ul>
             <p style={{ fontSize: '0.9em' }}>
               Simply ask for the data you need using natural language!<br/>
-              <em>Example: "Show me recent Landsat imagery of New York"</em>
+              <em>Example: "Show Landsat imagery over Halifax from 2026-01-01 to 2026-08-26"</em>
             </p>
           </div>
         )}

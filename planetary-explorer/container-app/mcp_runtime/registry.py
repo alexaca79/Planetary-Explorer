@@ -28,14 +28,8 @@ class McpServerSpec:
     display_name: str               # human-readable label
     url: str                        # streamable-HTTP base URL
     enabled: bool = True
-    api_key_env: str | None = None  # env var holding the bearer token, if any
+    api_key: str | None = None      # resolved once when the process registry starts
     tools: tuple[str, ...] = field(default_factory=tuple)  # filled in by discover
-
-    @property
-    def api_key(self) -> str | None:
-        if not self.api_key_env:
-            return None
-        return os.getenv(self.api_key_env) or None
 
 
 class McpRegistry:
@@ -59,7 +53,7 @@ class McpRegistry:
                     display_name="MPC Pro",
                     url=url,
                     enabled=True,
-                    api_key_env="MPC_MCP_API_KEY",
+                    api_key=(os.getenv("MPC_MCP_API_KEY") or "").strip() or None,
                 )
             )
         geofm_url = (os.getenv("GEOFM_MCP_URL") or "").strip()
@@ -76,7 +70,7 @@ class McpRegistry:
                     display_name="Geospatial Foundation Models",
                     url=geofm_url,
                     enabled=True,
-                    api_key_env="GEOFM_MCP_API_KEY",
+                    api_key=(os.getenv("GEOFM_MCP_API_KEY") or "").strip() or None,
                 )
             )
         web_search_url = (os.getenv("WEB_SEARCH_MCP_URL") or "").strip()
@@ -93,7 +87,8 @@ class McpRegistry:
                     display_name="Web Search",
                     url=web_search_url,
                     enabled=True,
-                    api_key_env="WEB_SEARCH_MCP_API_KEY",
+                    api_key=(os.getenv("WEB_SEARCH_MCP_API_KEY") or "").strip()
+                    or None,
                 )
             )
         logger.info(

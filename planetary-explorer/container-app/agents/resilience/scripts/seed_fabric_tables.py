@@ -3,8 +3,8 @@
 Writes three Delta tables to OneLake using the same Fabric workspace + lakehouse
 that Site Intel already uses (env-overridable):
 
-    Tables/facilities       \u2014 10-row TX facility registry
-    Tables/supply_edges     \u2014 20-row 1-hop supply graph
+    Tables/facilities       \u2014 10-row Canadian facility registry
+    Tables/supply_edges     \u2014 10-row 1-hop supply graph
     Tables/bcp_playbooks    \u2014 5 BCP playbooks (structured JSON)
 
 After this script runs the agent's data_loader.py + ContextExecutor will

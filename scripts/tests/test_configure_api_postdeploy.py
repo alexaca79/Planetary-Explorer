@@ -150,6 +150,9 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     monkeypatch.setenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts")
     monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://search.internal")
     monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "w" * 32)
+    monkeypatch.setenv("AZURE_WEATHER_STUB_URL", "https://weather.example")
+    monkeypatch.delenv("AZURE_WEATHER_STUB_CONTAINER_APP_NAME", raising=False)
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
     monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
     monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
 
@@ -163,7 +166,74 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     assert "WEB_SEARCH_ENABLED=true" in update
     assert "WEB_SEARCH_MCP_URL=https://search.internal" in update
     assert "WEB_SEARCH_MCP_API_KEY=secretref:web-search-mcp-api-key" in update
+    assert "FORECAST_AGENT_ENABLED=1" in update
+    assert "AURORA_ENDPOINT_URL=https://weather.example" in update
+    assert "EARTH2_FCN_ENDPOINT_URL=https://weather.example" in update
     assert any(command[:3] == ["containerapp", "secret", "set"] for command in commands)
+
+
+def test_given_internal_weather_app_when_reconciling_then_live_fqdn_replaces_stale_output(
+    monkeypatch,
+) -> None:
+    # Arrange
+    commands: list[list[str]] = []
+    monkeypatch.setenv(
+        "AZURE_WEATHER_STUB_URL",
+        "https://weather.public.example",
+    )
+    monkeypatch.setenv(
+        "AZURE_WEATHER_STUB_CONTAINER_APP_NAME",
+        "ca-weather-example",
+    )
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_URL", raising=False)
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+
+    def fake_run_az(arguments: list[str]) -> str:
+        commands.append(arguments)
+        if arguments[:2] == ["containerapp", "show"]:
+            return "ca-weather-example.internal.example.azurecontainerapps.io\n"
+        return ""
+
+    monkeypatch.setattr(MODULE, "run_az", fake_run_az)
+
+    # Act
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    # Assert
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert (
+        "AURORA_ENDPOINT_URL="
+        "https://ca-weather-example.internal.example.azurecontainerapps.io"
+    ) in update
+    assert (
+        "EARTH2_FCN_ENDPOINT_URL="
+        "https://ca-weather-example.internal.example.azurecontainerapps.io"
+    ) in update
+    assert not any("weather.public.example" in value for value in update)
+
+
+def test_given_public_demo_when_reconciling_api_then_history_endpoints_are_removed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    commands: list[list[str]] = []
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_URL", raising=False)
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    # Act
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    # Assert
+    update = commands[0]
+    assert "PE_FEATURE_CHAT_HISTORY=false" in update
+    assert "CHAT_HISTORY_STORE=disabled" in update
+    assert "COSMOS_CHAT_ENDPOINT" in update
+    assert "CHAT_ARTIFACT_BLOB_ENDPOINT" in update
+    assert "--remove-env-vars" in update
+    assert not any(value.endswith("=") for value in update)
 
 
 def test_given_transient_rbac_delay_when_waiting_for_geofm_then_readiness_retries(

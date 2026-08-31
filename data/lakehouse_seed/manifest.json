@@ -1,25 +1,110 @@
 {
-  "power_infrastructure": {
-    "status": "ok",
-    "rows": 95109,
-    "columns": [
-      "asset_id",
-      "type",
-      "name",
-      "state",
-      "county",
-      "voltage_kv",
-      "capacity_mw",
-      "status",
-      "latitude",
-      "longitude",
-      "owner_utility",
-      "source_dataset",
-      "source_url",
-      "source_authority",
-      "retrieval_date"
-    ],
-    "path": "data/lakehouse_seed/power_infrastructure.parquet",
-    "size_bytes": 2771320
+  "scope": "Synthetic Canadian demonstration data for 2026",
+  "authoritative": false,
+  "generated_at": "2026-08-26T00:00:00+00:00",
+  "tables": {
+    "candidate_sites": {
+      "rows": 6,
+      "columns": [
+        "site_id",
+        "name",
+        "state",
+        "county",
+        "parcel_acres",
+        "current_land_use",
+        "screening_status",
+        "latitude",
+        "longitude",
+        "zoning",
+        "owner_type",
+        "source_dataset",
+        "source_url",
+        "source_authority",
+        "retrieval_date"
+      ],
+      "path": "data/lakehouse_seed/candidate_sites.parquet",
+      "size_bytes": 10024
+    },
+    "power_infrastructure": {
+      "rows": 6,
+      "columns": [
+        "asset_id",
+        "type",
+        "name",
+        "state",
+        "county",
+        "voltage_kv",
+        "capacity_mw",
+        "status",
+        "latitude",
+        "longitude",
+        "owner_utility",
+        "source_dataset",
+        "source_url",
+        "source_authority",
+        "retrieval_date"
+      ],
+      "path": "data/lakehouse_seed/power_infrastructure.parquet",
+      "size_bytes": 9986
+    },
+    "water_assets": {
+      "rows": 6,
+      "columns": [
+        "asset_id",
+        "name",
+        "type",
+        "state",
+        "latitude",
+        "longitude",
+        "huc_code",
+        "permitted_withdrawal_mgd",
+        "available_capacity_mgd",
+        "source_dataset",
+        "source_url",
+        "source_authority",
+        "retrieval_date"
+      ],
+      "path": "data/lakehouse_seed/water_assets.parquet",
+      "size_bytes": 8805
+    },
+    "existing_data_centers": {
+      "rows": 5,
+      "columns": [
+        "facility_id",
+        "operator",
+        "mw_capacity",
+        "mw_available",
+        "ppa_clean_energy_pct",
+        "latency_metro_ms",
+        "year_online",
+        "latitude",
+        "longitude",
+        "address",
+        "source_dataset",
+        "source_url",
+        "source_authority",
+        "retrieval_date"
+      ],
+      "path": "data/lakehouse_seed/existing_data_centers.parquet",
+      "size_bytes": 9773
+    },
+    "site_scores_derived": {
+      "rows": 0,
+      "columns": [
+        "site_id",
+        "water_score",
+        "hazard_score",
+        "grid_score",
+        "latency_score",
+        "overall_score",
+        "confidence",
+        "pareto_rank",
+        "last_scored_at",
+        "explanation_blob",
+        "evidence_doc_ids"
+      ],
+      "path": "data/lakehouse_seed/site_scores_derived.parquet",
+      "size_bytes": 5517
+    }
   }
 }

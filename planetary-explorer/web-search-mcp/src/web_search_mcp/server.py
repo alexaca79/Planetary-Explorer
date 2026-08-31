@@ -22,6 +22,7 @@ from starlette.routing import Route
 FOUNDRY_SCOPE = "https://ai.azure.com/.default"
 MAX_QUERY_LENGTH = 500
 MAX_CITATIONS = 10
+MIN_API_KEY_LENGTH = 32
 
 mcp = FastMCP(
     "planetary-explorer-web-search",
@@ -96,6 +97,10 @@ def _required_configuration() -> tuple[str, str]:
     ]
     if missing:
         raise RuntimeError(f"Missing required configuration: {', '.join(missing)}")
+    if len(api_key) < MIN_API_KEY_LENGTH:
+        raise RuntimeError(
+            f"WEB_SEARCH_MCP_API_KEY must be at least {MIN_API_KEY_LENGTH} characters."
+        )
     return endpoint, model
 
 
@@ -244,14 +249,34 @@ class McpApiKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         expected = (os.getenv("WEB_SEARCH_MCP_API_KEY") or "").strip()
         supplied = (request.headers.get("X-API-Key") or "").strip()
-        if not expected:
+        if len(expected) < MIN_API_KEY_LENGTH:
             return JSONResponse(
                 {"error": "Web Search MCP authentication is not configured."},
                 status_code=503,
             )
         if not supplied or not hmac.compare_digest(supplied, expected):
+            print(
+                "MCP_AUTH_REJECTED "
+                f"header_present={bool(supplied)} "
+                f"supplied_length={len(supplied)} "
+                f"expected_length={len(expected)} "
+                f"user_agent={request.headers.get('user-agent', '')}",
+                flush=True,
+            )
             return JSONResponse({"error": "Unauthorized."}, status_code=401)
         return await call_next(request)
+
+
+async def readiness(_: Request | None = None) -> JSONResponse:
+    """Report whether all Web Search MCP runtime configuration is valid."""
+    try:
+        _required_configuration()
+    except RuntimeError as exc:
+        return JSONResponse(
+            {"status": "degraded", "error": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ready"})
 
 
 def build_app():
@@ -262,19 +287,9 @@ def build_app():
             {"status": "ok", "service": "planetary-explorer-web-search"}
         )
 
-    async def ready(_: Request) -> JSONResponse:
-        try:
-            _required_configuration()
-        except RuntimeError as exc:
-            return JSONResponse(
-                {"status": "degraded", "error": str(exc)},
-                status_code=503,
-            )
-        return JSONResponse({"status": "ready"})
-
     application = mcp.streamable_http_app()
     application.routes.insert(0, Route("/health", endpoint=health, methods=["GET"]))
-    application.routes.insert(1, Route("/ready", endpoint=ready, methods=["GET"]))
+    application.routes.insert(1, Route("/ready", endpoint=readiness, methods=["GET"]))
     application.add_middleware(McpSuccessStatusMiddleware)
     application.add_middleware(McpApiKeyMiddleware)
     return application

@@ -1,5 +1,6 @@
 """Tests for authenticated chat-history and test-bundle endpoints."""
 
+import copy
 import io
 import json
 from zipfile import ZipFile
@@ -8,11 +9,11 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from chat_history_api import router
+import chat_history_api
 from chat_history_store import (
-    ChatHistoryError,
+    ChatHistoryNotFoundError,
     InMemoryArtifactStore,
     InMemoryChatHistoryRepository,
-    MAX_EXPORT_BYTES,
 )
 
 
@@ -40,10 +41,29 @@ def _create_client(
     return TestClient(app), repository
 
 
+def test_given_application_routes_when_registered_then_history_router_is_included_once() -> None:
+    # Arrange
+    import fastapi_app
+
+    # Act
+    matching_routes = [
+        route
+        for route in fastapi_app.app.routes
+        if getattr(route, "path", None) == "/api/chat-history/sessions"
+    ]
+
+    # Assert
+    assert len(matching_routes) == 1
+
+
 def test_given_saved_session_when_another_user_reads_then_returns_not_found() -> None:
     # Arrange
     client, _repository = _create_client()
-    payload = {"messages": [{"role": "user", "content": "Show Seattle"}]}
+    payload = {
+        "expectedRevision": 0,
+        "mutationId": "isolation-save",
+        "messages": [{"role": "user", "content": "Show Seattle"}],
+    }
     saved = client.put("/api/chat-history/sessions/web-session-1", json=payload)
 
     # Act
@@ -57,12 +77,48 @@ def test_given_saved_session_when_another_user_reads_then_returns_not_found() ->
     assert other_user.status_code == 404
 
 
+def test_given_non_object_json_when_saving_then_returns_bad_request() -> None:
+    # Arrange
+    client, _repository = _create_client()
+
+    # Act
+    response = client.put("/api/chat-history/sessions/web-session-1", json=[])
+
+    # Assert
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Session body must be a JSON object."
+
+
+def test_given_malformed_expected_revision_when_saving_then_returns_bad_request() -> None:
+    # Arrange
+    client, _repository = _create_client()
+
+    for expected_revision in (True, "1"):
+        # Act
+        response = client.put(
+            "/api/chat-history/sessions/web-session-1",
+            json={
+                "expectedRevision": expected_revision,
+                "mutationId": "malformed-revision-save",
+                "messages": [{"role": "user", "content": "Test"}],
+            },
+        )
+
+        # Assert
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "expectedRevision must be a non-negative integer."
+        )
+
+
 def test_given_session_with_file_when_exported_then_bundle_is_replayable() -> None:
     # Arrange
     client, _repository = _create_client()
     client.put(
         "/api/chat-history/sessions/web-session-1",
         json={
+            "expectedRevision": 0,
+            "mutationId": "export-save",
             "messages": [
                 {"role": "user", "content": "Test these coordinates"},
                 {"role": "assistant", "content": "Loaded 1 row"},
@@ -92,64 +148,152 @@ def test_given_session_with_file_when_exported_then_bundle_is_replayable() -> No
     assert data == b"lat,lng\n47.6,-122.3\n"
 
 
-def test_given_session_with_attachment_when_saved_then_retention_is_refreshed() -> None:
+def test_given_attachment_metadata_committed_when_response_is_lost_then_blob_is_retained() -> None:
     # Arrange
-    class TrackingArtifactStore(InMemoryArtifactStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.touched: list[str] = []
+    class AmbiguousAttachmentRepository(InMemoryChatHistoryRepository):
+        async def add_attachment(
+            self,
+            owner_id: str,
+            session_id: str,
+            attachment: dict,
+        ) -> dict:
+            await super().add_attachment(owner_id, session_id, attachment)
+            raise RuntimeError("metadata response lost")
 
-        async def touch(self, attachment: dict) -> None:
-            await super().touch(attachment)
-            self.touched.append(attachment["id"])
-
-    artifacts = TrackingArtifactStore()
-    client, _repository = _create_client(artifacts)
+    artifacts = InMemoryArtifactStore()
+    repository = AmbiguousAttachmentRepository()
+    client, _repository = _create_client(artifacts, repository)
     client.put(
         "/api/chat-history/sessions/web-session-1",
-        json={"messages": [{"role": "user", "content": "retain file"}]},
-    )
-    uploaded = client.post(
-        "/api/chat-history/sessions/web-session-1/files",
-        files={"file": ("coordinates.csv", b"lat,lng\n", "text/csv")},
-    ).json()
-
-    # Act
-    saved = client.put(
-        "/api/chat-history/sessions/web-session-1",
         json={
-            "clientRevision": 2,
-            "messages": [{"role": "user", "content": "retain file again"}],
+            "expectedRevision": 0,
+            "mutationId": "ambiguous-file-save",
+            "messages": [{"role": "user", "content": "retain the file"}],
         },
     )
 
+    # Act
+    uploaded = client.post(
+        "/api/chat-history/sessions/web-session-1/files",
+        files={"file": ("coordinates.csv", b"lat,lng\n47.6,-122.3\n", "text/csv")},
+    )
+    attachment = uploaded.json()
+    downloaded = client.get(
+        f"/api/chat-history/sessions/web-session-1/files/{attachment['id']}"
+    )
+
     # Assert
-    assert saved.status_code == 200
-    assert artifacts.touched == [uploaded["id"]]
+    assert uploaded.status_code == 201
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"lat,lng\n47.6,-122.3\n"
 
 
-def test_given_declared_files_over_limit_when_exported_then_rejects_before_download() -> None:
+def test_given_ambiguous_upload_and_stale_reconciliation_then_blob_is_not_deleted() -> None:
     # Arrange
-    client, repository = _create_client()
+    class StaleReconciliationRepository(InMemoryChatHistoryRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stale_document: dict | None = None
+            self.return_stale_once = False
+
+        async def add_attachment(
+            self,
+            owner_id: str,
+            session_id: str,
+            attachment: dict,
+        ) -> dict:
+            self.stale_document = await super().get_session(owner_id, session_id)
+            await super().add_attachment(owner_id, session_id, attachment)
+            self.return_stale_once = True
+            raise RuntimeError("metadata response lost")
+
+        async def get_session(self, owner_id: str, session_id: str) -> dict:
+            if self.return_stale_once and self.stale_document is not None:
+                self.return_stale_once = False
+                return copy.deepcopy(self.stale_document)
+            return await super().get_session(owner_id, session_id)
+
+    class TrackingArtifactStore(InMemoryArtifactStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[str] = []
+
+        async def delete(self, attachment: dict) -> None:
+            self.deleted.append(attachment["id"])
+            await super().delete(attachment)
+
+    artifacts = TrackingArtifactStore()
+    repository = StaleReconciliationRepository()
+    client, _repository = _create_client(artifacts, repository)
     client.put(
         "/api/chat-history/sessions/web-session-1",
-        json={"messages": [{"role": "user", "content": "large export"}]},
+        json={
+            "expectedRevision": 0,
+            "mutationId": "stale-file-save",
+            "messages": [{"role": "user", "content": "retain ambiguous upload"}],
+        },
     )
-    document = repository._documents[("tenant-1:user-1", "web-session-1")]
-    document["attachments"] = [
-        {
-            "id": "large-file",
-            "name": "large.bin",
-            "size": MAX_EXPORT_BYTES + 1,
-            "blobName": "missing",
-        }
-    ]
 
     # Act
-    response = client.get("/api/chat-history/sessions/web-session-1/export")
+    upload = client.post(
+        "/api/chat-history/sessions/web-session-1/files",
+        files={"file": ("coordinates.csv", b"lat,lng\n47.6,-122.3\n", "text/csv")},
+    )
+    session = client.get("/api/chat-history/sessions/web-session-1").json()
+    attachment = session["attachments"][0]
+    downloaded = client.get(
+        f"/api/chat-history/sessions/web-session-1/files/{attachment['id']}"
+    )
 
     # Assert
-    assert response.status_code == 413
+    assert upload.status_code == 503
+    assert artifacts.deleted == []
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"lat,lng\n47.6,-122.3\n"
+
+
+def test_given_session_deleted_during_upload_then_orphaned_blob_is_removed() -> None:
+    # Arrange
+    class DeletedSessionRepository(InMemoryChatHistoryRepository):
+        async def add_attachment(
+            self,
+            owner_id: str,
+            session_id: str,
+            attachment: dict,
+        ) -> dict:
+            self._documents.pop((owner_id, session_id), None)
+            raise ChatHistoryNotFoundError("Chat session not found.")
+
+    class TrackingArtifactStore(InMemoryArtifactStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[str] = []
+
+        async def delete(self, attachment: dict) -> None:
+            self.deleted.append(attachment["id"])
+            await super().delete(attachment)
+
+    artifacts = TrackingArtifactStore()
+    client, _repository = _create_client(artifacts, DeletedSessionRepository())
+    client.put(
+        "/api/chat-history/sessions/web-session-1",
+        json={
+            "expectedRevision": 0,
+            "mutationId": "deleted-file-save",
+            "messages": [{"role": "user", "content": "delete during upload"}],
+        },
+    )
+
+    # Act
+    upload = client.post(
+        "/api/chat-history/sessions/web-session-1/files",
+        files={"file": ("coordinates.csv", b"lat,lng\n", "text/csv")},
+    )
+
+    # Assert
+    assert upload.status_code == 404
+    assert len(artifacts.deleted) == 1
+    assert artifacts._files == {}
 
 
 def test_given_blob_cleanup_failure_when_deleting_then_session_remains_retryable() -> None:
@@ -161,7 +305,11 @@ def test_given_blob_cleanup_failure_when_deleting_then_session_remains_retryable
     client, repository = _create_client(FailingArtifactStore())
     client.put(
         "/api/chat-history/sessions/web-session-1",
-        json={"messages": [{"role": "user", "content": "keep me"}]},
+        json={
+            "expectedRevision": 0,
+            "mutationId": "session-delete-save",
+            "messages": [{"role": "user", "content": "keep me"}],
+        },
     )
     client.post(
         "/api/chat-history/sessions/web-session-1/files",
@@ -176,94 +324,19 @@ def test_given_blob_cleanup_failure_when_deleting_then_session_remains_retryable
     assert client.get("/api/chat-history/sessions/web-session-1").status_code == 200
 
 
-def test_given_concurrent_attachment_when_deleting_session_then_returns_conflict() -> None:
+def test_given_blob_delete_failure_when_deleting_file_then_metadata_remains_retryable() -> None:
     # Arrange
-    class ConcurrentAttachmentRepository(InMemoryChatHistoryRepository):
-        def __init__(self) -> None:
-            super().__init__()
-            self.add_on_delete = True
+    class FailingArtifactStore(InMemoryArtifactStore):
+        async def delete(self, attachment: dict) -> None:
+            raise RuntimeError("storage unavailable")
 
-        async def delete_session(
-            self,
-            owner_id: str,
-            session_id: str,
-            *,
-            expected_etag: str | None = None,
-        ) -> dict:
-            if self.add_on_delete:
-                self.add_on_delete = False
-                await self.add_attachment(
-                    owner_id,
-                    session_id,
-                    {
-                        "id": "concurrent-file",
-                        "name": "concurrent.csv",
-                        "size": 1,
-                        "blobName": "concurrent",
-                    },
-                )
-            return await super().delete_session(
-                owner_id,
-                session_id,
-                expected_etag=expected_etag,
-            )
-
-    repository = ConcurrentAttachmentRepository()
-    client, _repository = _create_client(repository=repository)
-    client.put(
-        "/api/chat-history/sessions/web-session-1",
-        json={"messages": [{"role": "user", "content": "delete session"}]},
-    )
-
-    # Act
-    first = client.delete("/api/chat-history/sessions/web-session-1")
-    second = client.delete("/api/chat-history/sessions/web-session-1")
-
-    # Assert
-    assert first.status_code == 409
-    assert second.status_code == 204
-
-
-def test_given_existing_attachment_when_deleting_then_tombstone_blocks_concurrent_save() -> None:
-    # Arrange
-    class AutosaveDuringDeletionRepository(InMemoryChatHistoryRepository):
-        def __init__(self) -> None:
-            super().__init__()
-            self.autosave_blocked = False
-
-        async def mark_deleting(
-            self,
-            owner_id: str,
-            session_id: str,
-            *,
-            expected_etag: str | None = None,
-        ) -> dict:
-            marked = await super().mark_deleting(
-                owner_id,
-                session_id,
-                expected_etag=expected_etag,
-            )
-            try:
-                await self.upsert_session(
-                    owner_id,
-                    session_id,
-                    {
-                        "clientRevision": 2,
-                        "messages": [{"role": "user", "content": "late save"}],
-                    },
-                )
-            except ChatHistoryError:
-                self.autosave_blocked = True
-            return marked
-
-    repository = AutosaveDuringDeletionRepository()
-    artifacts = InMemoryArtifactStore()
-    client, _repository = _create_client(artifacts, repository)
+    client, _repository = _create_client(FailingArtifactStore())
     client.put(
         "/api/chat-history/sessions/web-session-1",
         json={
-            "clientRevision": 1,
-            "messages": [{"role": "user", "content": "delete attached"}],
+            "expectedRevision": 0,
+            "mutationId": "file-delete-save",
+            "messages": [{"role": "user", "content": "keep file metadata"}],
         },
     )
     uploaded = client.post(
@@ -272,78 +345,98 @@ def test_given_existing_attachment_when_deleting_then_tombstone_blocks_concurren
     ).json()
 
     # Act
-    deleted = client.delete("/api/chat-history/sessions/web-session-1")
+    deleted = client.delete(
+        f"/api/chat-history/sessions/web-session-1/files/{uploaded['id']}"
+    )
 
     # Assert
-    assert deleted.status_code == 204
-    assert repository.autosave_blocked is True
-    assert uploaded["id"]
-    assert artifacts._files == {}
+    assert deleted.status_code == 503
+    session = client.get("/api/chat-history/sessions/web-session-1").json()
+    assert session["attachments"][0]["id"] == uploaded["id"]
 
 
-def test_given_stale_revision_when_saving_then_returns_conflict() -> None:
+def test_given_active_session_with_file_when_saved_then_attachment_is_renewed() -> None:
     # Arrange
+    class TrackingArtifactStore(InMemoryArtifactStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.touched: list[str] = []
+
+        async def touch(self, attachment: dict) -> None:
+            await super().touch(attachment)
+            self.touched.append(attachment["id"])
+
+    artifacts = TrackingArtifactStore()
+    client, _repository = _create_client(artifacts)
+    client.put(
+        "/api/chat-history/sessions/web-session-1",
+        json={
+            "expectedRevision": 0,
+            "mutationId": "renew-initial-save",
+            "messages": [{"role": "user", "content": "initial"}],
+        },
+    )
+    uploaded = client.post(
+        "/api/chat-history/sessions/web-session-1/files",
+        files={"file": ("coordinates.csv", b"lat,lng\n", "text/csv")},
+    ).json()
+
+    # Act
+    saved = client.put(
+        "/api/chat-history/sessions/web-session-1",
+        json={
+            "expectedRevision": 1,
+            "mutationId": "renew-continuation-save",
+            "messages": [{"role": "user", "content": "continued"}],
+        },
+    )
+
+    # Assert
+    assert saved.status_code == 200
+    assert artifacts.touched == [uploaded["id"]]
+
+
+def test_given_committed_mutation_when_retried_then_returns_same_revision() -> None:
+    # Arrange
+    client, _repository = _create_client()
+    payload = {
+        "expectedRevision": 0,
+        "mutationId": "ambiguous-success-save",
+        "messages": [{"role": "user", "content": "save exactly once"}],
+    }
+
+    # Act
+    first = client.put("/api/chat-history/sessions/web-session-1", json=payload)
+    replay = client.put("/api/chat-history/sessions/web-session-1", json=payload)
+
+    # Assert
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json()["revision"] == first.json()["revision"] == 1
+
+
+def test_given_oversized_attachments_when_exporting_then_rejects_before_download(
+    monkeypatch,
+) -> None:
+    # Arrange
+    monkeypatch.setattr(chat_history_api, "MAX_EXPORT_BYTES", 10)
     client, _repository = _create_client()
     client.put(
         "/api/chat-history/sessions/web-session-1",
         json={
-            "clientRevision": 2,
-            "messages": [{"role": "user", "content": "newer"}],
+            "expectedRevision": 0,
+            "mutationId": "oversized-export-save",
+            "messages": [{"role": "user", "content": "large export"}],
         },
     )
-
-    # Act
-    stale = client.put(
-        "/api/chat-history/sessions/web-session-1",
-        json={
-            "clientRevision": 1,
-            "messages": [{"role": "user", "content": "older"}],
-        },
-    )
-
-    # Assert
-    assert stale.status_code == 409
-    assert client.get("/api/chat-history/sessions/web-session-1").json()["messages"][0][
-        "content"
-    ] == "newer"
-
-
-def test_given_metadata_failure_when_deleting_file_then_retry_removes_metadata() -> None:
-    # Arrange
-    class FailOnceRepository(InMemoryChatHistoryRepository):
-        def __init__(self) -> None:
-            super().__init__()
-            self.fail_once = True
-
-        async def remove_attachment(
-            self,
-            owner_id: str,
-            session_id: str,
-            attachment_id: str,
-        ) -> dict:
-            if self.fail_once:
-                self.fail_once = False
-                raise ChatHistoryError("Cosmos unavailable")
-            return await super().remove_attachment(owner_id, session_id, attachment_id)
-
-    repository = FailOnceRepository()
-    client, _repository = _create_client(repository=repository)
-    client.put(
-        "/api/chat-history/sessions/web-session-1",
-        json={"messages": [{"role": "user", "content": "delete file"}]},
-    )
-    uploaded = client.post(
+    client.post(
         "/api/chat-history/sessions/web-session-1/files",
-        files={"file": ("coordinates.csv", b"lat,lng\n", "text/csv")},
-    ).json()
-    route = f"/api/chat-history/sessions/web-session-1/files/{uploaded['id']}"
+        files={"file": ("coordinates.csv", b"12345678901", "text/csv")},
+    )
 
     # Act
-    first = client.delete(route)
-    second = client.delete(route)
+    exported = client.get("/api/chat-history/sessions/web-session-1/export")
 
     # Assert
-    assert first.status_code == 503
-    assert second.status_code == 204
-    session = client.get("/api/chat-history/sessions/web-session-1").json()
-    assert session["attachments"] == []
+    assert exported.status_code == 413
+    assert exported.json()["detail"] == "Test bundle exceeds the 100 MB export limit."

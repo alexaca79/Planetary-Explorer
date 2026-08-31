@@ -12,6 +12,13 @@ param enableHealthProbes bool = true
 @description('Exact HTTPS frontend origin allowed by credentialed CORS.')
 @minLength(1)
 param frontendUrl string
+@description('Comma-separated host names accepted by the API. Include custom API domains when configured.')
+param allowedHosts string = '*.azurecontainerapps.io'
+@description('Maximum accepted API request body size in bytes.')
+@minValue(1048576)
+param maxRequestBodyBytes int = 33554432
+@description('Expose interactive OpenAPI documentation routes.')
+param enableApiDocs bool = false
 
 @secure()
 param azureOpenAiApiKey string = ''
@@ -128,9 +135,11 @@ param enableMpcPro bool = false
 @description('STAC API base URL for the private GeoCatalog (MPC Pro). Surfaced to the API container as MPC_PRO_STAC_URL. Empty disables the Pro path even if enableMpcPro=true.')
 param mpcProStacUrl string = ''
 
+@description('Comma-separated exact Azure Storage FQDNs allowed to receive MPC Pro collection SAS tokens. Empty disables SAS signing.')
+param mpcProAssetHosts string = ''
+
 @description('Fabric workspace ID containing the lakehouse the backend queries. Surfaced as FABRIC_LAKEHOUSE_WORKSPACE_ID.')
 param fabricWorkspaceId string = ''
-
 @description('Fabric lakehouse ID inside ``fabricWorkspaceId``. Surfaced as FABRIC_LAKEHOUSE_ID.')
 param fabricLakehouseId string = ''
 
@@ -148,11 +157,14 @@ param collectionSelectorDisambiguate bool = true
 @description('Key Vault name hosting forecast provider URL secrets. Empty disables KV-backed forecast wiring.')
 param keyVaultName string = ''
 
-@description('Key Vault URI (https://<name>.vault.azure.net/). Required when keyVaultName is set.')
+@description('Key Vault URI. Required when keyVaultName is set.')
 param keyVaultUri string = ''
 
 @description('Master switch for the Forecast Agent. Surfaced as FORECAST_AGENT_ENABLED ("1"/"0").')
 param forecastAgentEnabled bool = true
+
+@description('Direct CPU weather stub URL. When set, it supplies Aurora and Earth-2 demo providers without Key Vault.')
+param weatherStubUrl string = ''
 
 @description('True when aurora-endpoint-url secret exists in the vault. Gates the Container App secret + env var so we never reference a non-existent KV secret.')
 param auroraEndpointUrlConfigured bool = false
@@ -365,6 +377,26 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: frontendUrl
             }
             {
+              name: 'ALLOWED_HOSTS'
+              value: allowedHosts
+            }
+            {
+              name: 'MAX_REQUEST_BODY_BYTES'
+              value: string(maxRequestBodyBytes)
+            }
+            {
+              name: 'ENABLE_API_DOCS'
+              value: enableApiDocs ? 'true' : 'false'
+            }
+            {
+              name: 'FORECAST_AGENT_ENABLED'
+              value: forecastAgentEnabled ? '1' : '0'
+            }
+            {
+              name: 'MAI_WEATHER_SCORE_PATH'
+              value: maiWeatherScorePath
+            }
+            {
               // MPC Pro MCP sidecar URL (internal Container Apps FQDN). Empty
               // disables the MCP-first catalog inventory path regardless of
               // USE_MPC_MCP; the backend falls back to direct STAC calls.
@@ -411,6 +443,10 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               // on the target catalog so the token request succeeds.
               name: 'MPC_PRO_STAC_URL'
               value: mpcProStacUrl
+            }
+            {
+              name: 'MPC_PRO_ASSET_HOSTS'
+              value: mpcProAssetHosts
             }
             {
               // Fabric lakehouse coordinates. Empty values are treated by
@@ -500,6 +536,18 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
           ] : [],
           // Forecast provider URLs from Key Vault (matched against the
           // secrets[] entries above; secretRef name must match secret name).
+          (!empty(weatherStubUrl) && !auroraEndpointUrlConfigured) ? [
+            {
+              name: 'AURORA_ENDPOINT_URL'
+              value: weatherStubUrl
+            }
+          ] : [],
+          (!empty(weatherStubUrl) && !earth2FcnEndpointUrlConfigured) ? [
+            {
+              name: 'EARTH2_FCN_ENDPOINT_URL'
+              value: weatherStubUrl
+            }
+          ] : [],
           (!empty(keyVaultName) && auroraEndpointUrlConfigured) ? [
             {
               name: 'AURORA_ENDPOINT_URL'

@@ -17,6 +17,7 @@ from connectors.weather.provider import Capability  # noqa: E402
 
 from agents.forecast.messages import ForecastAgentQuery  # noqa: E402
 from agents.forecast.router import RoutingDecision, route  # noqa: E402
+from agents.forecast import workflow  # noqa: E402
 
 
 # ── Fake providers ────────────────────────────────────────────────────
@@ -33,6 +34,17 @@ def _providers() -> list[_FakeProvider]:
         _FakeProvider("earth2-fcn", "NVIDIA", (Capability.GLOBAL, Capability.MEDIUM_RANGE_10D)),
         _FakeProvider("mai-weather-1.x", "Microsoft", (Capability.GLOBAL, Capability.MEDIUM_RANGE_10D)),
     ]
+
+
+@pytest.mark.asyncio
+async def test_given_maf_unavailable_when_forecast_runs_then_it_fails_closed(monkeypatch):
+    # Arrange
+    monkeypatch.setattr(workflow, "is_available", lambda: False)
+    query = ForecastAgentQuery(lat=43.6532, lon=-79.3832, user_query="Toronto forecast")
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Microsoft Agent Framework is required"):
+        await workflow.forecast(query)
 
 
 # ── Mode 1: explicit allow-list wins ──────────────────────────────────

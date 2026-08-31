@@ -114,7 +114,7 @@ def test_load_agent_prompt_includes_pro_block():
     from prompts.load_agent_prompt import LOAD_AGENT_USER_PROMPT_TEMPLATE
 
     rendered = LOAD_AGENT_USER_PROMPT_TEMPLATE.format(
-        query="show NAIP imagery in Washington",
+        query="show tenant aerial imagery over Jasper, Alberta in 2026",
         has_rendered_map=False,
         loaded_collections="",
         has_bbox=False,
@@ -123,11 +123,12 @@ def test_load_agent_prompt_includes_pro_block():
         time_range=None,
         has_pin=False,
         pin_lat_lng="null",
-        location_name="Washington",
+        location_name="Jasper, Alberta, Canada",
         layer1_stac_query="null",
         layer1_reasoning="null",
         stac_mode="pro",
-        available_pro_collections="naip-test",
+        available_pro_collections="canada-aerial-2026",
+        catalog_matches="canada-aerial-2026",
         prior_query="null",
         prior_clarification_question="null",
         prior_clarification_options="",
@@ -136,7 +137,7 @@ def test_load_agent_prompt_includes_pro_block():
         prior_clarification_history="(none)",
     )
     assert "stac_mode=pro" in rendered
-    assert "available_pro_collections=[naip-test]" in rendered
+    assert "available_pro_collections=[canada-aerial-2026]" in rendered
     # Critical anti-pattern guard: prompt must steer LLM away from
     # public PC collection ids when in Pro mode.
     assert "pro mode" in rendered.lower()

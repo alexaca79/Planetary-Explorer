@@ -36,6 +36,7 @@ import pytest
 from agents.analyst_agent import AnalystAgent, get_analyst_agent  # noqa: F401
 from agents.analyst_agent.tools import create_analyst_functions
 from pipeline.contracts import AnalysisPlan, AnalysisRequest, SynthesizedResponse
+from quickstart_cache import QUICKSTART_QUERIES
 
 
 # ---------------------------------------------------------------------------
@@ -62,85 +63,85 @@ from pipeline.contracts import AnalysisPlan, AnalysisRequest, SynthesizedRespons
 
 MODULE_1_STAC: List[Dict[str, Any]] = [
     {
-        "id": "stac_hls_athens",
+        "id": "stac_hls_calgary",
         "module": 1,
-        "query": "Show Harmonized Landsat Sentinel-2 imagery of Athens",
+        "query": "Show HLS imagery over Calgary, Canada from 2026-05-01 to 2026-08-26",
         "collection_id": "hls2-s30",
         "expected_tools": [],
-        "notes": "Layer 1 LOAD only — REQ-LOAD-3: 'Displaying N hls2-s30 image(s) of Athens.'",
+        "notes": "Layer 1 LOAD only for harmonized imagery over Calgary.",
     },
     {
-        "id": "stac_modis_california",
+        "id": "stac_modis_alberta",
         "module": 1,
-        "query": "Show wildfire MODIS data for California",
+        "query": "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
         "collection_id": "modis-14A1-061",
         "expected_tools": [],
-        "notes": "LOAD only — fire data.",
+        "notes": "LOAD only for 2026 fire data.",
     },
     {
-        "id": "stac_jrc_bangladesh",
+        "id": "stac_landsat_halifax",
         "module": 1,
-        "query": "Display JRC Global Surface Water in Bangladesh",
-        "collection_id": "jrc-gsw",
+        "query": "Show Landsat imagery over Halifax, Canada from 2026-01-01 to 2026-08-26",
+        "collection_id": "landsat-c2-l2",
         "expected_tools": [],
-        "notes": "LOAD only — water occurrence.",
+        "notes": "LOAD only for coastal surface reflectance.",
     },
     {
-        "id": "stac_modis_ukraine",
+        "id": "stac_modis_saskatchewan",
         "module": 1,
-        "query": "Show modis vedgetation indices for Ukraine",
+        "query": "Show MODIS vegetation indices over Saskatchewan from 2026-04-01 to 2026-08-26",
         "collection_id": "modis-13Q1-061",
         "expected_tools": [],
-        "notes": "LOAD only — vegetation indices (typo in query is preserved as in UI).",
+        "notes": "LOAD only for Prairie vegetation indices.",
     },
     {
-        "id": "stac_dem_grand_canyon",
+        "id": "stac_dem_banff",
         "module": 1,
-        "query": "Show elevation map of Grand Canyon",
+        "query": "Show Copernicus DEM terrain around Banff, Canada for 2026 analysis",
         "collection_id": "cop-dem-glo-30",
         "expected_tools": [],
-        "notes": "LOAD only — DEM.",
+        "notes": "LOAD only for Canadian terrain.",
     },
     {
-        "id": "stac_s1rtc_baltimore",
+        "id": "stac_s1rtc_vancouver",
         "module": 1,
-        "query": "Show Sentinel 1 RTC for Baltimore",
+        "query": "Show Sentinel-1 RTC radar imagery over Vancouver, Canada from 2026-01-01 to 2026-08-26",
         "collection_id": "sentinel-1-rtc",
         "expected_tools": [],
-        "notes": "LOAD only — SAR backscatter.",
+        "notes": "LOAD only for Canadian SAR backscatter.",
     },
 ]
 
 MODULE_2_RASTER: List[Dict[str, Any]] = [
     {
-        "id": "raster_ndvi_athens",
+        "id": "raster_ndvi_calgary",
         "module": 2,
-        "query": "What is the NDVI value at this pin location?",
+        "query": "What is the 2026 NDVI value at this Calgary pin?",
         "collection_id": "hls2-s30",
-        "pin": (38.0986, 23.5861),  # Athens
+        "pin": (51.0447, -114.0719),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
         "notes": "Pin + loaded raster + numeric value question -> sample_raster_value.",
     },
     {
-        "id": "raster_fire_california",
+        "id": "raster_fire_alberta",
         "module": 2,
-        "query": "What is the fire confidence value (FireMask) at this pixel?",
+        "query": "What is the 2026 fire-confidence value at this Alberta pixel?",
         "collection_id": "modis-14A1-061",
-        "pin": (32.4538, -116.7265),
+        "pin": (56.7267, -111.3790),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
         "notes": "Categorical fire confidence raster.",
     },
     {
-        "id": "raster_water_bangladesh",
+        "id": "raster_coast_halifax",
         "module": 2,
-        "query": "What is the water occurrence percentage at this location?",
-        "collection_id": "jrc-gsw",
-        "pin": (23.6238, 90.8176),
+        "query": "Sample the 2026 coastal surface-reflectance bands at this Halifax location.",
+        "collection_id": "landsat-c2-l2",
+        "pin": (44.6488, -63.5752),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
-        "notes": "Percentage raster.",
+        "notes": "Coastal surface-reflectance sampling.",
     },
     {
         "id": "raster_ndsi_quebec",
@@ -153,21 +154,21 @@ MODULE_2_RASTER: List[Dict[str, Any]] = [
         "notes": "Snow index raster.",
     },
     {
-        "id": "raster_elev_grand_canyon",
+        "id": "raster_elev_banff",
         "module": 2,
-        "query": "What is the exact elevation in meters at this point?",
+        "query": "What is the elevation in metres at this Banff point for 2026 analysis?",
         "collection_id": "cop-dem-glo-30",
-        "pin": (36.0544, -112.1401),
+        "pin": (51.1784, -115.5708),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
         "notes": "DEM raster sampling.",
     },
     {
-        "id": "raster_sar_baltimore",
+        "id": "raster_sar_vancouver",
         "module": 2,
         "query": "What are the VV and VH backscatter values in dB?",
         "collection_id": "sentinel-1-rtc",
-        "pin": (39.2547, -76.6287),
+        "pin": (49.2827, -123.1207),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
         "notes": "Multi-band SAR sampling.",
@@ -176,41 +177,41 @@ MODULE_2_RASTER: List[Dict[str, Any]] = [
 
 MODULE_3_SCREENSHOT: List[Dict[str, Any]] = [
     {
-        "id": "screenshot_landcover_athens",
+        "id": "screenshot_landcover_calgary",
         "module": 3,
         "query": "Describe what you see in this satellite image. What land cover types are visible?",
         "collection_id": "hls2-s30",
-        "pin": (38.0986, 23.5861),
+        "pin": (51.0447, -114.0719),
         "has_screenshot": True,
         "expected_tools": ["describe_map_screenshot"],
         "notes": "Vision-only — describes the visible scene; no numeric sampling.",
     },
     {
-        "id": "screenshot_fire_california",
+        "id": "screenshot_fire_alberta",
         "module": 3,
         "query": "Can you see any active fire hotspots or burn scars in this thermal imagery?",
         "collection_id": "modis-14A1-061",
-        "pin": (32.4538, -116.7265),
+        "pin": (56.7267, -111.3790),
         "has_screenshot": True,
         "expected_tools": ["describe_map_screenshot"],
         "notes": "Vision describes thermal anomalies pattern.",
     },
     {
-        "id": "screenshot_water_bangladesh",
+        "id": "screenshot_coast_halifax",
         "module": 3,
         "query": "Describe the water bodies and flood patterns visible in this water occurrence map.",
-        "collection_id": "jrc-gsw",
-        "pin": (23.6238, 90.8176),
+        "collection_id": "landsat-c2-l2",
+        "pin": (44.6488, -63.5752),
         "has_screenshot": True,
         "expected_tools": ["describe_map_screenshot"],
-        "notes": "Vision over JRC water layer.",
+        "notes": "Vision over a Halifax coastal layer.",
     },
     {
-        "id": "screenshot_dem_grand_canyon",
+        "id": "screenshot_dem_banff",
         "module": 3,
-        "query": "Describe the terrain features visible. Where are the canyon walls and rim?",
+        "query": "Describe the 2026 Banff terrain view, including valleys, ridges, and steep slopes.",
         "collection_id": "cop-dem-glo-30",
-        "pin": (36.0544, -112.1401),
+        "pin": (51.1784, -115.5708),
         "has_screenshot": True,
         "expected_tools": ["describe_map_screenshot"],
         "notes": "Vision over DEM.",
@@ -219,64 +220,63 @@ MODULE_3_SCREENSHOT: List[Dict[str, Any]] = [
 
 MODULE_4_TERRAIN: List[Dict[str, Any]] = [
     {
-        "id": "terrain_grand_canyon",
+        "id": "terrain_banff",
         "module": 4,
         "query": "What is the elevation range and slope distribution at this location?",
         "collection_id": "cop-dem-glo-30",
-        "pin": (36.0544, -112.1401),
+        "pin": (51.1784, -115.5708),
         "has_screenshot": True,
         "expected_tools": ["get_terrain_stats"],
         "notes": "Pure terrain stats — slope + elevation.",
     },
     {
-        "id": "terrain_rainier",
+        "id": "terrain_vancouver",
         "module": 4,
         "query": (
-            "Is this location suitable for a construction permit? "
-            "Analyze terrain constraints including slope, flood risk, "
-            "and flat areas."
+            "For 2026, is this Metro Vancouver location suitable for a construction permit? "
+            "Analyze slope, flood exposure, and flat areas."
         ),
         "collection_id": "cop-dem-glo-30",
-        "pin": (46.8523, -121.7603),
+        "pin": (49.2827, -123.1207),
         "has_screenshot": True,
         "expected_tools": ["get_terrain_stats"],
         "notes": "Site-suitability rolls flat-area + slope into terrain agent.",
     },
     {
-        "id": "terrain_houston",
+        "id": "terrain_halifax",
         "module": 4,
         "query": (
-            "Analyze the flood risk and environmental sensitivity for "
-            "this site. What is the permitting recommendation?"
+            "Assess 2026 coastal flood exposure and environmental sensitivity "
+            "for this Halifax site. What is the permitting recommendation?"
         ),
-        "collection_id": "hls2-s30",  # setupQuery for this one is "Show HLS imagery of Houston"
-        "pin": (29.7604, -95.3698),
+        "collection_id": "landsat-c2-l2",
+        "pin": (44.6488, -63.5752),
         "has_screenshot": True,
         "expected_tools": ["get_terrain_stats"],
         "notes": "Flood-risk question routed through terrain agent.",
     },
     {
-        "id": "terrain_denver",
+        "id": "terrain_calgary",
         "module": 4,
         "query": (
-            "Which direction do the slopes face? What is the sun "
-            "exposure rating for solar panel installation?"
+            "For 2026 planning, which direction do the Calgary-area slopes face? "
+            "What is the sun exposure rating for solar installation?"
         ),
-        "collection_id": "3dep-lidar-hag",
-        "pin": (39.7392, -104.9903),
+        "collection_id": "cop-dem-glo-30",
+        "pin": (51.0447, -114.0719),
         "has_screenshot": True,
         "expected_tools": ["get_terrain_stats"],
         "notes": "Aspect analysis via terrain agent.",
     },
     {
-        "id": "terrain_everglades",
+        "id": "terrain_winnipeg",
         "module": 4,
         "query": (
-            "Is this area suitable for a solar farm? Check flat "
-            "areas, water proximity, and setback requirements."
+            "Is this Winnipeg-area site suitable for a solar farm in 2026? "
+            "Check flat areas, water proximity, and setback requirements."
         ),
         "collection_id": "jrc-gsw",
-        "pin": (25.7617, -80.1918),
+        "pin": (49.8954, -97.1385),
         "has_screenshot": True,
         "expected_tools": ["get_terrain_stats"],
         "notes": "Multi-criteria site question -> terrain.",
@@ -285,43 +285,41 @@ MODULE_4_TERRAIN: List[Dict[str, Any]] = [
 
 MODULE_5_MOBILITY: List[Dict[str, Any]] = [
     {
-        "id": "mobility_hindu_kush",
+        "id": "mobility_kananaskis",
         "module": 5,
         "query": (
-            "Can vehicles traverse from the valley to the mountain "
-            "pass? Assess terrain obstacles, steep slopes, and route "
-            "feasibility for ground vehicles."
+            "For 2026 planning, can vehicles traverse this Kananaskis route? "
+            "Assess terrain obstacles, steep slopes, and ground-vehicle feasibility."
         ),
         "collection_id": "cop-dem-glo-30",
-        "pin": (34.4378, 70.4517),  # Jalalabad, AF
+        "pin": (50.7000, -115.0000),
         "has_screenshot": True,
         "expected_tools": ["get_mobility_path"],
         "notes": "Vehicle traversability -> mobility.",
     },
     {
-        "id": "mobility_kathmandu",
+        "id": "mobility_north_shore",
         "module": 5,
         "query": (
-            "Can a search and rescue helicopter land safely in this "
-            "mountainous terrain? Analyze slope gradients, flat "
-            "landing zones, and vegetation density."
+            "For a 2026 search-and-rescue plan, can a helicopter land safely "
+            "in the North Shore Mountains? Analyze slopes, flat landing zones, "
+            "and vegetation density."
         ),
         "collection_id": "cop-dem-glo-30",
-        "pin": (27.7172, 85.3240),
+        "pin": (49.3500, -123.1000),
         "has_screenshot": True,
         "expected_tools": ["get_mobility_path"],
         "notes": "SAR landing zone analysis -> mobility.",
     },
     {
-        "id": "mobility_darfur",
+        "id": "mobility_yukon",
         "module": 5,
         "query": (
-            "Assess route conditions for a humanitarian aid convoy. "
-            "Identify water crossings, fire hazards, and terrain "
-            "barriers for movement planning."
+            "Assess this 2026 Yukon emergency-supply route. Identify water "
+            "crossings, wildfire exposure, steep slopes, and terrain barriers."
         ),
         "collection_id": "cop-dem-glo-30",
-        "pin": (13.6293, 25.3494),  # El Fasher
+        "pin": (60.7212, -135.0568),
         "has_screenshot": True,
         "expected_tools": ["get_mobility_path"],
         "notes": "Humanitarian corridor -> mobility.",
@@ -330,58 +328,57 @@ MODULE_5_MOBILITY: List[Dict[str, Any]] = [
 
 MODULE_6_EXTREME_WEATHER: List[Dict[str, Any]] = [
     {
-        "id": "weather_bangkok_heat",
+        "id": "weather_toronto_heat",
         "module": 6,
         "query": (
             "What are the projected daily maximum and minimum "
-            "temperatures for Bangkok under the worst-case SSP585 "
-            "scenario? Is extreme heat increasing?"
+            "temperatures for Toronto during 2026 under SSP585? "
+            "Is extreme heat increasing?"
         ),
         "collection_id": None,  # NEX-GDDP is NetCDF, not a tile collection
-        "pin": (13.7563, 100.5018),
+        "pin": (43.6532, -79.3832),
         "has_screenshot": False,
         "expected_tools": ["get_extreme_weather_projection"],
         "notes": "Future projection / SSP scenario -> extreme_weather.",
     },
     {
-        "id": "weather_new_orleans_precip",
+        "id": "weather_vancouver_precip",
         "module": 6,
         "query": (
             "What is the projected annual precipitation and peak "
-            "daily rainfall for New Orleans? How does this relate "
-            "to coastal flood risk and storm surge?"
+            "daily rainfall for Vancouver in 2026? How does this relate "
+            "to coastal and Fraser River flood risk?"
         ),
         "collection_id": None,
-        "pin": (29.9511, -90.0715),
+        "pin": (49.2827, -123.1207),
         "has_screenshot": False,
         "expected_tools": ["get_extreme_weather_projection"],
         "notes": "Precipitation projection.",
     },
     {
-        "id": "weather_dhaka_monsoon",
+        "id": "weather_montreal_precip",
         "module": 6,
         "query": (
-            "What are the projected monsoon precipitation levels "
-            "for Dhaka? Is peak daily rainfall increasing, and "
-            "what does this mean for urban flooding?"
+            "What are the projected 2026 precipitation levels for Montreal? "
+            "Is peak daily rainfall increasing, and what does this mean "
+            "for urban flooding?"
         ),
         "collection_id": None,
-        "pin": (23.8103, 90.4125),
+        "pin": (45.5019, -73.5674),
         "has_screenshot": False,
         "expected_tools": ["get_extreme_weather_projection"],
         "notes": "Monsoon projection.",
     },
     {
-        "id": "weather_maputo_scenarios",
+        "id": "weather_halifax_scenarios",
         "module": 6,
         "query": (
             "Compare the moderate (SSP245) and worst-case (SSP585) "
-            "climate scenarios for Maputo. How do temperature and "
-            "precipitation projections differ for this cyclone-prone "
-            "coast?"
+            "climate scenarios for Halifax during 2026. How do temperature "
+            "and precipitation projections differ for this Atlantic coast?"
         ),
         "collection_id": None,
-        "pin": (-25.9692, 32.5732),
+        "pin": (44.6488, -63.5752),
         "has_screenshot": False,
         "expected_tools": ["get_extreme_weather_projection"],
         "notes": "SSP scenario comparison.",
@@ -401,11 +398,11 @@ SPECIAL_CASES: List[Dict[str, Any]] = [
         "notes": "REQ-CLARIFY-2: vague + no pin + no collection -> clarify.",
     },
     {
-        "id": "compare_temporal_athens",
+        "id": "compare_temporal_toronto",
         "module": 0,
-        "query": "Compare NDVI in Athens between 2015 and 2024.",
+        "query": "Compare NDVI in Toronto between June 1 and August 26, 2026.",
         "collection_id": "hls2-s30",
-        "pin": (38.0986, 23.5861),
+        "pin": (43.6532, -79.3832),
         "has_screenshot": False,
         "expected_tools": ["compare_temporal"],
         "notes": "REQ-COMPARE-1 / G9: dual-datetime same-location comparison.",
@@ -493,6 +490,29 @@ def _make_fake_invoke(expected_tools: List[str]):
 # ---------------------------------------------------------------------------
 # Tool catalog completeness — independent of any agent run.
 # ---------------------------------------------------------------------------
+
+
+def test_quickstart_cache_contains_exactly_twelve_canadian_2026_queries() -> None:
+    # Arrange
+    legacy_locations = {
+        "afghanistan",
+        "australia",
+        "bangladesh",
+        "california",
+        "ecuador",
+        "philippines",
+        "ukraine",
+    }
+
+    # Act
+    queries = list(QUICKSTART_QUERIES)
+    locations = [str(value["location"]).casefold() for value in QUICKSTART_QUERIES.values()]
+
+    # Assert
+    assert len(queries) == 12
+    assert all("2026" in query for query in queries)
+    assert all("canada" in location for location in locations)
+    assert not any(legacy in query for legacy in legacy_locations for query in queries)
 
 
 def test_tool_catalog_has_all_required_tools():
@@ -597,7 +617,7 @@ async def test_analyze_agent_wraps_analyst_response_correctly():
     from pipeline.layer1_agents import AnalyzeAgent
     from pipeline.contracts import ActionDecision
 
-    case = MODULE_4_TERRAIN[0]  # terrain_grand_canyon
+    case = MODULE_4_TERRAIN[0]  # terrain_banff
     request = _build_request(case)
     decision = ActionDecision(
         action="ANALYZE",

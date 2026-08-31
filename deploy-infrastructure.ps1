@@ -401,6 +401,7 @@ if ($LASTEXITCODE -eq 0) {
         $env:AZURE_CHAT_ARTIFACT_CONTAINER = $deploymentOutputs.AZURE_CHAT_ARTIFACT_CONTAINER.value
         $env:AZURE_WEB_SEARCH_MCP_URL = $deploymentOutputs.AZURE_WEB_SEARCH_MCP_URL.value
         $env:WEB_SEARCH_MCP_API_KEY = $WebSearchMcpApiKey
+        $env:AZURE_WEATHER_STUB_URL = $deploymentOutputs.AZURE_WEATHER_STUB_URL.value
         $env:AZURE_GEOFM_MCP_URL = $deploymentOutputs.AZURE_GEOFM_MCP_URL.value
         $env:GEOFM_MCP_API_KEY = $GeoFmMcpApiKey
         $env:GEOFM_OWNER_SIGNING_KEY = $GeoFmOwnerSigningKey

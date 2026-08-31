@@ -18,6 +18,7 @@ interface HeaderProps {
   onModelChange?: (modelId: string) => void;
   selectedModel?: string;
   onReasoningEffortChange?: (effort: string) => void;
+  onModelAvailabilityChange?: (ready: boolean) => void;
   selectedReasoningEffort?: string;
   stacMode?: StacMode;
   onStacModeChange?: (next: StacMode) => void;
@@ -45,7 +46,7 @@ const GlobeLogo: React.FC = () => (
   </span>
 );
 
-const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, onModelChange, selectedModel, onReasoningEffortChange, selectedReasoningEffort, stacMode, onStacModeChange, proEnabled }) => {
+const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, onModelChange, selectedModel, onReasoningEffortChange, onModelAvailabilityChange, selectedReasoningEffort, stacMode, onStacModeChange, proEnabled }) => {
   return (
     <div className="top-header">
       <div style={{ padding: '0' }}>
@@ -62,6 +63,7 @@ const Header: React.FC<HeaderProps> = ({ onReturnToLanding, onRestartSession, on
           onModelChange={onModelChange}
           selectedModel={selectedModel}
           onReasoningEffortChange={onReasoningEffortChange}
+          onAvailabilityChange={onModelAvailabilityChange}
           selectedReasoningEffort={selectedReasoningEffort}
           apiBaseUrl={API_BASE_URL}
         />

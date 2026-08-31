@@ -4,9 +4,8 @@ Vision Agent Tools - Standalone functions for Azure AI Agent Service FunctionToo
 These standalone functions are compatible with Azure AI Agent Service FunctionTool.
 
 Each function uses docstring-based parameter descriptions and returns str.
-Session context (screenshot, STAC items, map bounds) is shared via module-level
-_session_context dict, which must be set via set_session_context() before each
-agent invocation.
+Session context (screenshot, STAC items, map bounds) is request-local and must
+be set via set_session_context() before each agent invocation.
 
 Usage:
     from agents.vision_tools import create_vision_functions, set_session_context
@@ -20,6 +19,8 @@ import json
 import math
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from typing import Dict, Any, Optional, List, Set, Callable
 from datetime import datetime
 from calendar import monthrange
@@ -31,16 +32,24 @@ logger = logging.getLogger(__name__)
 # MODULE-LEVEL STATE
 # ============================================================================
 
-_session_context: Dict[str, Any] = {
+_DEFAULT_SESSION_CONTEXT: Dict[str, Any] = {
     'screenshot_base64': None,
     'map_bounds': None,
     'stac_items': [],
     'loaded_collections': [],
     'tile_urls': [],
+    'stac_mode': 'public',
 }
+_session_context_var: ContextVar[Dict[str, Any]] = ContextVar(
+    'vision_session_context',
+    default=_DEFAULT_SESSION_CONTEXT,
+)
+_tool_calls_var: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar(
+    'vision_tool_calls',
+    default=None,
+)
 
 _vision_client = None
-_tool_calls: List[Dict[str, Any]] = []
 _AzureOpenAI = None
 
 
@@ -50,37 +59,47 @@ def set_session_context(
     stac_items: Optional[List[Dict[str, Any]]] = None,
     loaded_collections: Optional[List[str]] = None,
     tile_urls: Optional[List[str]] = None,
+    stac_mode: str = 'public',
 ):
     """Set the session context for tool functions. Call before each agent invocation."""
-    global _session_context
-    _session_context = {
+    _session_context_var.set({
         'screenshot_base64': screenshot_base64,
         'map_bounds': map_bounds or {},
         'stac_items': stac_items or [],
         'loaded_collections': loaded_collections or [],
         'tile_urls': tile_urls or [],
-    }
+        'stac_mode': 'pro' if stac_mode == 'pro' else 'public',
+    })
+
+
+def _get_session_context() -> Dict[str, Any]:
+    """Return the current request's vision-tool context."""
+    return _session_context_var.get()
 
 
 def get_tool_calls() -> List[Dict[str, Any]]:
     """Get list of tool calls made during this invocation."""
-    return list(_tool_calls)
+    return list(_tool_calls_var.get() or [])
 
 
 def clear_tool_calls():
     """Clear tool call history. Call before each agent invocation."""
-    global _tool_calls
-    _tool_calls = []
+    _tool_calls_var.set([])
 
 
 def _log_tool_call(tool_name: str, args: Dict[str, Any], result_preview: str = ""):
     """Log a tool call for tracing."""
-    _tool_calls.append({
+    tool_call = {
         "tool": tool_name,
         "timestamp": datetime.utcnow().isoformat(),
         "args": args,
         "result_preview": result_preview[:200] if result_preview else ""
-    })
+    }
+    tool_calls = _tool_calls_var.get()
+    if tool_calls is None:
+        tool_calls = []
+        _tool_calls_var.set(tool_calls)
+    tool_calls.append(tool_call)
     logger.info(f"[TOOL] TOOL CALL: {tool_name} | Args: {args}")
 
 
@@ -220,6 +239,17 @@ def _fetch_stac_item_sync(collection: str, item_id: str) -> Optional[Dict[str, A
     return None
 
 
+def _fetch_pro_stac_item_sync(
+    collection: str,
+    item_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch a private GeoCatalog item through the authenticated Pro client."""
+    from pro_stac_client import pro_get_item_sync, pro_sign_item_assets_sync
+
+    item = pro_get_item_sync(collection, item_id)
+    return pro_sign_item_assets_sync(item) if item else None
+
+
 def _parse_tile_url(tile_url: str) -> Dict[str, str]:
     """Parse a Planetary Computer tile URL to extract collection, item, and asset."""
     from urllib.parse import urlparse, parse_qs
@@ -230,6 +260,137 @@ def _parse_tile_url(tile_url: str) -> Dict[str, str]:
         'item': params.get('item', [''])[0],
         'assets': params.get('assets', [''])[0]
     }
+
+
+def _rehydrate_stac_items_for_sampling(
+    stac_items: List[Dict[str, Any]],
+    tile_urls: List[Any],
+    *,
+    stac_mode: str = 'public',
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch current STAC assets for restored items that only retain stable IDs."""
+    fetch_item = (
+        _fetch_pro_stac_item_sync
+        if stac_mode == 'pro'
+        else _fetch_stac_item_sync
+    )
+    valid_items = [item for item in stac_items if isinstance(item, dict)]
+
+    def covers_pin(item: Dict[str, Any]) -> bool:
+        bbox = item.get('bbox')
+        if latitude is None or longitude is None or not isinstance(bbox, list) or len(bbox) < 4:
+            return True
+        return bbox[0] <= longitude <= bbox[2] and bbox[1] <= latitude <= bbox[3]
+
+    candidates = [
+        (index, item)
+        for index, item in enumerate(valid_items)
+        if not item.get('assets') and item.get('collection') and item.get('id')
+    ]
+    candidates.sort(key=lambda candidate: 0 if covers_pin(candidate[1]) else 1)
+    selected = candidates[:5]
+    if selected:
+        def hydrate(candidate: tuple[int, Dict[str, Any]]) -> tuple[int, Dict[str, Any]]:
+            index, item = candidate
+            try:
+                fetched = fetch_item(str(item['collection']), str(item['id']))
+            except Exception as exc:
+                logger.warning(
+                    "STAC item rehydration failed for %s/%s: %s",
+                    item.get('collection'),
+                    item.get('id'),
+                    exc,
+                )
+                fetched = None
+            return index, fetched or item
+
+        with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+            hydrated_pairs = list(executor.map(hydrate, selected))
+        selected_indices = {index for index, _item in hydrated_pairs}
+        merged_items = [item for _index, item in hydrated_pairs] + [
+            item for index, item in enumerate(valid_items) if index not in selected_indices
+        ]
+        return [
+            _prepare_stac_item_for_sampling(item, stac_mode)
+            for item in merged_items
+        ]
+
+    if valid_items:
+        return [
+            _prepare_stac_item_for_sampling(item, stac_mode)
+            for item in valid_items
+        ]
+
+    tile_candidates: List[tuple[str, str]] = []
+    for tile_reference in tile_urls[:5]:
+        if isinstance(tile_reference, dict):
+            tile_url = tile_reference.get('tilejson_url') or tile_reference.get('tile_url') or ''
+            parsed = _parse_tile_url(tile_url) if tile_url else {}
+            collection = tile_reference.get('collection') or parsed.get('collection')
+            item_id = tile_reference.get('item_id') or tile_reference.get('item') or parsed.get('item')
+        else:
+            parsed = _parse_tile_url(str(tile_reference))
+            collection = parsed.get('collection')
+            item_id = parsed.get('item')
+        if collection and item_id:
+            tile_candidates.append((str(collection), str(item_id)))
+
+    if tile_candidates:
+        with ThreadPoolExecutor(max_workers=len(tile_candidates)) as executor:
+            fetched_items = list(executor.map(lambda item: fetch_item(*item), tile_candidates))
+        return [
+            _prepare_stac_item_for_sampling(item, stac_mode)
+            for item in fetched_items
+            if item
+        ]
+
+    return valid_items
+
+
+def _search_stac_items_sync(
+    search_body: Dict[str, Any],
+    stac_mode: str,
+) -> List[Dict[str, Any]]:
+    """Search the active catalog without crossing the Public/Pro boundary."""
+    if stac_mode == 'pro':
+        from pro_stac_client import pro_search_sync
+
+        return pro_search_sync(search_body)
+
+    try:
+        import httpx
+
+        with httpx.Client(timeout=30) as client:
+            response = client.post(
+                "https://planetarycomputer.microsoft.com/api/stac/v1/search",
+                json=search_body,
+                headers={"Content-Type": "application/json"},
+            )
+        if response.status_code == 200:
+            features = response.json().get('features', [])
+            return [feature for feature in features if isinstance(feature, dict)]
+    except Exception as exc:
+        logger.warning("Public STAC search failed: %s", exc)
+    return []
+
+
+def _prepare_stac_item_for_sampling(
+    item: Dict[str, Any],
+    stac_mode: str,
+) -> Dict[str, Any]:
+    """Authorize assets for sampling through the active catalog."""
+    if stac_mode == 'pro':
+        from pro_stac_client import pro_sign_item_assets_sync
+
+        return pro_sign_item_assets_sync(item)
+    try:
+        import planetary_computer as pc
+
+        return pc.sign(item)
+    except Exception:
+        return item
 
 
 def _compute_ndvi_sync(red_url: str, nir_url: str, bbox: Optional[List[float]] = None) -> Dict[str, Any]:
@@ -327,7 +488,7 @@ def analyze_screenshot(question: str) -> str:
     :return: Natural language description of visible imagery
     """
     logger.info(f"[CAM] analyze_screenshot(question='{question[:50]}...')")
-    ctx = _session_context
+    ctx = _get_session_context()
     screenshot = ctx.get('screenshot_base64')
 
     if not screenshot:
@@ -399,7 +560,7 @@ def analyze_raster(metric_type: str = "general") -> str:
     :return: Quantitative analysis results as text
     """
     logger.info(f"[CHART] analyze_raster(metric_type='{metric_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     collections = ctx.get('loaded_collections', [])
     stac_items = ctx.get('stac_items', [])
 
@@ -540,7 +701,7 @@ def analyze_vegetation(analysis_type: str = "general") -> str:
     :return: Vegetation indices, health assessment, and interpretation
     """
     logger.info(f"[LEAF] analyze_vegetation(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     collections = ctx.get('loaded_collections', [])
     stac_items = ctx.get('stac_items', [])
 
@@ -633,7 +794,7 @@ def analyze_fire(analysis_type: str = "general") -> str:
     :return: Fire detection results and interpretation
     """
     logger.info(f"[FIRE] analyze_fire(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -686,7 +847,7 @@ def analyze_land_cover(analysis_type: str = "general") -> str:
     :return: Land cover types and distributions
     """
     logger.info(f"[HOUSES] analyze_land_cover(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -733,7 +894,7 @@ def analyze_snow(analysis_type: str = "general") -> str:
     :return: Snow cover percentage and seasonal patterns
     """
     logger.info(f"[SNOW] analyze_snow(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -781,7 +942,7 @@ def analyze_sar(analysis_type: str = "general") -> str:
     :return: SAR analysis results and interpretation
     """
     logger.info(f"[SIGNAL] analyze_sar(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -833,7 +994,7 @@ def analyze_water(analysis_type: str = "general") -> str:
     :return: Water occurrence, seasonality, and flood detection results
     """
     logger.info(f"[DROP] analyze_water(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -886,7 +1047,7 @@ def analyze_biomass(analysis_type: str = "general") -> str:
     :return: Biomass estimates and carbon stock interpretation
     """
     logger.info(f"[TREE] analyze_biomass(analysis_type='{analysis_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     stac_items = ctx.get('stac_items', [])
     collections = ctx.get('loaded_collections', [])
 
@@ -924,7 +1085,7 @@ def sample_raster_value(data_type: str = "auto") -> str:
     :return: Numeric value with interpretation at the pin/center location
     """
     logger.info(f"[PIN] sample_raster_value(data_type='{data_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
 
     bounds = ctx.get('map_bounds', {})
     if not bounds:
@@ -936,21 +1097,16 @@ def sample_raster_value(data_type: str = "auto") -> str:
         return "No coordinates available. Please pin a location on the map."
 
     stac_items = list(ctx.get('stac_items', []))
-    tile_urls = ctx.get('tile_urls', [])
+    tile_urls = list(ctx.get('tile_urls', []))
     collections = ctx.get('loaded_collections', [])
-
-    # If no STAC items but have tile_urls, fetch from tile URLs
-    if not stac_items and tile_urls:
-        for tile_url in tile_urls[:5]:
-            try:
-                parsed = _parse_tile_url(tile_url)
-                if parsed.get('collection') and parsed.get('item'):
-                    item = _fetch_stac_item_sync(parsed['collection'], parsed['item'])
-                    if item:
-                        stac_items.append(item)
-                        break
-            except Exception:
-                pass
+    stac_mode = 'pro' if ctx.get('stac_mode') == 'pro' else 'public'
+    stac_items = _rehydrate_stac_items_for_sampling(
+        stac_items,
+        tile_urls,
+        stac_mode=stac_mode,
+        latitude=lat,
+        longitude=lng,
+    )
 
     if not stac_items:
         return f"No STAC items available to sample. Collections: {collections}"
@@ -1340,8 +1496,6 @@ def sample_raster_value(data_type: str = "auto") -> str:
             collection_id = items_out[0][0].get('collection', '')
             if collection_id:
                 try:
-                    import httpx
-                    import planetary_computer as pc
                     buf = 0.5
                     pin_bbox = [lng - buf, lat - buf, lng + buf, lat + buf]
                     is_optical_coll = any(kw in collection_id.lower() for kw in ['sentinel-2', 'landsat', 'hls', 's30', 'l30'])
@@ -1349,54 +1503,44 @@ def sample_raster_value(data_type: str = "auto") -> str:
                     if is_optical_coll:
                         search_body["query"] = {"eo:cloud_cover": {"lt": 20}}
                         search_body["sortby"] = [{"field": "properties.datetime", "direction": "desc"}]
-                    with httpx.Client(timeout=30) as http_client:
-                        resp = http_client.post(
-                            "https://planetarycomputer.microsoft.com/api/stac/v1/search",
-                            json=search_body,
-                            headers={"Content-Type": "application/json"}
-                        )
-                        if resp.status_code == 200:
-                            for feature in resp.json().get("features", []):
-                                if point_in_bbox(lat, lng, feature.get('bbox')):
-                                    try:
-                                        signed = pc.sign(feature)
-                                    except Exception:
-                                        signed = feature
-                                    assets = signed.get('assets', {})
-                                    ak = None
-                                    tf_info = None
-                                    # NDVI-aware fallback: detect red/NIR bands
-                                    if is_ndvi_sampling:
-                                        red_key = 'B04' if 'B04' in assets else ('red' if 'red' in assets else None)
-                                        nir_key = None
-                                        for candidate in ['B08', 'B8A', 'B05', 'nir08', 'nir']:
-                                            if candidate in assets:
-                                                nir_key = candidate
-                                                break
-                                        if red_key and nir_key:
-                                            ak = (red_key, nir_key)
-                                            tf_info = {
-                                                'name': 'NDVI', 'unit_raw': 'index', 'unit_display': '',
-                                                'is_ndvi': True, 'valid_range': (-1, 1)
-                                            }
-                                    elif 'dem' in collection_id.lower() or 'cop-dem' in collection_id.lower():
-                                        ak = 'data'
-                                        tf_info = {'name': 'Elevation', 'unit_raw': 'm', 'unit_display': 'meters',
-                                                   'transform': lambda v: v, 'valid_range': (-500, 9000)}
-                                    else:
-                                        for k in ['data', 'visual', 'default']:
-                                            if k in assets:
-                                                ak = k
-                                                tf_info = {'name': collection_id, 'unit_raw': 'raw', 'unit_display': '',
-                                                           'transform': lambda v: v, 'valid_range': None}
-                                                break
-                                    if ak and tf_info:
-                                        # For tuple NDVI keys, check both bands exist
-                                        if isinstance(ak, tuple):
-                                            if ak[0] in assets and ak[1] in assets:
-                                                sorted_data.insert(0, (signed, ak, tf_info))
-                                        elif ak in assets:
-                                            sorted_data.insert(0, (signed, ak, tf_info))
+                    for feature in _search_stac_items_sync(search_body, stac_mode):
+                        if point_in_bbox(lat, lng, feature.get('bbox')):
+                            signed = _prepare_stac_item_for_sampling(feature, stac_mode)
+                            assets = signed.get('assets', {})
+                            ak = None
+                            tf_info = None
+                            # NDVI-aware fallback: detect red/NIR bands
+                            if is_ndvi_sampling:
+                                red_key = 'B04' if 'B04' in assets else ('red' if 'red' in assets else None)
+                                nir_key = None
+                                for candidate in ['B08', 'B8A', 'B05', 'nir08', 'nir']:
+                                    if candidate in assets:
+                                        nir_key = candidate
+                                        break
+                                if red_key and nir_key:
+                                    ak = (red_key, nir_key)
+                                    tf_info = {
+                                        'name': 'NDVI', 'unit_raw': 'index', 'unit_display': '',
+                                        'is_ndvi': True, 'valid_range': (-1, 1)
+                                    }
+                            elif 'dem' in collection_id.lower() or 'cop-dem' in collection_id.lower():
+                                ak = 'data'
+                                tf_info = {'name': 'Elevation', 'unit_raw': 'm', 'unit_display': 'meters',
+                                           'transform': lambda v: v, 'valid_range': (-500, 9000)}
+                            else:
+                                for k in ['data', 'visual', 'default']:
+                                    if k in assets:
+                                        ak = k
+                                        tf_info = {'name': collection_id, 'unit_raw': 'raw', 'unit_display': '',
+                                                   'transform': lambda v: v, 'valid_range': None}
+                                        break
+                            if ak and tf_info:
+                                # For tuple NDVI keys, check both bands exist
+                                if isinstance(ak, tuple):
+                                    if ak[0] in assets and ak[1] in assets:
+                                        sorted_data.insert(0, (signed, ak, tf_info))
+                                elif ak in assets:
+                                    sorted_data.insert(0, (signed, ak, tf_info))
                 except Exception as e:
                     logger.error(f"Fallback STAC search error: {e}")
 
@@ -1616,8 +1760,6 @@ def sample_raster_value(data_type: str = "auto") -> str:
             is_optical_coll = any(kw in collection_id.lower() for kw in ['sentinel-2', 'landsat', 'hls', 's30', 'l30'])
             if collection_id and (is_ndvi_sampling or is_optical_coll):
                 try:
-                    import httpx
-                    import planetary_computer as pc
                     buf = 0.05  # ~5km buffer around pin
                     pin_bbox = [lng - buf, lat - buf, lng + buf, lat + buf]
                     already_tried = {item.get('id', '') for item in stac_items}
@@ -1634,15 +1776,9 @@ def sample_raster_value(data_type: str = "auto") -> str:
                     }
                     logger.info(f"[PIN] Clear-sky fallback search: collection={collection_id}, bbox={pin_bbox}")
 
-                    with httpx.Client(timeout=30) as http_client:
-                        resp = http_client.post(
-                            "https://planetarycomputer.microsoft.com/api/stac/v1/search",
-                            json=search_body,
-                            headers={"Content-Type": "application/json"}
-                        )
-
-                        if resp.status_code == 200:
-                            features = resp.json().get("features", [])
+                    features = _search_stac_items_sync(search_body, stac_mode)
+                    if features is not None:
+                        if features:
                             logger.info(f"[PIN] Clear-sky fallback found {len(features)} candidates")
 
                             for feature in features:
@@ -1654,10 +1790,7 @@ def sample_raster_value(data_type: str = "auto") -> str:
                                 if not point_in_bbox(lat, lng, feature.get('bbox')):
                                     continue
 
-                                try:
-                                    signed = pc.sign(feature)
-                                except Exception:
-                                    signed = feature
+                                signed = _prepare_stac_item_for_sampling(feature, stac_mode)
 
                                 f_assets = signed.get('assets', {})
                                 f_props = signed.get('properties', {})
@@ -1800,7 +1933,7 @@ def query_knowledge(question: str) -> str:
         if not client:
             return "Knowledge query unavailable - Azure OpenAI client not initialized."
 
-        ctx = _session_context
+        ctx = _get_session_context()
         context_parts = []
         bounds = ctx.get('map_bounds', {})
         if bounds:
@@ -1848,7 +1981,7 @@ def identify_features(feature_type: str) -> str:
     :return: Feature names, classifications, and descriptions
     """
     logger.info(f"[SEARCH] identify_features(feature_type='{feature_type}')")
-    ctx = _session_context
+    ctx = _get_session_context()
     screenshot = ctx.get('screenshot_base64')
 
     if not screenshot:
@@ -1973,7 +2106,7 @@ def _resolve_location_to_bbox_sync(location: str) -> Optional[List[float]]:
         logger.warning(f"Geocoding failed: {e}")
 
     # Fallback to session context
-    bounds = _session_context.get('map_bounds', {})
+    bounds = _get_session_context().get('map_bounds', {})
     if bounds:
         return [bounds.get("west", -180), bounds.get("south", -90),
                 bounds.get("east", 180), bounds.get("north", 90)]
@@ -1983,12 +2116,12 @@ def _resolve_location_to_bbox_sync(location: str) -> Optional[List[float]]:
 def _execute_stac_query_sync(collection: str, bbox: List[float], datetime_range: str, limit: int = 5) -> Dict[str, Any]:
     """Execute a STAC query synchronously."""
     try:
-        import httpx
+        stac_mode = 'pro' if _get_session_context().get('stac_mode') == 'pro' else 'public'
         aliases = {
             "hls": "hls-l30-v2.0", "sentinel-2": "sentinel-2-l2a",
             "modis-snow": "modis-10A1-061", "modis-fire": "modis-14A1-061",
         }
-        stac_collection = aliases.get(collection.lower(), collection)
+        stac_collection = aliases.get(collection.lower(), collection) if stac_mode == 'public' else collection
 
         search_body = {
             "collections": [stac_collection], "bbox": bbox,
@@ -1998,14 +2131,13 @@ def _execute_stac_query_sync(collection: str, bbox: List[float], datetime_range:
         if stac_collection in ["sentinel-2-l2a", "hls-l30-v2.0", "landsat-c2-l2"]:
             search_body["query"] = {"eo:cloud_cover": {"lt": 30}}
 
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
-                "https://planetarycomputer.microsoft.com/api/stac/v1/search",
-                json=search_body, headers={"Content-Type": "application/json"}
-            )
-            if resp.status_code == 200:
-                return resp.json()
-        return {"features": []}
+        features = _search_stac_items_sync(search_body, stac_mode)
+        return {
+            "features": [
+                _prepare_stac_item_for_sampling(feature, stac_mode)
+                for feature in features
+            ]
+        }
     except Exception as e:
         logger.error(f"STAC query failed: {e}")
         return {"features": [], "error": str(e)}
@@ -2076,7 +2208,14 @@ def compare_temporal(location: str, time_period_1: str, time_period_2: str,
         if not dt1 or not dt2:
             return f"Could not parse time periods: '{time_period_1}' and '{time_period_2}'."
 
-        collection = _select_collection_for_analysis(analysis_focus)
+        context = _get_session_context()
+        stac_mode = 'pro' if context.get('stac_mode') == 'pro' else 'public'
+        loaded_collections = context.get('loaded_collections') or []
+        collection = (
+            str(loaded_collections[0])
+            if stac_mode == 'pro' and loaded_collections
+            else _select_collection_for_analysis(analysis_focus)
+        )
         bbox = _resolve_location_to_bbox_sync(location)
         if not bbox:
             return f"Could not resolve location: '{location}'."

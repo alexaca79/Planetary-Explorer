@@ -75,7 +75,10 @@ def build_clarifier_workflow():
             "Use ClarifierAgent.decide() directly instead."
         )
     decider = ClarifierDecider()
-    return WorkflowBuilder(start_executor=decider).build()  # type: ignore[arg-type]
+    return WorkflowBuilder(
+        start_executor=decider,
+        output_from=[decider],
+    ).build()  # type: ignore[arg-type]
 
 
 _DECIDER_SINGLETON: Optional[ClarifierDecider] = None

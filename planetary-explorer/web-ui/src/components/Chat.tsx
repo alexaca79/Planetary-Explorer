@@ -4,7 +4,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { History } from 'lucide-react';
-import { apiService, ChatHistoryContext, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
+import { apiService, ChatHistoryContext, ChatHistorySnapshot, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
 import { enhanceMessageForMapVisualization, hasVisualizableData } from './PlanetaryExplorerMapIntegration';
 import vedaSearchService from '../services/vedaSearchService';
 import SourceChips from './SourceChips';
@@ -12,11 +12,20 @@ import { TraceDrawer, ConfirmationCard, useToolTrace } from './trace';
 import type { PendingConfirm } from './trace';
 import ChatHistoryDrawer from './ChatHistoryDrawer';
 import {
+  boundedHistoryTileUrls,
   chatHistoryFingerprint,
-  createChatHistorySaveQueue,
+  confirmFailedHistoryDiscard,
+  createChatHistoryMutationId,
+  hasFailedHistorySave,
+  historyUnmountAction,
+  isHistorySaveAtRisk,
   persistedChatMessages,
+  reconcileAmbiguousHistorySave,
   restoreChatMessages,
 } from '../utils/chatHistory';
+import ChatLegend from './ChatLegend';
+import { deriveChatLegend } from '../utils/chatLegend';
+import { renderMessageHTML } from '../utils/renderMessageHTML';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -128,80 +137,12 @@ function extractTextFromResponse(content: any): string {
   return String(content || '');
 }
 
-function renderMessageHTML(content: string): string {
-  let s = String(content || '');
-  // Remove/soften preview lines; we'll show imagery on the map
-  s = s.replace(/^\s*Preview:\s*.*$/gmi, '(shown on map)');
-  // Strip markdown image syntax ![alt](url) entirely
-  s = s.replace(/!\[[^\]]*\]\((https?:[^)]+)\)/g, '(shown on map)');
-  // Convert [text](url) to link
-  s = s.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  // Autolink plain URLs
-  s = s.replace(/(https?:\/\/[\w\-._~:?#\[\]@!$&'()*+,;=%/]+)(?![^<]*>)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-
-  // Normalize CRLF and collapse 3+ blank lines so we don't end up with a
-  // wall of <br/> separators between sections.
-  s = s.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-
-  // --- Block-level transforms (must run before inline) ---
-  // Each block transform emits an HTML element that includes its own
-  // vertical spacing. The trailing `\n` after that element is scrubbed
-  // below so it doesn't get an extra `<br/>` injected.
-  const H = 'font-size:1.05em;font-weight:600;color:#1e3a8a;display:block;margin:14px 0 6px;';
-  const LI = (ml: number) => `display:block;margin:2px 0 2px ${ml}px;padding-left:14px;text-indent:-14px;line-height:1.45;`;
-  const MARK = 'display:inline-block;width:14px;color:#475569;font-weight:600;';
-
-  // Numbered section headers like "1) Overview" — kept for back-compat.
-  s = s.replace(/^(\d+\))\s+(.+)$/gm,
-    `<div style="${H}">$1 $2</div>`);
-
-  // Markdown headers (#, ##, ###, ####) -> styled section headers.
-  s = s.replace(/^#{1,4}\s+(.+)$/gm, `<div style="${H}">$1</div>`);
-
-  // Numbered list items: "1. text" / "2. text". Treat as ordered bullets.
-  s = s.replace(/^(\s*)(\d+)\.\s+(.+)$/gm, (_m, indent: string, n: string, body: string) => {
-    const depth = Math.floor((indent || '').length / 2);
-    const ml = 16 + depth * 18;
-    return `<div style="${LI(ml)}"><span style="${MARK}">${n}.</span>${body}</div>`;
-  });
-
-  // Bulleted list items: "- text", "* text", "• text". Honor 2-space indent
-  // for nesting so the model's "header bullet -> sub-bullet" structure is
-  // preserved instead of being flattened.
-  s = s.replace(/^(\s*)[-*•]\s+(.+)$/gm, (_m, indent: string, body: string) => {
-    const depth = Math.floor((indent || '').length / 2);
-    const ml = 16 + depth * 18;
-    return `<div style="${LI(ml)}"><span style="${MARK}">•</span>${body}</div>`;
-  });
-
-  // --- Inline transforms ---
-  // Bold **text** -> <strong>. Italics _text_ -> <em>. We deliberately
-  // do NOT translate single-`*` runs to <em> because the LLM uses `*` for
-  // multiplication and footnotes (e.g. "(B05 - B04) / (B05 + B04)") and
-  // mis-italicizing them produces garbage.
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
-
-  // Inline code `foo` -> styled span.
-  s = s.replace(/`([^`\n]+)`/g, '<code style="background:rgba(148,163,184,0.18);padding:1px 5px;border-radius:3px;font-size:0.92em;">$1</code>');
-
-  // --- Final line-break pass ---
-  // Convert remaining single newlines to `<br/>` for inline flow, but
-  // strip the `<br/>` immediately after a block element we emitted so
-  // headers/bullets don't get an extra blank line under them.
-  s = s.replace(/\n/g, '<br/>');
-  s = s.replace(/(<\/div>)(<br\/>)+/g, '$1');
-  // Collapse `<br/><br/>` runs of 3+ to 2 (one visible blank line max).
-  s = s.replace(/(<br\/>){3,}/g, '<br/><br/>');
-  return s;
-}
-
 interface ChatProps {
   selectedDataset: Dataset | null;
   chatMode: boolean;
   initialQuery?: string;
   onResponseReceived?: (responseData: any) => void;
-  onRestartSession?: () => void;
+  onRestartSession?: (discardConfirmed?: boolean) => void;
   privateSearchTrigger?: any; // New prop to trigger private search
   currentPin?: { lat: number; lng: number } | null; // Pin location from map
   geointMode: boolean; // GEOINT analysis mode toggle (deprecated)
@@ -220,7 +161,10 @@ interface ChatProps {
   selectedModel?: string; // Selected AI model (gpt-5)
   reasoningEffort?: string; // Selected GPT-5.6 reasoning effort
   chatHistoryEnabled?: boolean; // Durable Cosmos-backed chat archive
-  onRestoreContext?: (context: ChatHistoryContext) => void;
+  onRestoreContext?: (context: ChatHistoryContext) => ChatHistoryContext | void;
+  mapAnalysisPending?: boolean;
+  historyRestorePending?: boolean;
+  onHistorySaveRiskChange?: (hasUnsavedSnapshot: boolean) => void;
   stacMode?: 'public' | 'pro'; // Public MPC vs MPC Pro (private GeoCatalog) for STAC routing
 }
 
@@ -249,6 +193,9 @@ const Chat: React.FC<ChatProps> = ({
   reasoningEffort,
   chatHistoryEnabled = false,
   onRestoreContext,
+  mapAnalysisPending = false,
+  historyRestorePending = false,
+  onHistorySaveRiskChange,
   stacMode,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -342,15 +289,22 @@ const Chat: React.FC<ChatProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySaveState, setHistorySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const lastSavedSnapshotRef = useRef('');
-  const queuedSnapshotRef = useRef('');
-  const historyRevisionRef = useRef(0);
+  const lastServerRevisionRef = useRef(0);
   const historyGenerationRef = useRef(0);
-  const historySaveQueueRef = useRef(
-    createChatHistorySaveQueue((sessionId, snapshot) => (
-      apiService.saveChatSession(sessionId, snapshot)
-    )),
-  );
-  const restoringHistoryRef = useRef(false);
+  const historySaveInFlightRef = useRef(false);
+  const historyMountedRef = useRef(true);
+  const terminalHistoryFailureRef = useRef(false);
+  const historyRestoreWasPendingRef = useRef(false);
+  const historyRetryTimerRef = useRef<number | null>(null);
+  const pendingHistorySaveRef = useRef<{
+    sessionId: string;
+    snapshot: Omit<ChatHistorySnapshot, 'expectedRevision'>;
+    fingerprint: string;
+    generation: number;
+    attempts: number;
+  } | null>(null);
+  const retryHistorySaveRef = useRef<typeof pendingHistorySaveRef.current>(null);
+  const restoringDatasetIdRef = useRef<string | null>(null);
   
   //  Local vision session ID tracking (for first message -> follow-ups)
   const [localVisionSessionId, setLocalVisionSessionId] = useState<string | null>(null);
@@ -392,11 +346,17 @@ const Chat: React.FC<ChatProps> = ({
 
   // Add injection message when dataset is selected
   useEffect(() => {
-    if (restoringHistoryRef.current) return;
+    if (
+      restoringDatasetIdRef.current &&
+      selectedDataset?.id === restoringDatasetIdRef.current
+    ) {
+      restoringDatasetIdRef.current = null;
+      return;
+    }
     if (selectedDataset && chatMode) {
       const injectionMessage: ChatMessage = {
         role: 'assistant',
-        content: `You're chatting with ${selectedDataset.title || selectedDataset.id}. Ask a question about it.\n\nTip: include a location/area and date range (e.g., 2024-01-01/2024-06-30).`,
+        content: `You're chatting with ${selectedDataset.title || selectedDataset.id}. Ask a question about it.\n\nTip: include a Canadian location and a 2026 date range (e.g., 2026-01-01/2026-08-26).`,
         timestamp: new Date()
       };
       setMessages([injectionMessage]);
@@ -799,7 +759,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Comparison agent response:', response);
@@ -876,7 +837,7 @@ const Chat: React.FC<ChatProps> = ({
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
               undefined, // signal
-              { latitude_b: pinB.lat, longitude_b: pinB.lng }
+              { latitude_b: pinB.lat, longitude_b: pinB.lng, stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Mobility agent response:', response);
@@ -916,7 +877,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query - the damage assessment question
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include loaded map imagery
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Building damage response:', response);
@@ -956,7 +918,8 @@ const Chat: React.FC<ChatProps> = ({
               message, // user_query - the climate question
               undefined, // userContext
               currentMapCtx?.imagery_base64 || undefined, // screenshot - include map view for visual context
-              undefined  // signal
+              undefined, // signal
+              { stac_mode: stacMode || 'public' },
             );
             
             console.log(' Chat: Extreme weather response:', response);
@@ -1000,22 +963,23 @@ const Chat: React.FC<ChatProps> = ({
           // NOTE: the old frontend clarify-guard that demanded a region /
           // hazard / horizon keyword has been removed. The MAF planner now
           // defaults to the investigative route and handles ambiguity,
-          // specific-facility outage questions ("if Houston port goes
+          // specific-facility outage questions ("if Vancouver distribution goes
           // offline…"), and free-form analyst asks far better than a
           // regex match here can. Sending everything straight to the
           // planner also lets it call `simulate_outage`, `query_facilities`,
           // and the MPC tools instead of the frontend deciding for it.
-          // Region heuristic — default TX (where the seed lakehouse rows live).
-          // If the user mentions another US state name, narrow to that.
+          // Canadian province heuristic. Province-neutral requests assess the
+          // full national registry instead of silently defaulting to one area.
           const REGION_HINTS: Record<string, string> = {
-            ' tx': 'TX', 'texas': 'TX',
-            ' ca': 'CA', 'california': 'CA',
-            ' az': 'AZ', 'arizona': 'AZ',
-            ' or': 'OR', 'oregon': 'OR',
-            ' wa': 'WA', 'washington': 'WA',
-            ' ny': 'NY', 'new york': 'NY',
+            'alberta': 'AB', 'calgary': 'AB', 'edmonton': 'AB',
+            'british columbia': 'BC', 'vancouver': 'BC', 'prince george': 'BC',
+            'manitoba': 'MB', 'winnipeg': 'MB',
+            'nova scotia': 'NS', 'halifax': 'NS',
+            'ontario': 'ON', 'toronto': 'ON', 'ottawa': 'ON',
+            'quebec': 'QC', 'montreal': 'QC',
+            'saskatchewan': 'SK', 'saskatoon': 'SK',
           };
-          let regionFilter: string | undefined = 'TX';
+          let regionFilter: string | undefined;
           const lower = (message || '').toLowerCase();
           for (const [needle, code] of Object.entries(REGION_HINTS)) {
             if (lower.includes(needle)) { regionFilter = code; break; }
@@ -1148,7 +1112,7 @@ const Chat: React.FC<ChatProps> = ({
             const fmtScore = (v: any) => (typeof v === 'number' && isFinite(v) ? v.toFixed(0) : '—');
 
             const lines: string[] = [];
-            const regionLabel = regionFilter || 'All regions';
+            const regionLabel = regionFilter || 'Canada';
             // Show which path the backend actually ran (planner can decline
             // the smart hint if the router classifies the query as standard,
             // and the standard endpoint never sets `route`).
@@ -1372,7 +1336,7 @@ const Chat: React.FC<ChatProps> = ({
         if (selectedModule === 'site_audit') {
           // Prefer an explicit pin (vision-mode pin or generic dropped pin).
           // Fall back to the current map center so a geocode pan (e.g. user
-          // typed "Midland, Texas" → "Navigating the map to Midland, Texas.")
+          // typed "Calgary, Alberta" and the map moved there)
           // is treated as an implicit pin, instead of bouncing with
           // "Site Intel needs a pin." The (0,0) guard below still catches
           // the truly-unset case (map never moved).
@@ -1404,7 +1368,7 @@ const Chat: React.FC<ChatProps> = ({
               response: [
                 '**Site Intel needs a pin.**',
                 '',
-                'Drop a pin on the map at the candidate site and resend, or tell me a place name (e.g. "score a 230 kV substation near Ashburn, VA" or "audit a 250 MW solar + BESS site near Midland, TX") and I\'ll geocode it.',
+                'Drop a pin on the map at the candidate site and resend, or name a Canadian place (for example, "score a data-centre site near Calgary, Alberta") and I\'ll geocode it.',
                 '',
                 "I won't score (0°, 0°) — it's in the Atlantic and the result would be meaningless.",
               ].join('\n'),
@@ -1444,6 +1408,7 @@ const Chat: React.FC<ChatProps> = ({
             const sum = dossier?.summaries || {};
             const evidence = Array.isArray(dossier?.evidence) ? dossier.evidence : [];
             const provenance = Array.isArray(dossier?.data_provenance) ? dossier.data_provenance : [];
+            const usesBundledSeed = provenance.some((p: any) => p?.source === 'bundled_seed');
 
             const fmt = (v: any) => (typeof v === 'number' ? v.toFixed(1) : String(v ?? '—'));
             // Format a Fabric Lakehouse row as a single inline citation
@@ -1457,30 +1422,31 @@ const Chat: React.FC<ChatProps> = ({
               const name = e?.name || e?.title || e?.id || '(unnamed)';
               const dist = typeof e?.distance_mi === 'number' ? `${e.distance_mi.toFixed(1)} mi` : null;
               const linkable = (label: string, url?: string) => (url ? `[${label}](${url})` : label);
+              const sourceLabel = e?.source_authority === 'synthetic_demo' ? 'Demo seed' : 'Fabric';
               switch (k) {
                 case 'nearest_substation':
                 case 'power_substation':
                 case 'transmission_line': {
                   const kv = e?.voltage_kv ? `${e.voltage_kv} kV` : null;
                   const parts = [name, kv, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · power · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · power · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'nearest_water':
                 case 'water_asset': {
                   const huc = e?.huc_code ? `HUC ${e.huc_code}` : null;
                   const parts = [name, huc, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · water · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · water · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'nearest_data_center':
                 case 'existing_data_center': {
                   const mw = e?.capacity_mw ? `${e.capacity_mw} MW` : null;
                   const parts = [name, mw, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · data center · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · data center · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'candidate_site_match':
                 case 'parcel_match': {
                   const parts = [name, dist].filter(Boolean).join(' · ');
-                  return `- Fabric · candidate site · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
+                  return `- ${sourceLabel} · candidate site · ${parts}${e?.source_url ? ` · ${linkable('source', e.source_url)}` : ''}`;
                 }
                 case 'permitting_doc': {
                   const meta = [e?.doc_type, e?.state, e?.doc_date, dist]
@@ -1607,6 +1573,7 @@ const Chat: React.FC<ChatProps> = ({
             // AI Search uses search_score; PC uses dataset order).
             if (evidence.length > 0) {
               const fabricLines: string[] = [];
+              const seedLines: string[] = [];
               const aiSearchLines: string[] = [];
               const mpcLines: string[] = [];
               const weatherLines: string[] = [];
@@ -1615,6 +1582,7 @@ const Chat: React.FC<ChatProps> = ({
                 const f = fabricRowLine(e);
                 if (f) {
                   if (e?.kind === 'permitting_doc') aiSearchLines.push(f);
+                  else if (e?.source_authority === 'synthetic_demo' || usesBundledSeed) seedLines.push(f);
                   else fabricLines.push(f);
                   continue;
                 }
@@ -1650,6 +1618,7 @@ const Chat: React.FC<ChatProps> = ({
               };
 
               pushGroup('Evidence · Fabric Lakehouse', fabricLines);
+              pushGroup('Evidence · Bundled Canadian demo data', seedLines);
               pushGroup('Evidence · Azure AI Search (permitting)', aiSearchFinal);
               pushGroup('Evidence · Planetary Computer', mpcLines);
               pushGroup('Evidence · Live Weather', weatherLines);
@@ -1666,7 +1635,8 @@ const Chat: React.FC<ChatProps> = ({
             // backing dataset so the reader sees the surface area at a
             // glance without re-reading the per-row citations.
             if (provenance.length > 0) {
-              const fabricRows = provenance.filter((p: any) => p.source === 'fabric_lakehouse' || p.table);
+              const fabricRows = provenance.filter((p: any) => p.source === 'fabric_lakehouse');
+              const seedRows = provenance.filter((p: any) => p.source === 'bundled_seed');
               const pcCollections = new Set<string>();
               const aiIndices = new Set<string>();
               let weatherCount = 0;
@@ -1689,6 +1659,13 @@ const Chat: React.FC<ChatProps> = ({
               const parts: string[] = [];
               if (fabricRows.length > 0) {
                 parts.push(`Fabric Lakehouse (${fabricRows.length} table${fabricRows.length === 1 ? '' : 's'} · ${fmtCount(totalRows)} rows)`);
+              }
+              if (seedRows.length > 0) {
+                const seedRowCount = seedRows.reduce(
+                  (acc: number, p: any) => acc + (typeof p.rows === 'number' ? p.rows : 0),
+                  0
+                );
+                parts.push(`Bundled Canadian demo data (${seedRows.length} table${seedRows.length === 1 ? '' : 's'} · ${fmtCount(seedRowCount)} rows · non-authoritative)`);
               }
               if (pcCollections.size > 0) {
                 parts.push(`Planetary Computer (${pcCollections.size} collection${pcCollections.size === 1 ? '' : 's'})`);
@@ -1950,7 +1927,8 @@ const Chat: React.FC<ChatProps> = ({
           {
             role: 'assistant',
             content: content,
-            timestamp: new Date()
+            timestamp: new Date(),
+            legend: deriveChatLegend(responseData, mapContextRef.current),
           }
         ]));
         
@@ -1966,7 +1944,8 @@ const Chat: React.FC<ChatProps> = ({
           {
             role: 'assistant',
             content: responseData.response,
-            timestamp: new Date()
+            timestamp: new Date(),
+            legend: deriveChatLegend(responseData, mapContextRef.current),
           }
         ]));
         
@@ -1987,7 +1966,8 @@ const Chat: React.FC<ChatProps> = ({
           {
             role: 'assistant',
             content: responseData.response,
-            timestamp: new Date()
+            timestamp: new Date(),
+            legend: deriveChatLegend(responseData, mapContextRef.current),
           }
         ]));
         
@@ -2005,7 +1985,8 @@ const Chat: React.FC<ChatProps> = ({
           {
             role: 'assistant',
             content: responseData.response,
-            timestamp: new Date()
+            timestamp: new Date(),
+            legend: deriveChatLegend(responseData, mapContextRef.current),
           }
         ]));
         
@@ -2208,6 +2189,7 @@ const Chat: React.FC<ChatProps> = ({
       const _toolTrace = (typeof responseData === 'object' && responseData && Array.isArray((responseData as any).toolTrace))
         ? (responseData as any).toolTrace
         : undefined;
+      const _legend = deriveChatLegend(responseData, mapContextRef.current);
 
       setMessages(prev => ([
         ...prev,
@@ -2220,6 +2202,7 @@ const Chat: React.FC<ChatProps> = ({
           toolsUsed: _toolsUsed,
           stacRouting: _stacRouting,
           toolTrace: _toolTrace,
+          legend: _legend,
         }
       ]));
 
@@ -2507,13 +2490,152 @@ const Chat: React.FC<ChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const drainHistorySaves = async () => {
+    if (historySaveInFlightRef.current) return;
+    historySaveInFlightRef.current = true;
+    let retryScheduled = false;
+    let conflictBlocked = false;
+    try {
+      while (retryHistorySaveRef.current || pendingHistorySaveRef.current) {
+        const pending = retryHistorySaveRef.current || pendingHistorySaveRef.current!;
+        if (retryHistorySaveRef.current) retryHistorySaveRef.current = null;
+        else pendingHistorySaveRef.current = null;
+        if (pending.generation !== historyGenerationRef.current) continue;
+
+        const attemptedRevision = lastServerRevisionRef.current;
+        try {
+          const saved = await apiService.saveChatSession(pending.sessionId, {
+            ...pending.snapshot,
+            expectedRevision: attemptedRevision,
+          });
+          if (pending.generation !== historyGenerationRef.current) continue;
+          lastServerRevisionRef.current = saved.revision;
+          lastSavedSnapshotRef.current = pending.fingerprint;
+          terminalHistoryFailureRef.current = false;
+          if (historyMountedRef.current) {
+            setHistorySaveState(pendingHistorySaveRef.current ? 'saving' : 'saved');
+          }
+        } catch (error) {
+          if (pending.generation === historyGenerationRef.current) {
+            console.error(' Chat: Failed to save chat history:', error);
+            const status = (error as any)?.response?.status;
+            const attempts = pending.attempts + 1;
+            if (status !== 409 && attempts <= 3) {
+              retryHistorySaveRef.current = { ...pending, attempts };
+              if (historyMountedRef.current) setHistorySaveState('saving');
+              retryScheduled = true;
+              historyRetryTimerRef.current = window.setTimeout(() => {
+                historyRetryTimerRef.current = null;
+                void drainHistorySaves();
+              }, 1000 * attempts);
+            } else if (pendingHistorySaveRef.current) {
+              try {
+                const server = await apiService.getChatSession(pending.sessionId);
+                const resolution = reconcileAmbiguousHistorySave(
+                  server,
+                  pending.snapshot.mutationId,
+                  attemptedRevision,
+                );
+                if (resolution === 'committed') {
+                  lastServerRevisionRef.current = server.revision;
+                  lastSavedSnapshotRef.current = pending.fingerprint;
+                  terminalHistoryFailureRef.current = false;
+                  continue;
+                }
+                if (resolution === 'unchanged') {
+                  continue;
+                }
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              } catch (reconcileError) {
+                console.error(' Chat: Failed to reconcile chat history:', reconcileError);
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              }
+            } else {
+              try {
+                const server = await apiService.getChatSession(pending.sessionId);
+                const resolution = reconcileAmbiguousHistorySave(
+                  server,
+                  pending.snapshot.mutationId,
+                  attemptedRevision,
+                );
+                if (resolution === 'committed') {
+                  lastServerRevisionRef.current = server.revision;
+                  lastSavedSnapshotRef.current = pending.fingerprint;
+                  terminalHistoryFailureRef.current = false;
+                  if (historyMountedRef.current) setHistorySaveState('saved');
+                } else {
+                  pendingHistorySaveRef.current = pending;
+                  conflictBlocked = true;
+                  terminalHistoryFailureRef.current = true;
+                  if (historyMountedRef.current) setHistorySaveState('error');
+                }
+              } catch (reconcileError) {
+                console.error(' Chat: Failed to reconcile chat history:', reconcileError);
+                pendingHistorySaveRef.current = pending;
+                conflictBlocked = true;
+                terminalHistoryFailureRef.current = true;
+                if (historyMountedRef.current) setHistorySaveState('error');
+              }
+            }
+          }
+          break;
+        }
+      }
+    } finally {
+      historySaveInFlightRef.current = false;
+      if (
+        (retryHistorySaveRef.current || pendingHistorySaveRef.current) &&
+        !retryScheduled &&
+        !conflictBlocked
+      ) {
+        void drainHistorySaves();
+      }
+    }
+  };
+
+  useEffect(() => {
+    historyMountedRef.current = true;
+    return () => {
+      historyMountedRef.current = false;
+      if (historyRetryTimerRef.current !== null) {
+        window.clearTimeout(historyRetryTimerRef.current);
+        historyRetryTimerRef.current = null;
+      }
+      const unmountAction = historyUnmountAction(
+        terminalHistoryFailureRef.current,
+        Boolean(retryHistorySaveRef.current || pendingHistorySaveRef.current),
+      );
+      if (unmountAction === 'discard') {
+        historyGenerationRef.current += 1;
+        retryHistorySaveRef.current = null;
+        pendingHistorySaveRef.current = null;
+      } else if (unmountAction === 'flush') {
+        void drainHistorySaves();
+      }
+    };
+  }, []);
+
+  const mapAnalysisBusy = mapAnalysisPending || (
+    mobilityAnalysisResult?.type === 'thinking' ||
+    mobilityAnalysisResult?.type === 'pending'
+  );
+
   useEffect(() => {
     if (
       !chatHistoryEnabled ||
       chatMutation.isPending ||
       privateSearchMutation.isPending ||
-      partsPending
+      partsPending ||
+      mapAnalysisBusy
     ) {
+      return;
+    }
+    if (historyRestorePending) {
+      historyRestoreWasPendingRef.current = true;
       return;
     }
 
@@ -2521,7 +2643,7 @@ const Chat: React.FC<ChatProps> = ({
     if (!persistedMessages.some((message) => message.role === 'user')) {
       return;
     }
-    const snapshot = {
+    const snapshot: Omit<ChatHistorySnapshot, 'expectedRevision' | 'mutationId'> = {
       messages: persistedMessages,
       context: {
         selectedModel: selectedModel || undefined,
@@ -2542,7 +2664,10 @@ const Chat: React.FC<ChatProps> = ({
               current_collection: mapContext.current_collection,
               has_satellite_data: mapContext.has_satellite_data,
               imagery_url: mapContext.imagery_url,
-              tile_urls: mapContext.tile_urls?.slice(0, 20),
+              item_id: mapContext.item_id,
+              datetime: mapContext.datetime,
+              zoom_level: mapContext.zoom_level,
+              tile_urls: boundedHistoryTileUrls(mapContext.tile_urls),
               vision_mode: mapContext.vision_mode,
               vision_pin: mapContext.vision_pin,
             }
@@ -2550,52 +2675,39 @@ const Chat: React.FC<ChatProps> = ({
       },
     };
     const fingerprint = chatHistoryFingerprint(snapshot);
-    if (
-      fingerprint === lastSavedSnapshotRef.current ||
-      fingerprint === queuedSnapshotRef.current
-    ) return;
+    if (historyRestoreWasPendingRef.current) {
+      historyRestoreWasPendingRef.current = false;
+      lastSavedSnapshotRef.current = fingerprint;
+      setHistorySaveState('saved');
+      return;
+    }
+    if (fingerprint === lastSavedSnapshotRef.current) return;
 
     setHistorySaveState('saving');
-    const timer = window.setTimeout(async () => {
-      const revision = historyRevisionRef.current + 1;
-      const generation = historyGenerationRef.current;
-      historyRevisionRef.current = revision;
-      queuedSnapshotRef.current = fingerprint;
-      try {
-        const saved = await historySaveQueueRef.current(conversationId, {
-          ...snapshot,
-          clientRevision: revision,
-        });
-        if (
-          generation !== historyGenerationRef.current ||
-          revision !== historyRevisionRef.current
-        ) return;
-        historyRevisionRef.current = saved.clientRevision || revision;
-        lastSavedSnapshotRef.current = fingerprint;
-        queuedSnapshotRef.current = '';
-        setHistorySaveState('saved');
-      } catch (error) {
-        console.error(' Chat: Failed to save chat history:', error);
-        if (
-          generation !== historyGenerationRef.current ||
-          revision !== historyRevisionRef.current
-        ) return;
-        queuedSnapshotRef.current = '';
-        setHistorySaveState('error');
-      }
-    }, 800);
-
-    return () => window.clearTimeout(timer);
+    terminalHistoryFailureRef.current = false;
+    pendingHistorySaveRef.current = {
+      sessionId: conversationId,
+      snapshot: {
+        ...snapshot,
+        mutationId: createChatHistoryMutationId(),
+      },
+      fingerprint,
+      generation: historyGenerationRef.current,
+      attempts: 0,
+    };
+    void drainHistorySaves();
   }, [
     chatHistoryEnabled,
     chatMutation.isPending,
     conversationId,
     currentPin,
     mapContext,
+    mapAnalysisBusy,
     messages,
     partsPending,
     privateSearchMutation.isPending,
     reasoningEffort,
+    historyRestorePending,
     selectedDataset,
     selectedModel,
     selectedModule,
@@ -2603,123 +2715,157 @@ const Chat: React.FC<ChatProps> = ({
   ]);
 
   const handleLoadHistorySession = (session: ChatHistorySession) => {
-    if (chatMutation.isPending || privateSearchMutation.isPending || partsPending || historySaveState === 'saving') {
-      return;
+    if (chatMutation.isPending || privateSearchMutation.isPending || partsPending || mapAnalysisBusy || historySaveState === 'saving') {
+      return false;
     }
+    const failedSave = hasFailedHistorySave(
+      historySaveState,
+      Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+    );
+    if (!confirmFailedHistoryDiscard(failedSave)) return false;
     const restoredMessages = restoreChatMessages(session.messages);
     historyGenerationRef.current += 1;
-    historyRevisionRef.current = session.clientRevision || 0;
-    queuedSnapshotRef.current = '';
-    restoringHistoryRef.current = true;
-    onRestoreContext?.(session.context);
+    terminalHistoryFailureRef.current = false;
+    pendingHistorySaveRef.current = null;
+    retryHistorySaveRef.current = null;
+    if (historyRetryTimerRef.current !== null) {
+      window.clearTimeout(historyRetryTimerRef.current);
+      historyRetryTimerRef.current = null;
+    }
+    lastServerRevisionRef.current = session.revision;
+    const restoredContext = onRestoreContext?.(session.context) || session.context;
+    restoringDatasetIdRef.current = restoredContext.selectedDataset?.id || null;
     lastSavedSnapshotRef.current = chatHistoryFingerprint({
       messages: restoredMessages,
-      context: session.context,
+      context: restoredContext,
     });
     setConversationId(session.sessionId);
     setMessages(restoredMessages);
     setPendingConfirms([]);
     setFeedback({});
     setHistorySaveState('saved');
-    window.setTimeout(() => {
-      restoringHistoryRef.current = false;
-    }, 0);
+    return true;
   };
 
   const historyBusy = (
     chatMutation.isPending ||
     privateSearchMutation.isPending ||
     partsPending ||
+    mapAnalysisBusy ||
     historySaveState === 'saving'
   );
 
+  const failedHistorySave = hasFailedHistorySave(
+    historySaveState,
+    Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+  );
+  const historySaveAtRisk = isHistorySaveAtRisk(
+    historySaveState,
+    Boolean(pendingHistorySaveRef.current || retryHistorySaveRef.current),
+  );
+
+  useEffect(() => {
+    onHistorySaveRiskChange?.(historySaveAtRisk);
+    return () => onHistorySaveRiskChange?.(false);
+  }, [historySaveAtRisk, onHistorySaveRiskChange]);
+
+  useEffect(() => {
+    if (!historySaveAtRisk) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [historySaveAtRisk]);
+
   const getPlanetaryComputerExamples = (dataset: Dataset | null): string[] => {
     const defaultExamples = [
-      'Show Sentinel-2 images of Seattle from last month',
-      'Find Landsat imagery of the Amazon with <10% cloud cover',
-      'Satellite data for Washington DC from June 2024'
+      'Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26',
+      'Show MODIS daily snow cover over Quebec from 2026-02-01 to 2026-02-28',
+      'Show Sentinel-1 RTC radar imagery over Vancouver, Canada from 2026-01-01 to 2026-08-26'
     ];
 
     if (!dataset) return defaultExamples;
 
     const pcExamples: Record<string, string[]> = {
       'landsat-c2-l2': [
-        'Find Landsat imagery of the Amazon with <10% cloud cover',
-        'Show agricultural changes in Iowa from 2020 to 2024',
-        'Analyze deforestation in Brazil using Landsat data',
-        'Find cloud-free Landsat scenes over New York City'
+        'Show Landsat imagery over Halifax from 2026-01-01 to 2026-08-26',
+        'Find Landsat scenes over Hudson Bay from 2026-06-01 to 2026-08-26',
+        'Analyze British Columbia forest conditions from 2026-05-01 to 2026-08-26',
+        'Find cloud-free Landsat scenes over Toronto from 2026-06-01 to 2026-08-26'
       ],
       'sentinel-2-l2a': [
-        'Show Sentinel-2 images of Seattle from last month',
-        'Find Sentinel-2 data for crop monitoring in France',
-        'Analyze forest health using Sentinel-2 NDVI',
-        'Show coastal erosion patterns using Sentinel-2'
+        'Show Sentinel-2 imagery over Toronto from 2026-06-01 to 2026-08-26',
+        'Find Sentinel-2 data over Saskatchewan cropland from 2026-04-01 to 2026-08-26',
+        'Analyze British Columbia forest health from 2026-05-01 to 2026-08-26 using NDVI',
+        'Show Halifax coastal patterns from 2026-06-01 to 2026-08-26'
       ],
       'sentinel-1-rtc': [
-        'Detect ships in the Mediterranean Sea using SAR data',
-        'Show flood mapping using Sentinel-1 radar data',
-        'Analyze soil moisture patterns in agricultural regions',
-        'Find oil spills using SAR imagery'
+        'Show Sentinel-1 RTC over Vancouver from 2026-01-01 to 2026-08-26',
+        'Map Red River flooding from 2026-03-01 to 2026-05-31 using Sentinel-1',
+        'Analyze Saskatchewan soil moisture from 2026-04-01 to 2026-08-26',
+        'Detect ships near Halifax from 2026-01-01 to 2026-08-26 using SAR'
       ],
       'modis': [
-        'Show global fire hotspots from MODIS data',
-        'Track sea surface temperatures in the Pacific',
-        'Analyze vegetation phenology using MODIS time series',
-        'Show aerosol optical depth during dust storms'
+        'Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26',
+        'Show MODIS vegetation indices over Saskatchewan from 2026-04-01 to 2026-08-26',
+        'Show MODIS gross primary productivity over British Columbia from 2026-05-01 to 2026-08-26',
+        'Show MODIS daily snow cover over Quebec from 2026-02-01 to 2026-02-28'
       ],
       'daymet-daily-na': [
-        'What was the precipitation in Montana last month?',
-        'Show temperature trends for the Great Lakes region',
-        'Find the wettest day in California in 2023',
-        'Compare growing degree days across different states'
+        'Show precipitation over Alberta from 2026-05-01 to 2026-08-26',
+        'Show 2026 temperature trends for the Canadian Great Lakes region',
+        'Find the wettest day in Toronto from 2026-01-01 to 2026-08-26',
+        'Compare 2026 growing degree days across the Prairie provinces'
       ],
       'era5-pds': [
-        'Show wind patterns during Hurricane Ian',
-        'What were the temperature anomalies in Europe in 2023?',
-        'Analyze precipitation patterns during El Niño',
-        'Show atmospheric pressure changes during storms'
+        'Show wind patterns over Lake Ontario from 2026-08-26 to 2026-08-31',
+        'Show 2026 temperature anomalies across southern Saskatchewan',
+        'Analyze Nova Scotia precipitation from 2026-01-01 to 2026-08-26',
+        'Show atmospheric pressure changes over Atlantic Canada during August 2026'
       ],
       'nasadem': [
-        'Show elevation profile for the Rocky Mountains',
-        'Find the highest peaks in the Himalayas',
-        'Calculate slope and aspect for watershed analysis',
-        'Show topographic relief for flood risk assessment'
+        'Show an elevation profile around Banff for 2026 analysis',
+        'Find the highest terrain near Vancouver for 2026 analysis',
+        'Calculate slope and aspect in the Yukon River corridor for 2026 planning',
+        'Show Red River topographic relief for 2026 flood-risk analysis'
       ],
       'goes-cmi': [
-        'Show cloud patterns over the Atlantic hurricane region',
-        'Track storm development in real-time imagery',
-        'Analyze fire hotspots from GOES satellite data',
-        'Show fog patterns affecting airport operations'
+        'Show cloud patterns over Atlantic Canada during August 2026',
+        'Track 2026 storm development near Halifax using GOES imagery',
+        'Analyze Alberta fire hotspots from 2026-05-01 to 2026-08-26',
+        'Show August 2026 fog patterns affecting Halifax airport operations'
       ],
       'terraclimate': [
-        'Show drought conditions in the southwestern US',
-        'Analyze long-term precipitation trends in Africa',
-        'Find the driest years in Australia since 1958',
-        'Compare water balance across different climate zones'
+        'Show 2026 drought indicators across southern Alberta',
+        'Analyze precipitation trends for British Columbia in a 2026 planning context',
+        'Compare historical dry years affecting Saskatchewan before 2026',
+        'Compare water balance across Canadian climate zones for 2026 planning'
       ],
       'gbif': [
-        'Where have polar bears been spotted recently?',
-        'Show bird migration patterns in North America',
-        'Find endangered species observations in Madagascar',
-        'Analyze biodiversity hotspots using GBIF data'
+        'Where were polar bears observed in Canada during 2026?',
+        'Show 2026 bird migration observations across Canada',
+        'Find 2026 endangered-species observations in British Columbia',
+        'Analyze Canadian biodiversity hotspots using 2026 GBIF observations'
       ],
       'aster-l1t': [
-        'Show mineral composition analysis of copper mines',
-        'Analyze volcanic thermal signatures using ASTER',
-        'Find lithological mapping for geological surveys',
-        'Show urban heat island effects using thermal bands'
+        'Show mineral composition around British Columbia copper mines for 2026 analysis',
+        'Analyze Yukon thermal signatures using ASTER for 2026 planning',
+        'Find lithological mapping near Sudbury for a 2026 geological survey',
+        'Show 2026 Toronto urban heat-island effects using thermal bands'
       ],
       'cop-dem-glo-30': [
-        'Calculate watershed boundaries for river basins',
-        'Show terrain analysis for infrastructure planning',
-        'Find optimal locations for renewable energy projects',
-        'Analyze landslide susceptibility using slope data'
+        'Calculate Red River watershed boundaries for 2026 planning',
+        'Show Banff terrain analysis for 2026 infrastructure planning',
+        'Find Canadian renewable-energy sites using terrain constraints for 2026',
+        'Analyze 2026 landslide susceptibility near Vancouver using slope data'
       ]
     };
 
     return pcExamples[dataset.id] || [
       `Analyze ${dataset.title} data for environmental monitoring`,
-      `Show recent ${dataset.title} data for a specific region`,
+      `Show ${dataset.title} data for a Canadian region during 2026`,
       `What insights can I get from ${dataset.title}?`,
       `How do I query ${dataset.title} using specific parameters?`
     ];
@@ -2761,7 +2907,7 @@ const Chat: React.FC<ChatProps> = ({
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           onLoad={handleLoadHistorySession}
-          onActiveSessionDeleted={onRestartSession}
+          onActiveSessionDeleted={() => onRestartSession?.(true)}
         />
 
         <div className="messages">
@@ -2795,6 +2941,9 @@ const Chat: React.FC<ChatProps> = ({
                   <div className="msg" dangerouslySetInnerHTML={{
                     __html: renderMessageHTML(message.content)
                   }}></div>
+                )}
+                {message.role === 'assistant' && !message.isThinking && message.legend && (
+                  <ChatLegend legend={message.legend} />
                 )}
                 {message.role === 'assistant' && !message.isThinking && (
                   <SourceChips

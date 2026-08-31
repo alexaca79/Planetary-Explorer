@@ -15,7 +15,6 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 MAX_DOCUMENT_BYTES = 1_750_000
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-MAX_EXPORT_BYTES = 100 * 1024 * 1024
 MAX_ATTACHMENTS = 20
 MAX_COSMOS_WRITE_ATTEMPTS = 4
 MAX_MESSAGES = 200
@@ -23,24 +22,63 @@ MAX_MESSAGE_CONTENT_CHARS = 100_000
 MAX_TITLE_CHARS = 96
 
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_MUTATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _URL_PATTERN = re.compile(r"https?://[^\s<>\]\[()]+", re.IGNORECASE)
+_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,80})"
+    r"\s*(?P<separator>[:=])\s*"
+    r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^;&\s,'\"\]}]+)"
+)
+_SENSITIVE_ASSIGNMENT_SUFFIXES = {
+    "accesskey",
+    "accountkey",
+    "apikey",
+    "clientsecret",
+    "connectionstring",
+    "credential",
+    "password",
+    "refreshtoken",
+    "sastoken",
+    "secret",
+    "sharedaccesskey",
+    "sharedaccesssignature",
+    "subscriptionkey",
+    "token",
+    "xapikey",
+}
 _SENSITIVE_QUERY_KEYS = {
     "accesstoken",
+    "accountkey",
     "apikey",
+    "authorization",
+    "clientsecret",
     "code",
+    "credential",
     "key",
+    "ocpapimsubscriptionkey",
+    "password",
+    "refreshtoken",
+    "sastoken",
+    "secret",
+    "sharedaccesskey",
+    "sharedaccesssignature",
     "sig",
     "signature",
+    "subscriptionkey",
     "token",
+    "xapikey",
 }
 _BLOCKED_KEYS = {
+    "accesskey",
     "accesstoken",
+    "accountkey",
     "afterscreenshot",
     "apikey",
     "assets",
     "authorization",
     "beforescreenshot",
     "clientsecret",
+    "connectionstring",
     "credential",
     "imagerybase64",
     "password",
@@ -48,12 +86,19 @@ _BLOCKED_KEYS = {
     "sastoken",
     "screenshot",
     "secret",
+    "sharedaccesskey",
+    "sharedaccesssignature",
+    "storageaccountkey",
+    "storagekey",
     "stacitems",
+    "subscriptionkey",
     "token",
+    "xapikey",
 }
 _MESSAGE_KEYS = {
     "content",
     "dataSource",
+    "legend",
     "role",
     "source",
     "stacRouting",
@@ -81,12 +126,12 @@ class ChatHistoryNotFoundError(ChatHistoryError):
     """Raised when a session or attachment is not owned by the caller."""
 
 
+class ChatHistoryConflictError(ChatHistoryError):
+    """Raised when a client attempts to overwrite a newer transcript."""
+
+
 class ChatHistoryValidationError(ChatHistoryError):
     """Raised when a session cannot be safely persisted."""
-
-
-class ChatHistoryConflictError(ChatHistoryError):
-    """Raised when an older client snapshot would replace newer history."""
 
 
 def utc_now_iso() -> str:
@@ -111,6 +156,8 @@ def opaque_owner_key(owner_id: str) -> str:
 def _redact_sensitive_url(url: str) -> str:
     try:
         parsed = urlsplit(url)
+        if parsed.username is not None or parsed.password is not None:
+            return "<redacted-url>"
         query_keys = {
             re.sub(r"[^a-z0-9]", "", key.casefold())
             for key, _ in parse_qsl(parsed.query)
@@ -122,13 +169,34 @@ def _redact_sensitive_url(url: str) -> str:
     return url
 
 
+def _is_sensitive_key(normalized_key: str) -> bool:
+    return (
+        normalized_key == "sas"
+        or normalized_key in _BLOCKED_KEYS
+        or normalized_key in _SENSITIVE_QUERY_KEYS
+        or any(
+            normalized_key.endswith(suffix)
+            for suffix in _SENSITIVE_ASSIGNMENT_SUFFIXES
+        )
+    )
+
+
 def _sanitize_string(value: str, *, limit: int = MAX_MESSAGE_CONTENT_CHARS) -> str:
     redacted = _URL_PATTERN.sub(lambda match: _redact_sensitive_url(match.group(0)), value)
     redacted = re.sub(
-        r"(?i)\bBearer\s+[A-Za-z0-9._~-]+",
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+",
         "Bearer <redacted>",
         redacted,
     )
+
+    def redact_assignment(match: re.Match[str]) -> str:
+        key = match.group("key")
+        normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+        if not _is_sensitive_key(normalized_key):
+            return match.group(0)
+        return f"{key}{match.group('separator')}<redacted>"
+
+    redacted = _ASSIGNMENT_PATTERN.sub(redact_assignment, redacted)
     return redacted[:limit]
 
 
@@ -139,7 +207,7 @@ def sanitize_value(value: Any, *, parent_key: str = "") -> Any:
         for raw_key, child in value.items():
             key = str(raw_key)
             normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
-            if normalized_key in _BLOCKED_KEYS:
+            if _is_sensitive_key(normalized_key):
                 continue
             sanitized[key] = sanitize_value(child, parent_key=normalized_key)
         return sanitized
@@ -194,33 +262,40 @@ def normalize_session_document(
     validate_session_id(session_id)
     if not isinstance(payload, dict):
         raise ChatHistoryValidationError("Session payload must be a JSON object.")
-    if (existing or {}).get("deleting") is True:
-        raise ChatHistoryConflictError(
-            "Chat session deletion is in progress; retry after it completes."
-        )
 
-    existing_revision = int((existing or {}).get("clientRevision") or 0)
-    requested_revision = payload.get("clientRevision")
-    if requested_revision is None:
-        client_revision = existing_revision + 1
-    elif (
-        isinstance(requested_revision, bool)
-        or not isinstance(requested_revision, int)
-        or requested_revision < 1
+    mutation_id = payload.get("mutationId")
+    if not isinstance(mutation_id, str) or not _MUTATION_ID_PATTERN.fullmatch(mutation_id):
+        raise ChatHistoryValidationError(
+            "mutationId must be 1-128 URL-safe characters."
+        )
+    expected_revision = payload.get("expectedRevision")
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
     ):
-        raise ChatHistoryValidationError("clientRevision must be a positive integer.")
-    else:
-        client_revision = requested_revision
-    if existing is not None and client_revision <= existing_revision:
+        raise ChatHistoryValidationError("expectedRevision must be a non-negative integer.")
+    existing_revision = int((existing or {}).get("revision") or 0)
+    if expected_revision != existing_revision:
         raise ChatHistoryConflictError(
-            "A newer chat snapshot is already saved; reload the session before retrying."
+            "Chat session changed since it was loaded; reload before saving."
         )
 
-    messages = [
-        normalized
-        for raw_message in list(payload.get("messages") or [])[-MAX_MESSAGES:]
-        if (normalized := _normalize_message(raw_message)) is not None
-    ]
+    raw_messages = payload.get("messages", [])
+    if not isinstance(raw_messages, list):
+        raise ChatHistoryValidationError("messages must be a JSON array.")
+    if len(raw_messages) > MAX_MESSAGES:
+        raise ChatHistoryValidationError(
+            f"Session exceeds the {MAX_MESSAGES}-message limit. Start a new chat before saving."
+        )
+    messages: list[dict[str, Any]] = []
+    for raw_message in raw_messages:
+        normalized = _normalize_message(raw_message)
+        if normalized is None:
+            raise ChatHistoryValidationError(
+                "Each message must contain a valid role and content."
+            )
+        messages.append(normalized)
     raw_context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     context = sanitize_value({
         key: raw_context[key]
@@ -238,8 +313,9 @@ def normalize_session_document(
         "id": session_id,
         "sessionId": session_id,
         "ownerId": owner_id,
-        "schemaVersion": 2,
-        "clientRevision": client_revision,
+        "schemaVersion": 1,
+        "revision": existing_revision + 1,
+        "lastMutationId": mutation_id,
         "title": title or _derive_title(messages),
         "createdAt": (existing or {}).get("createdAt") or now,
         "updatedAt": now,
@@ -260,6 +336,9 @@ def public_session_document(document: dict[str, Any]) -> dict[str, Any]:
     """Remove internal owner, blob, and Cosmos metadata before returning a session."""
     public = copy.deepcopy(document)
     public.pop("ownerId", None)
+    applied_mutation_id = public.pop("lastMutationId", None)
+    if applied_mutation_id:
+        public["appliedMutationId"] = applied_mutation_id
     for key in list(public):
         if key.startswith("_"):
             public.pop(key, None)
@@ -299,19 +378,17 @@ class ChatHistoryRepository(Protocol):
         payload: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    async def begin_delete(
+        self,
+        owner_id: str,
+        session_id: str,
+        expected_etag: str | None,
+    ) -> dict[str, Any]: ...
+
     async def delete_session(
         self,
         owner_id: str,
         session_id: str,
-        *,
-        expected_etag: str | None = None,
-    ) -> dict[str, Any]: ...
-
-    async def mark_deleting(
-        self,
-        owner_id: str,
-        session_id: str,
-        *,
         expected_etag: str | None = None,
     ) -> dict[str, Any]: ...
 
@@ -344,9 +421,9 @@ class ArtifactStore(Protocol):
 
     async def download(self, attachment: dict[str, Any]) -> bytes: ...
 
-    async def delete(self, attachment: dict[str, Any]) -> None: ...
-
     async def touch(self, attachment: dict[str, Any]) -> None: ...
+
+    async def delete(self, attachment: dict[str, Any]) -> None: ...
 
 
 class InMemoryChatHistoryRepository:
@@ -377,50 +454,50 @@ class InMemoryChatHistoryRepository:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         existing = self._documents.get((owner_id, session_id))
+        if existing and existing.get("_deleting"):
+            raise ChatHistoryConflictError("Chat session is being deleted.")
+        if existing and existing.get("lastMutationId") == payload.get("mutationId"):
+            return copy.deepcopy(existing)
         document = normalize_session_document(
             owner_id,
             session_id,
             payload,
             existing=existing,
         )
-        document["_etag"] = str(int((existing or {}).get("_etag") or 0) + 1)
+        document["_etag"] = f"revision-{document['revision']}"
         self._documents[(owner_id, session_id)] = document
+        return copy.deepcopy(document)
+
+    async def begin_delete(
+        self,
+        owner_id: str,
+        session_id: str,
+        expected_etag: str | None,
+    ) -> dict[str, Any]:
+        document = await self.get_session(owner_id, session_id)
+        if expected_etag and document.get("_etag") != expected_etag:
+            raise ChatHistoryConflictError(
+                "Chat session changed during deletion; retry the request."
+            )
+        if not document.get("_deleting"):
+            document["_deleting"] = True
+            document["_etag"] = f"deleting-{uuid.uuid4()}"
+            self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(document)
 
     async def delete_session(
         self,
         owner_id: str,
         session_id: str,
-        *,
         expected_etag: str | None = None,
     ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
-        if expected_etag is not None and document.get("_etag") != expected_etag:
+        if expected_etag and document.get("_etag") != expected_etag:
             raise ChatHistoryConflictError(
                 "Chat session changed during deletion; retry the request."
             )
         del self._documents[(owner_id, session_id)]
         return document
-
-    async def mark_deleting(
-        self,
-        owner_id: str,
-        session_id: str,
-        *,
-        expected_etag: str | None = None,
-    ) -> dict[str, Any]:
-        document = await self.get_session(owner_id, session_id)
-        if document.get("deleting") is True:
-            return document
-        if expected_etag is not None and document.get("_etag") != expected_etag:
-            raise ChatHistoryConflictError(
-                "Chat session changed during deletion; retry the request."
-            )
-        document["deleting"] = True
-        document["updatedAt"] = utc_now_iso()
-        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
-        self._documents[(owner_id, session_id)] = document
-        return copy.deepcopy(document)
 
     async def add_attachment(
         self,
@@ -429,8 +506,8 @@ class InMemoryChatHistoryRepository:
         attachment: dict[str, Any],
     ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
-        if document.get("deleting") is True:
-            raise ChatHistoryConflictError("Chat session deletion is in progress.")
+        if document.get("_deleting"):
+            raise ChatHistoryConflictError("Chat session is being deleted.")
         attachments = [
             item for item in document.get("attachments", [])
             if item.get("id") != attachment.get("id")
@@ -441,7 +518,7 @@ class InMemoryChatHistoryRepository:
             )
         document["attachments"] = attachments + [copy.deepcopy(attachment)]
         document["updatedAt"] = utc_now_iso()
-        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
+        document["_etag"] = f"attachment-{uuid.uuid4()}"
         self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(document)
 
@@ -452,8 +529,8 @@ class InMemoryChatHistoryRepository:
         attachment_id: str,
     ) -> dict[str, Any]:
         document = await self.get_session(owner_id, session_id)
-        if document.get("deleting") is True:
-            raise ChatHistoryConflictError("Chat session deletion is in progress.")
+        if document.get("_deleting"):
+            raise ChatHistoryConflictError("Chat session is being deleted.")
         attachments = document.get("attachments", [])
         removed = next(
             (item for item in attachments if item.get("id") == attachment_id),
@@ -465,7 +542,7 @@ class InMemoryChatHistoryRepository:
             item for item in attachments if item.get("id") != attachment_id
         ]
         document["updatedAt"] = utc_now_iso()
-        document["_etag"] = str(int(document.get("_etag") or 0) + 1)
+        document["_etag"] = f"attachment-{uuid.uuid4()}"
         self._documents[(owner_id, session_id)] = document
         return copy.deepcopy(removed)
 
@@ -563,6 +640,11 @@ class CosmosChatHistoryRepository:
                         continue
                     raise
 
+            if existing.get("_deleting"):
+                raise ChatHistoryConflictError("Chat session is being deleted.")
+            if existing.get("lastMutationId") == payload.get("mutationId"):
+                return existing
+
             document = normalize_session_document(
                 owner_id,
                 session_id,
@@ -582,54 +664,23 @@ class CosmosChatHistoryRepository:
                 raise
         raise ChatHistoryError("Chat session changed repeatedly; retry the save.")
 
-    async def delete_session(
+    async def begin_delete(
         self,
         owner_id: str,
         session_id: str,
-        *,
-        expected_etag: str | None = None,
-    ) -> dict[str, Any]:
-        document = None
-        if expected_etag is None:
-            document = await self.get_session(owner_id, session_id)
-            expected_etag = document.get("_etag")
-        container = await self._get_container()
-        from azure.core import MatchConditions
-
-        try:
-            await container.delete_item(
-                item=session_id,
-                partition_key=owner_id,
-                etag=expected_etag,
-                match_condition=MatchConditions.IfNotModified,
-            )
-        except Exception as exc:
-            if _is_status_error(exc, 412):
-                raise ChatHistoryConflictError(
-                    "Chat session changed during deletion; retry the request."
-                ) from exc
-            raise
-        return document or {"id": session_id, "sessionId": session_id}
-
-    async def mark_deleting(
-        self,
-        owner_id: str,
-        session_id: str,
-        *,
-        expected_etag: str | None = None,
+        expected_etag: str | None,
     ) -> dict[str, Any]:
         container = await self._get_container()
         from azure.core import MatchConditions
 
         document = await self.get_session(owner_id, session_id)
-        if document.get("deleting") is True:
-            return document
-        if expected_etag is not None and document.get("_etag") != expected_etag:
+        if expected_etag and document.get("_etag") != expected_etag:
             raise ChatHistoryConflictError(
                 "Chat session changed during deletion; retry the request."
             )
-        document["deleting"] = True
-        document["updatedAt"] = utc_now_iso()
+        if document.get("_deleting"):
+            return document
+        document["_deleting"] = True
         try:
             return await container.replace_item(
                 item=session_id,
@@ -644,6 +695,35 @@ class CosmosChatHistoryRepository:
                 ) from exc
             raise
 
+    async def delete_session(
+        self,
+        owner_id: str,
+        session_id: str,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
+        document = (
+            await self.get_session(owner_id, session_id)
+            if expected_etag is None
+            else {"_etag": expected_etag}
+        )
+        container = await self._get_container()
+        from azure.core import MatchConditions
+
+        try:
+            await container.delete_item(
+                item=session_id,
+                partition_key=owner_id,
+                etag=expected_etag or document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except Exception as exc:
+            if _is_status_error(exc, 412):
+                raise ChatHistoryConflictError(
+                    "Chat session changed during deletion; retry the request."
+                ) from exc
+            raise
+        return document
+
     async def add_attachment(
         self,
         owner_id: str,
@@ -655,8 +735,8 @@ class CosmosChatHistoryRepository:
 
         for _attempt in range(MAX_COSMOS_WRITE_ATTEMPTS):
             document = await self.get_session(owner_id, session_id)
-            if document.get("deleting") is True:
-                raise ChatHistoryConflictError("Chat session deletion is in progress.")
+            if document.get("_deleting"):
+                raise ChatHistoryConflictError("Chat session is being deleted.")
             attachments = [
                 item for item in document.get("attachments", [])
                 if item.get("id") != attachment.get("id")
@@ -691,8 +771,8 @@ class CosmosChatHistoryRepository:
 
         for _attempt in range(MAX_COSMOS_WRITE_ATTEMPTS):
             document = await self.get_session(owner_id, session_id)
-            if document.get("deleting") is True:
-                raise ChatHistoryConflictError("Chat session deletion is in progress.")
+            if document.get("_deleting"):
+                raise ChatHistoryConflictError("Chat session is being deleted.")
             attachments = document.get("attachments", [])
             removed = next(
                 (item for item in attachments if item.get("id") == attachment_id),
@@ -783,12 +863,12 @@ class InMemoryArtifactStore:
             raise ChatHistoryNotFoundError("Attachment content not found.")
         return bytes(content)
 
-    async def delete(self, attachment: dict[str, Any]) -> None:
-        self._files.pop(str(attachment.get("blobName") or ""), None)
-
     async def touch(self, attachment: dict[str, Any]) -> None:
         if str(attachment.get("blobName") or "") not in self._files:
             raise ChatHistoryNotFoundError("Attachment content not found.")
+
+    async def delete(self, attachment: dict[str, Any]) -> None:
+        self._files.pop(str(attachment.get("blobName") or ""), None)
 
 
 class BlobArtifactStore:
@@ -863,6 +943,16 @@ class BlobArtifactStore:
                 raise ChatHistoryNotFoundError("Attachment content not found.") from exc
             raise
 
+    async def touch(self, attachment: dict[str, Any]) -> None:
+        container = await self._get_container()
+        blob = container.get_blob_client(attachment["blobName"])
+        try:
+            await blob.set_blob_metadata(metadata={"session_active_at": utc_now_iso()})
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                raise ChatHistoryNotFoundError("Attachment content not found.") from exc
+            raise
+
     async def delete(self, attachment: dict[str, Any]) -> None:
         container = await self._get_container()
         blob = container.get_blob_client(attachment["blobName"])
@@ -871,16 +961,6 @@ class BlobArtifactStore:
         except Exception as exc:
             if not _is_not_found_error(exc):
                 raise
-
-    async def touch(self, attachment: dict[str, Any]) -> None:
-        container = await self._get_container()
-        blob = container.get_blob_client(attachment["blobName"])
-        try:
-            await blob.set_blob_metadata(metadata={})
-        except Exception as exc:
-            if _is_not_found_error(exc):
-                raise ChatHistoryNotFoundError("Attachment content not found.") from exc
-            raise ChatHistoryError("Attachment retention could not be refreshed.") from exc
 
 
 _history_repository: ChatHistoryRepository | None = None

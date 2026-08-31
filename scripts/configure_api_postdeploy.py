@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 EXIT_SUCCESS = 0
@@ -119,9 +120,48 @@ def _enabled(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def resolve_weather_stub_url(resource_group: str) -> str:
+    """Return the live weather app origin, falling back to the saved output."""
+    weather_stub_url = os.getenv("AZURE_WEATHER_STUB_URL", "").strip().rstrip("/")
+    app_name = os.getenv("AZURE_WEATHER_STUB_CONTAINER_APP_NAME", "").strip()
+    if app_name:
+        live_fqdn = run_az(
+            [
+                "containerapp",
+                "show",
+                "--name",
+                app_name,
+                "--resource-group",
+                resource_group,
+                "--query",
+                "properties.configuration.ingress.fqdn",
+                "--output",
+                "tsv",
+            ]
+        ).strip()
+        if not live_fqdn:
+            raise RuntimeError("Weather Container App has no ingress FQDN.")
+        weather_stub_url = f"https://{live_fqdn}"
+
+    if weather_stub_url:
+        parsed_weather_url = urlsplit(weather_stub_url)
+        if (
+            parsed_weather_url.scheme != "https"
+            or not parsed_weather_url.hostname
+            or parsed_weather_url.username
+            or parsed_weather_url.password
+            or parsed_weather_url.path not in ("", "/")
+            or parsed_weather_url.query
+            or parsed_weather_url.fragment
+        ):
+            raise RuntimeError("Weather stub URL must be an absolute HTTPS origin.")
+    return weather_stub_url
+
+
 def reconcile_api_optional_services(name: str, resource_group: str) -> None:
     """Apply optional-service outputs to a newly deployed or adopted API."""
     values: list[str] = []
+    removed_values: list[str] = []
     public_demo = _enabled(os.getenv("PUBLIC_DEMO_MODE", ""))
     chat_endpoint = os.getenv("AZURE_COSMOS_CHAT_HISTORY_ENDPOINT", "").strip()
     blob_endpoint = os.getenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
@@ -132,9 +172,16 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
                 [
                     "PE_FEATURE_CHAT_HISTORY=false",
                     "CHAT_HISTORY_STORE=disabled",
-                    "COSMOS_CHAT_ENDPOINT=",
                     "CHAT_ARTIFACT_STORE=disabled",
-                    "CHAT_ARTIFACT_BLOB_ENDPOINT=",
+                ]
+            )
+            removed_values.extend(
+                [
+                    "COSMOS_CHAT_ENDPOINT",
+                    "COSMOS_CHAT_DATABASE",
+                    "COSMOS_CHAT_CONTAINER",
+                    "CHAT_ARTIFACT_BLOB_ENDPOINT",
+                    "CHAT_ARTIFACT_CONTAINER",
                 ]
             )
         elif chat_endpoint and blob_endpoint:
@@ -192,6 +239,16 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
             ]
         )
 
+    weather_stub_url = resolve_weather_stub_url(resource_group)
+    if weather_stub_url:
+        values.extend(
+            [
+                "FORECAST_AGENT_ENABLED=1",
+                f"AURORA_ENDPOINT_URL={weather_stub_url}",
+                f"EARTH2_FCN_ENDPOINT_URL={weather_stub_url}",
+            ]
+        )
+
     geofm_url = os.getenv("AZURE_GEOFM_MCP_URL", "").strip()
     if geofm_url:
         api_key = os.getenv("GEOFM_MCP_API_KEY", "").strip()
@@ -223,21 +280,21 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
             ]
         )
 
-    if values:
-        run_az(
-            [
-                "containerapp",
-                "update",
-                "--name",
-                name,
-                "--resource-group",
-                resource_group,
-                "--set-env-vars",
-                *values,
-                "--output",
-                "none",
-            ]
-        )
+    if values or removed_values:
+        arguments = [
+            "containerapp",
+            "update",
+            "--name",
+            name,
+            "--resource-group",
+            resource_group,
+        ]
+        if values:
+            arguments.extend(["--set-env-vars", *values])
+        if removed_values:
+            arguments.extend(["--remove-env-vars", *removed_values])
+        arguments.extend(["--output", "none"])
+        run_az(arguments)
 
 
 def configure_logging() -> None:
@@ -476,18 +533,18 @@ def wait_for_geofm_readiness(
     raise RuntimeError("GeoFM dependency readiness did not become healthy.")
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
     """Configure a Container App target from arguments or azd environment."""
     configure_logging()
-    arguments = create_parser().parse_args()
+    parsed_arguments = create_parser().parse_args(arguments)
     default_name_variable = {
         "api": "AZURE_CONTAINER_APP_NAME",
         "geofm": "AZURE_GEOFM_MCP_CONTAINER_APP_NAME",
         "web-search": "AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME",
-    }[arguments.profile]
-    name = (arguments.name or os.getenv(default_name_variable, "")).strip()
+    }[parsed_arguments.profile]
+    name = (parsed_arguments.name or os.getenv(default_name_variable, "")).strip()
     resource_group = (
-        arguments.resource_group or os.getenv("AZURE_RESOURCE_GROUP", "")
+        parsed_arguments.resource_group or os.getenv("AZURE_RESOURCE_GROUP", "")
     ).strip()
     if not name or not resource_group:
         logger.error(
@@ -496,10 +553,10 @@ def main() -> int:
         return EXIT_FAILURE
 
     try:
-        if arguments.profile == "api":
+        if parsed_arguments.profile == "api":
             reconcile_api_optional_services(name, resource_group)
-        configure_container_app(name, resource_group, arguments.profile)
-        if arguments.profile == "geofm":
+        configure_container_app(name, resource_group, parsed_arguments.profile)
+        if parsed_arguments.profile == "geofm":
             wait_for_geofm_readiness(name, resource_group)
     except (
         KeyError,
@@ -509,10 +566,16 @@ def main() -> int:
         RuntimeError,
         subprocess.SubprocessError,
     ) as exc:
-        logger.error("%s postdeploy configuration failed: %s", arguments.profile, exc)
+        logger.error(
+            "%s postdeploy configuration failed: %s",
+            parsed_arguments.profile,
+            exc,
+        )
         return EXIT_FAILURE
 
-    logger.info("Configured %s ingress and health probes.", arguments.profile)
+    logger.info(
+        "Configured %s ingress and health probes.", parsed_arguments.profile
+    )
     return EXIT_SUCCESS
 
 

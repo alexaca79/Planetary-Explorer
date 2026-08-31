@@ -110,4 +110,21 @@ describe('ApiService query streaming', () => {
       cancelled: true,
     });
   });
+
+  it('omits a resilience region filter for a national Canadian assessment', async () => {
+    // Arrange
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse([
+      'data: {"type":"dossier","payload":{"facilities":[]}}\n\n',
+    ]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Act
+    await apiService.streamResilienceAssessment({
+      userQuery: 'Assess all Canadian facilities',
+    });
+
+    // Assert
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(requestBody).not.toHaveProperty('region_filter');
+  });
 });

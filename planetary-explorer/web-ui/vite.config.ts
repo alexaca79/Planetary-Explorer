@@ -10,7 +10,11 @@ export default defineConfig(({ command, mode }) => {
   
   // For local development proxy - use Azure backend or localhost
   // Set LOCAL_BACKEND_URL in .env.local to point to your deployed backend
-  const LOCAL_BACKEND = env.LOCAL_BACKEND_URL || 'http://localhost:8000';
+  const LOCAL_BACKEND = process.env.LOCAL_BACKEND_URL
+    || env.LOCAL_BACKEND_URL
+    || process.env.VITE_API_BASE_URL
+    || env.VITE_API_BASE_URL
+    || 'http://localhost:8000';
   
   console.log(` Vite config: Backend URL = ${LOCAL_BACKEND}`);
   
@@ -133,7 +137,7 @@ export default defineConfig(({ command, mode }) => {
       // VITE_API_BASE_URL is set by the deployment workflow at build time
       // For local development, use localhost backend
       'import.meta.env.VITE_API_BASE_URL': JSON.stringify(
-        isDev ? 'http://localhost:8000' : process.env.VITE_API_BASE_URL || ''
+        isDev ? LOCAL_BACKEND : process.env.VITE_API_BASE_URL || ''
       )
     }
   };

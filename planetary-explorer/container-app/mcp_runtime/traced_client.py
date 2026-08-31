@@ -269,7 +269,11 @@ class TracedMcpClient:
             return None
         return cls(
             server_id=server.server_id,
-            underlying=RemoteMcpClient(server.url, api_key=server.api_key),
+            underlying=RemoteMcpClient(
+                server.url,
+                api_key=server.api_key,
+                request_timeout_seconds=60.0,
+            ),
             turn_id=turn_id,
             confirm=confirm,
         )

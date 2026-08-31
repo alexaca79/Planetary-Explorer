@@ -17,7 +17,9 @@ describe('ApiService chat history', () => {
   it('saves a session snapshot to the encoded session route', async () => {
     // Arrange
     const snapshot = {
-      messages: [{ role: 'user' as const, content: 'Show Seattle', timestamp: new Date() }],
+      expectedRevision: 0,
+      mutationId: 'frontend-api-save',
+      messages: [{ role: 'user' as const, content: 'Show Toronto in 2026', timestamp: new Date() }],
       context: { selectedModel: 'gpt-5' },
     };
     put.mockResolvedValue({ data: { sessionId: 'session/one', ...snapshot } });
@@ -61,6 +63,31 @@ describe('ApiService chat history', () => {
       '/api/chat-history/sessions/session-1/files',
       expect.any(FormData),
       { headers: { 'Content-Type': undefined } },
+    );
+  });
+
+  it('forwards restored Pro mode to direct vision requests', async () => {
+    // Arrange
+    post.mockResolvedValue({ data: { result: { response: 'sampled' }, session_id: 'vision-1' } });
+
+    // Act
+    await apiService.sendVisionChatMessage(
+      null,
+      'What is the elevation?',
+      47.5,
+      -122.0,
+      undefined,
+      {
+        stac_mode: 'pro',
+        current_collection: 'private-dem',
+        stac_items: [{ id: 'private-item', collection: 'private-dem', assets: {} }],
+      },
+    );
+
+    // Assert
+    expect(post).toHaveBeenCalledWith(
+      '/api/geoint/vision',
+      expect.objectContaining({ stac_mode: 'pro' }),
     );
   });
 });

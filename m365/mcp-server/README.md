@@ -1,4 +1,7 @@
-# Planetary Explorer Resilience Agent — MCP Server
+---
+title: Planetary Explorer Resilience Agent MCP Server
+description: Connect the Canadian 2026 operational resilience agent to MCP clients.
+---
 
 A Model Context Protocol (MCP) server that wraps the four
 `/api/resilience/*` endpoints of the Planetary Explorer backend so any
@@ -112,7 +115,7 @@ endpoint is `<that-url>/mcp`.
     | Authentication | `None` (dev) — switch to API key when you deploy |
 
 5. Save. Copilot Studio should auto-discover the four tools.
-6. Test from the right-hand pane: *"Which Texas facilities are at risk this week?"*
+6. Test from the right-hand pane: *"For the week of August 26, 2026, which Canadian facilities are most at risk?"*
 
 ## Use from VS Code
 

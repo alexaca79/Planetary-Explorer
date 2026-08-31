@@ -25,7 +25,7 @@ class ResilienceQuery:
     """
 
     user_assertion: str
-    region_filter: str | None = None         # e.g. "TX" or "Texas"; None = all
+    region_filter: str | None = None         # e.g. "BC" or "British Columbia"; None = all
     horizon_days: int = 7                    # forecast lookahead
     hazards: tuple[str, ...] = ALL_HAZARDS   # which hazard scorers to run
     user_query: str | None = None            # the natural-language ask

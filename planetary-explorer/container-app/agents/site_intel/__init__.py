@@ -31,8 +31,8 @@ Framework (MAF) :class:`WorkflowBuilder` graph:
     ReviewExecutor             (LLM critique — confidence/concerns/next_steps;
                                 yields final dossier; SITE_REVIEW=1)
 
-Selected by ``SITE_AUDIT_V2=1`` in ``fastapi_app.py``. When the flag is not
-set or MAF is unavailable, the legacy monolithic ``audit_site`` is used.
+The API always selects this workflow. If MAF is unavailable, the endpoint
+fails closed with a service-unavailable response.
 
 The deterministic scoring functions (``_score_power``, ``_score_water``, …)
 live in ``agents.site_audit`` and are imported unchanged so v1 and v2

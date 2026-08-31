@@ -8,14 +8,18 @@ import { apiService } from '../../services/api';
 vi.mock('../../services/api', () => ({
   apiService: {
     sendChatMessage: vi.fn(),
+    saveChatSession: vi.fn(),
   },
 }));
 
 const mockedSendChatMessage = vi.mocked(apiService.sendChatMessage);
+const mockedSaveChatSession = vi.mocked(apiService.saveChatSession);
 
 describe('Chat sequential parts cancellation', () => {
   beforeEach(() => {
     mockedSendChatMessage.mockReset();
+    mockedSaveChatSession.mockReset();
+    mockedSaveChatSession.mockResolvedValue({ revision: 1 } as any);
     HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
@@ -69,5 +73,73 @@ describe('Chat sequential parts cancellation', () => {
     await waitFor(() => expect(partSignal?.aborted).toBe(true));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument());
     expect(mockedSendChatMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('adopts settled restoration context without issuing another history save', async () => {
+    // Arrange
+    mockedSendChatMessage.mockResolvedValue({
+      response: 'Initial answer',
+      session_id: 'session-1',
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        mutations: { retry: false },
+        queries: { retry: false },
+      },
+    });
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <Chat
+          selectedDataset={null}
+          chatMode
+          geointMode={false}
+          chatHistoryEnabled
+          historyRestorePending={false}
+        />
+      </QueryClientProvider>
+    );
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Create a saved turn' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Initial answer');
+    await waitFor(() => expect(mockedSaveChatSession).toHaveBeenCalledTimes(1));
+    mockedSaveChatSession.mockClear();
+
+    // Act
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <Chat
+          selectedDataset={null}
+          chatMode
+          geointMode={false}
+          chatHistoryEnabled
+          historyRestorePending
+          stacMode="pro"
+          mapContext={{
+            stac_mode: 'pro',
+            current_collection: 'private-dem',
+            imagery_url: 'https://private.example/item.tif',
+          }}
+        />
+      </QueryClientProvider>
+    );
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <Chat
+          selectedDataset={null}
+          chatMode
+          geointMode={false}
+          chatHistoryEnabled
+          historyRestorePending={false}
+          stacMode="public"
+          mapContext={{ stac_mode: 'public', has_satellite_data: false }}
+        />
+      </QueryClientProvider>
+    );
+
+    // Assert
+    await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument());
+    expect(mockedSaveChatSession).not.toHaveBeenCalled();
   });
 });

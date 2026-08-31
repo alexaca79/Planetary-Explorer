@@ -126,6 +126,30 @@ def test_given_multiple_possible_apis_when_resolving_then_ambiguity_is_rejected(
         )
 
 
+def test_given_tagged_web_search_app_when_resolving_then_only_api_is_adopted() -> None:
+    # Arrange
+    container_apps = [
+        {
+            "name": "ca-earthcopilot-api",
+            "tags": {"azd-service-name": "api"},
+        },
+        {
+            "name": "ca-web-search-44gnuvaloryac",
+            "tags": {"azd-service-name": "web-search-mcp"},
+        },
+    ]
+
+    # Act
+    targets = MODULE.select_deployment_targets(
+        container_apps=container_apps,
+        web_apps=[],
+        environment_name="earthcopilot",
+    )
+
+    # Assert
+    assert targets.api_container_app_name == "ca-earthcopilot-api"
+
+
 def test_given_existing_web_app_and_wrong_plan_when_resolving_then_move_is_rejected() -> None:
     # Arrange
     web_apps = [

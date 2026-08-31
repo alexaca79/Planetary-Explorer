@@ -57,6 +57,16 @@ param publicDemoMode bool = false
 @description('Deploy durable per-user chat history in Cosmos DB with downloadable artifacts in Blob Storage.')
 param deployChatHistory bool = true
 
+@description('Comma-separated host names accepted by the API. Include custom API domains when configured.')
+param allowedHosts string = '*.azurecontainerapps.io'
+
+@description('Maximum accepted API request body size in bytes.')
+@minValue(1048576)
+param maxRequestBodyBytes int = 33554432
+
+@description('Expose interactive OpenAPI documentation routes.')
+param enableApiDocs bool = false
+
 @description('Microsoft Entra Client ID (Application ID)')
 param microsoftEntraClientId string = ''
 
@@ -185,6 +195,9 @@ param enableMpcPro bool = false
 
 @description('STAC API base URL for the private GeoCatalog (MPC Pro). Surfaced to the API container as MPC_PRO_STAC_URL. Format: https://<gc>.<region>.geocatalog.spatio.azure.com/stac. Empty disables the Pro path even if enableMpcPro=true.')
 param mpcProStacUrl string = ''
+
+@description('Comma-separated exact Azure Storage FQDNs allowed to receive collection SAS tokens for MPC Pro raster sampling. Empty disables SAS signing.')
+param mpcProAssetHosts string = ''
 
 @description('Deploy the MPC Pro MCP sidecar. Off by default — image must exist in ACR first (no CI build step yet for mpc-mcp-sidecar/Dockerfile). When on, also flip USE_MPC_MCP on the backend after granting the sidecar MI Reader inside the GeoCatalog. See planetary-explorer/mpc-mcp-sidecar/README.md.')
 param deployMpcMcp bool = false
@@ -633,6 +646,21 @@ module webSearchMcpFoundryAccess './shared/foundry-role.bicep' = if (shouldDeplo
   }
 }
 
+module weatherStub './app/weather-stub.bicep' = if (deployWeatherStub) {
+  name: 'weather-stub'
+  scope: rg
+  params: {
+    name: '${abbrs.appContainerApps}weather-${resourceToken}'
+    location: location
+    tags: tags
+    containerAppsEnvironmentName: appsEnv.?outputs.?name ?? resolvedContainerAppsEnvironmentName
+    containerRegistryName: registry.outputs.name
+    imageName: weatherStubImageName
+    minReplicas: 0
+    maxReplicas: 2
+  }
+}
+
 module frontend './app/frontend.bicep' = if (deployFrontend) {
   name: 'frontend'
   scope: rg
@@ -677,6 +705,9 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     azureMapsSubscriptionKey: maps.outputs.primaryKey
     enableAuthentication: enableAuthentication
     publicDemoMode: publicDemoMode
+    allowedHosts: allowedHosts
+    maxRequestBodyBytes: maxRequestBodyBytes
+    enableApiDocs: enableApiDocs
     microsoftEntraClientId: microsoftEntraClientId
     microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
@@ -713,6 +744,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     enableFabric: enableFabric
     enableMpcPro: enableMpcPro
     mpcProStacUrl: mpcProStacUrl
+    mpcProAssetHosts: mpcProAssetHosts
     fabricWorkspaceId: fabricWorkspaceId
     fabricLakehouseId: fabricLakehouseId
     collectionSelectorMode: collectionSelectorMode
@@ -722,6 +754,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     keyVaultName: deployAIFoundry ? (keyVault.?outputs.?name ?? '') : ''
     keyVaultUri: deployAIFoundry ? (keyVault.?outputs.?uri ?? '') : ''
     forecastAgentEnabled: forecastAgentEnabled
+    weatherStubUrl: deployWeatherStub ? (weatherStub.?outputs.?uri ?? '') : ''
     auroraEndpointUrlConfigured: !empty(auroraEndpointUrl)
     earth2FcnEndpointUrlConfigured: !empty(earth2FcnEndpointUrl)
     maiWeatherEndpointUrlConfigured: !empty(maiWeatherEndpointUrl)
@@ -893,6 +926,10 @@ output AZURE_MCP_CONTAINER_APP_FQDN string = mcp.?outputs.?fqdn ?? ''
 // Azure Web Search MCP outputs (empty when deployWebSearchMcp = false).
 output AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME string = webSearchMcp.?outputs.?name ?? ''
 output AZURE_WEB_SEARCH_MCP_URL string = webSearchMcp.?outputs.?uri ?? ''
+
+// CPU weather stub outputs (empty when deployWeatherStub = false).
+output AZURE_WEATHER_STUB_CONTAINER_APP_NAME string = weatherStub.?outputs.?name ?? ''
+output AZURE_WEATHER_STUB_URL string = weatherStub.?outputs.?uri ?? ''
 
 // MPC Pro MCP sidecar outputs (empty when deployMpcMcp = false). The
 // principalId is what an operator pastes into the GeoCatalog instance's

@@ -153,11 +153,11 @@ vegetation, land cover) before answering.
 
 Only route to "standard" when the query is a literal one-shot dump with
 no qualifiers, e.g.:
-  - "Run the standard 7-day TX heat + wildfire check."
+    - "Run the standard seven-day Western Canada heat and wildfire check for August 26, 2026."
   - "Refresh the dossier."
   - "Recompute risk for all facilities."
 
-Everything else — including a bare "What's at risk in Texas this week?" —
+Everything else — including a bare "What's at risk in Western Canada for the week of August 26, 2026?" —
 is "investigative" because the planner can choose the right MPC
 collections, pull facility metadata, and synthesise a conversational
 answer instead of returning only a table.
@@ -308,8 +308,8 @@ HARD RULES — do not violate these:
       returns the downstream blast radius (every cascade, every lane).
     - "what facilities are in region Y?" → `query_facilities(region_filter=Y)`.
     - "what's the recommended workaround / runbook?" → `search_playbooks(...)`.
-  If the user mentions a facility by name or city (e.g. "Houston port
-  distribution center"), call `query_facilities` first to resolve it to
+    If the user mentions a facility by name or city (e.g. "Vancouver
+    Distribution Centre"), call `query_facilities` first to resolve it to
   a facility id, then `simulate_outage` on that id.
 * NEVER fabricate facility names, IDs, scores, collection ids, or scene
   ids. Every entity in your answer must come from a tool result.
@@ -384,14 +384,15 @@ Write it as you would write a short, professional Slack reply:
     1–3 indented sub-bullets for peak / driver / cascade impact.
   * Lead with the bottom line in the first sentence BEFORE the bullets.
   * Name specific facilities by their `name` field, not their id.
-  * Inline-cite numbers from tools: e.g. "Austin Fab 3 hits 108 °F on
-    Thursday (score 78/100)". Cite MPC scenes by collection id and date.
+    * Inline-cite numbers from tools: e.g. "Toronto Advanced Manufacturing
+        reaches 34 °C on Thursday (score 78/100)". Cite MPC scenes by
+        collection id and date.
   * If you used MPC imagery, say WHICH collection and WHY it was the right
     one (e.g. "Sentinel-2 L2A from May 24 confirms no active smoke plume
     over the bbox"). This shows the user the planner reasoned about
     collection choice.
   * Close with a one-line recommendation when appropriate ("Consider
-    pre-positioning chillers at Round Rock DC; lead time 2 days.").
+    pre-positioning chillers at Calgary Data Centre; lead time 2 days.").
   * Keep it scannable. Do not dump raw JSON. Do not say "the tool
     returned…" — write as a human analyst.
 
@@ -586,9 +587,9 @@ class PlannerExecutor(Executor):  # type: ignore[misc]
             "  * Structure: bullet list FIRST (the breakdown), then a closing "
             "    paragraph LAST that directly answers the user's question in "
             "    plain prose. The closing paragraph is mandatory and must "
-            "    explicitly restate the answer (e.g. 'If Houston DC goes "
-            "    offline for 48h, Corpus Christi DC and San Antonio Assembly "
-            "    are the two downstream sites exposed; the recommended "
+            "    explicitly restate the answer (e.g. 'If Vancouver Distribution "
+            "    Centre goes offline for 48h, Calgary Data Centre and Edmonton "
+            "    Systems Assembly are the downstream sites exposed; the recommended "
             "    workaround is to re-route via …').\n"
             "  * Do NOT include a 'Sources' / 'Evidence' / 'Citations' section "
             "    — the UI renders citations separately from the structured "
@@ -730,7 +731,7 @@ def _build_smart_workflow():
     planner = PlannerExecutor()
     critic = CriticExecutor()
 
-    builder = WorkflowBuilder(start_executor=router)
+    builder = WorkflowBuilder(start_executor=router, output_from=[critic])
     # Router fans out to BOTH handlers; each one is a no-op for the
     # route it doesn't own. (Conditional edges would be cleaner but
     # require a newer MAF; this is portable.)

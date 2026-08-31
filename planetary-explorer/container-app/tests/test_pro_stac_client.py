@@ -219,6 +219,161 @@ def test_pro_post_attaches_bearer_api_version_and_json_body(monkeypatch):
     assert f"api-version={psc.PRO_API_VERSION}" in call["url"]
 
 
+def test_pro_get_item_sync_uses_configured_catalog_and_bearer(monkeypatch):
+    # Arrange
+    import requests
+
+    calls: list[dict] = []
+
+    class _SyncResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"id": "item/1", "collection": "private collection"}
+
+    def fake_get(url, *, headers, timeout):
+        calls.append({"url": url, "headers": headers, "timeout": timeout})
+        return _SyncResponse()
+
+    monkeypatch.setenv(
+        "MPC_PRO_STAC_URL",
+        "https://x.geocatalog.spatio.azure.com/stac",
+    )
+    monkeypatch.setattr(psc, "_acquire_token_sync", lambda: "sync-token")
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    # Act
+    item = psc.pro_get_item_sync("private collection", "item/1", timeout=12)
+
+    # Assert
+    assert item == {"id": "item/1", "collection": "private collection"}
+    assert calls[0]["headers"]["Authorization"] == "Bearer sync-token"
+    assert "/collections/private%20collection/items/item%2F1" in calls[0]["url"]
+    assert f"api-version={psc.PRO_API_VERSION}" in calls[0]["url"]
+    assert calls[0]["timeout"] == 12
+
+
+def test_pro_search_sync_uses_configured_catalog_and_bearer(monkeypatch):
+    # Arrange
+    import requests
+
+    calls: list[dict] = []
+
+    class _SyncResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"features": [{"id": "private-item-1"}]}
+
+    def fake_post(url, *, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return _SyncResponse()
+
+    monkeypatch.setenv(
+        "MPC_PRO_STAC_URL",
+        "https://x.geocatalog.spatio.azure.com/stac",
+    )
+    monkeypatch.setattr(psc, "_acquire_token_sync", lambda: "sync-token")
+    monkeypatch.setattr(requests, "post", fake_post)
+    body = {"collections": ["private-dem"], "bbox": [-122, 47, -121, 48]}
+
+    # Act
+    features = psc.pro_search_sync(body, timeout=9)
+
+    # Assert
+    assert features == [{"id": "private-item-1"}]
+    assert calls[0]["headers"]["Authorization"] == "Bearer sync-token"
+    assert calls[0]["json"] == body
+    assert calls[0]["timeout"] == 9
+    assert calls[0]["url"].endswith(f"/search?api-version={psc.PRO_API_VERSION}")
+
+
+def test_pro_sign_item_assets_sync_appends_cached_collection_sas(monkeypatch):
+    # Arrange
+    import requests
+
+    calls: list[dict] = []
+
+    class _SyncResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"token": "sv=1&sig=collection-secret"}
+
+    def fake_get(url, *, headers, timeout):
+        calls.append({"url": url, "headers": headers, "timeout": timeout})
+        return _SyncResponse()
+
+    monkeypatch.setenv(
+        "MPC_PRO_STAC_URL",
+        "https://x.geocatalog.spatio.azure.com/stac",
+    )
+    monkeypatch.setenv("MPC_PRO_ASSET_HOSTS", "account.blob.core.windows.net")
+    monkeypatch.setattr(psc, "_acquire_token_sync", lambda: "sync-token")
+    monkeypatch.setattr(requests, "get", fake_get)
+    psc._sas_token_cache.clear()
+    item = {
+        "id": "private-item",
+        "collection": "private collection",
+        "assets": {
+            "data": {
+                "href": "https://account.blob.core.windows.net/container/private.tif?version=1"
+            },
+            "external": {"href": "https://attacker.example/collect.tif"},
+            "attacker_blob": {
+                "href": "https://attacker.blob.core.windows.net/collect/private.tif"
+            },
+            "plaintext": {
+                "href": "http://account.blob.core.windows.net/container/plain.tif"
+            },
+        },
+    }
+
+    # Act
+    first = psc.pro_sign_item_assets_sync(item)
+    second = psc.pro_sign_item_assets_sync(item)
+
+    # Assert
+    assert first["assets"]["data"]["href"].endswith(
+        "version=1&sv=1&sig=collection-secret"
+    )
+    assert second["assets"]["data"]["href"] == first["assets"]["data"]["href"]
+    assert item["assets"]["data"]["href"].endswith("private.tif?version=1")
+    assert set(first["assets"]) == {"data"}
+    assert len(calls) == 1
+    assert "/sas/token/private%20collection" in calls[0]["url"]
+    assert calls[0]["url"].endswith(f"api-version={psc.PRO_SAS_API_VERSION}")
+    assert calls[0]["headers"]["Authorization"] == "Bearer sync-token"
+
+
+def test_pro_sign_item_assets_sync_without_allowlist_does_not_request_sas(monkeypatch):
+    # Arrange
+    monkeypatch.delenv("MPC_PRO_ASSET_HOSTS", raising=False)
+    monkeypatch.setattr(
+        psc,
+        "pro_get_collection_sas_sync",
+        lambda _collection: pytest.fail("SAS must not be requested without an asset host allowlist."),
+    )
+    item = {
+        "collection": "private collection",
+        "assets": {
+            "data": {
+                "href": "https://account.blob.core.windows.net/container/private.tif"
+            }
+        },
+    }
+
+    # Act
+    signed = psc.pro_sign_item_assets_sync(item)
+
+    # Assert
+    assert signed["assets"] == {}
+    assert item["assets"]["data"]["href"].endswith("private.tif")
+
+
 # ---------------------------------------------------------------------------
 # pro_list_collections / get_pro_collection_ids
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ Runs end-to-end against the bundled seed JSON (``RESILIENCE_FORCE_SEED=1``)
 so the test is hermetic — no Fabric, no Open-Meteo, no AI Search.
 
 Verifies:
-  * registry loads 10 facilities + 20 supply edges from seed
+    * registry loads 10 facilities + a connected Canadian supply graph
   * region filter narrows correctly
   * BCP playbooks load + hazard / facility / region filters work
 """
@@ -36,7 +36,7 @@ async def test_load_registry_returns_seed() -> None:
     facilities, edges, source = await load_registry(user_assertion="")
     assert source == "seed"
     assert len(facilities) >= 10
-    assert len(edges) >= 20
+    assert len(edges) >= 10
     for col in ("facility_id", "name", "lat", "lng", "region", "criticality"):
         assert col in facilities.columns
     for col in ("src_facility_id", "dst_facility_id", "kind"):
@@ -46,9 +46,9 @@ async def test_load_registry_returns_seed() -> None:
 @pytest.mark.asyncio
 async def test_load_registry_region_filter() -> None:
     fac_all, _, _ = await load_registry(user_assertion="")
-    fac_tx, _, _ = await load_registry(user_assertion="", region_filter="TX")
-    assert len(fac_tx) <= len(fac_all)
-    assert all(r.upper() == "TX" for r in fac_tx["region"].astype(str).tolist())
+    fac_bc, _, _ = await load_registry(user_assertion="", region_filter="BC")
+    assert 0 < len(fac_bc) < len(fac_all)
+    assert all(r.upper() == "BC" for r in fac_bc["region"].astype(str).tolist())
 
 
 @pytest.mark.asyncio

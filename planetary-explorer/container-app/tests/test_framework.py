@@ -268,17 +268,19 @@ def test_registry_discovers_geofm_only_when_enabled(monkeypatch):
     from mcp_runtime.registry import McpRegistry
 
     monkeypatch.setenv("GEOFM_MCP_URL", "https://geofm.internal")
+    monkeypatch.setenv("GEOFM_MCP_API_KEY", "geofm-secret")
     monkeypatch.setenv("GEOFM_ENABLED", "false")
 
     # Act
     disabled = McpRegistry.discover()
     monkeypatch.setenv("GEOFM_ENABLED", "true")
     enabled = McpRegistry.discover()
+    monkeypatch.delenv("GEOFM_MCP_API_KEY")
 
     # Assert
     assert disabled.get("geofm") is None
     assert enabled.get("geofm") is not None
-    assert enabled.get("geofm").api_key_env == "GEOFM_MCP_API_KEY"
+    assert enabled.get("geofm").api_key == "geofm-secret"
 
 
 # ---------------------------------------------------------------------------

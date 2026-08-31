@@ -54,6 +54,7 @@ Start the service with an existing Foundry project and Azure credential:
 ```powershell
 $env:FOUNDRY_PROJECT_ENDPOINT = "https://<account>.services.ai.azure.com/api/projects/<project>"
 $env:FOUNDRY_MODEL = "gpt-4o"
+$env:WEB_SEARCH_MCP_API_KEY = "<random-value-with-at-least-32-characters>"
 python -m web_search_mcp.server
 ```
 
@@ -62,6 +63,12 @@ Endpoints:
 * `GET /health` for process liveness
 * `GET /ready` for required configuration
 * `POST /mcp` for Streamable HTTP MCP
+
+Clients must send the shared key with every MCP request:
+
+```text
+X-API-Key: <same-value-as-WEB_SEARCH_MCP_API_KEY>
+```
 
 ## Security and Data Boundary
 

@@ -9,6 +9,7 @@ import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
 import type { ChatHistoryContext } from './services/api';
+import { confirmFailedHistoryDiscard, restoredStacMode } from './utils/chatHistory';
 
 const queryClient = new QueryClient();
 
@@ -55,6 +56,7 @@ function App() {
   // publishing it here. Until then, requests omit model and let the API choose
   // its configured default.
   const [selectedModel, setSelectedModel] = useState<string>('');
+  const [modelSelectionReady, setModelSelectionReady] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<string>(() => {
     return localStorage.getItem('planetaryexplorer-reasoning-effort') || 'none';
   });
@@ -67,6 +69,7 @@ function App() {
   // the chat/map view.
 
   const [features, setFeatures] = useState<DeploymentFeatures>(DEFAULT_FEATURES);
+  const [hasUnsavedHistorySnapshot, setHasUnsavedHistorySnapshot] = useState(false);
 
   // Pull deployment feature flags once on mount. We treat any error as
   // "keep the defaults" so the UI stays functional even if the config
@@ -135,10 +138,14 @@ function App() {
   };
 
   const handleReturnToLanding = () => {
+    if (!confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     setAppState({ entered: false, entryTarget: null, selectedDataset: null, chatMode: false, initialQuery: undefined });
   };
 
-  const handleRestartSession = () => {
+  const handleRestartSession = (discardConfirmed = false) => {
+    if (!discardConfirmed && !confirmFailedHistoryDiscard(hasUnsavedHistorySnapshot)) return;
+    setHasUnsavedHistorySnapshot(false);
     // Clear chat and dataset selection but stay in the app
     // Force chat component to re-render by updating session key
     setAppState(prev => ({ 
@@ -157,9 +164,13 @@ function App() {
   };
 
   const handleRestoreChatContext = (context: ChatHistoryContext) => {
-    if (context.selectedModel) handleModelChange(context.selectedModel);
+    if (context.selectedModel) {
+      setModelSelectionReady(false);
+      handleModelChange(context.selectedModel);
+    }
     if (context.reasoningEffort) handleReasoningEffortChange(context.reasoningEffort);
-    if (context.stacMode) handleStacModeChange(context.stacMode);
+    const allowedStacMode = restoredStacMode(context.stacMode, features.mpcPro);
+    if (allowedStacMode) handleStacModeChange(allowedStacMode);
     setAppState(prev => ({
       ...prev,
       selectedDataset: context.selectedDataset
@@ -180,6 +191,7 @@ function App() {
             onModelChange={handleModelChange}
             selectedModel={selectedModel}
             onReasoningEffortChange={handleReasoningEffortChange}
+            onModelAvailabilityChange={setModelSelectionReady}
             selectedReasoningEffort={reasoningEffort}
             stacMode={stacMode}
             onStacModeChange={handleStacModeChange}
@@ -193,6 +205,7 @@ function App() {
               onModelChange={handleModelChange}
               selectedModel={selectedModel}
               onReasoningEffortChange={handleReasoningEffortChange}
+              onModelAvailabilityChange={setModelSelectionReady}
               selectedReasoningEffort={reasoningEffort}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
@@ -205,12 +218,14 @@ function App() {
               onRestartSession={handleRestartSession}
               geointMode={geointMode}
               onGeointToggle={setGeointMode}
-              selectedModel={selectedModel}
-              reasoningEffort={reasoningEffort}
+              selectedModel={modelSelectionReady ? selectedModel : ''}
+              reasoningEffort={modelSelectionReady ? reasoningEffort : undefined}
               chatHistoryEnabled={features.chatHistory}
               onRestoreChatContext={handleRestoreChatContext}
               stacMode={stacMode}
               onStacModeChange={handleStacModeChange}
+              onHistorySaveRiskChange={setHasUnsavedHistorySnapshot}
+              proEnabled={features.mpcPro}
             />
           </>
         )}

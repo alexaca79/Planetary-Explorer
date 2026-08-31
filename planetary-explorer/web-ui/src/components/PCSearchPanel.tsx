@@ -395,7 +395,7 @@ const PCSearchPanel: React.FC<PCSearchPanelProps> = ({ onSearch, ambientStacMode
             value={location}
             onChange={(e) => setLocation(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="e.g., California, New York City, 40.7,-74.0"
+            placeholder="e.g., Toronto, Alberta, 49.28,-123.12"
             className="pc-search-input"
           />
           <small className="pc-search-hint">

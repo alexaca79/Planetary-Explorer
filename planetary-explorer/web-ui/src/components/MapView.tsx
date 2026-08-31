@@ -5,6 +5,8 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { Dataset, API_BASE_URL } from '../services/api';
+import type { ChatHistoryMapRestore } from '../utils/mapHistory';
+import { buildExpansionSearchBody, resolveLeafletTileSources, restoredLayerFromContext, restorableHistoryModule } from '../utils/mapHistory';
 import { authenticatedFetch } from '../services/authHelper';
 import { getGeoFmMapFeatures } from '../utils/geofmOverlay';
 // TileUrlGenerator removed - using backend-only tile URL generation (MPC best practice)
@@ -79,6 +81,10 @@ interface MapViewProps {
   sidebarOpen?: boolean; // New: current state of sidebar
   comparisonUserQuery?: string | null; // New: user's comparison query to process
   onTerrainSessionChange?: (session: { sessionId: string | null; lat: number; lng: number } | null) => void; // Terrain session for multi-turn chat
+  historyRestore?: ChatHistoryMapRestore | null;
+  onAnalysisStateChange?: (inProgress: boolean) => void;
+  onHistoryRestoreSettled?: () => void;
+  stacMode?: 'public' | 'pro';
 }
 
 interface SatelliteData {
@@ -87,6 +93,7 @@ interface SatelliteData {
     id: string;
     collection: string;
     datetime: string;
+    bbox?: number[];
     preview?: string;
     tile_url?: string;
     assets?: any;
@@ -129,7 +136,11 @@ const MapView: React.FC<MapViewProps> = ({
   onToggleSidebar,
   sidebarOpen = false,
   comparisonUserQuery = null,
-  onTerrainSessionChange
+  onTerrainSessionChange,
+  historyRestore,
+  onAnalysisStateChange,
+  onHistoryRestoreSettled,
+  stacMode,
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<any>(null);
@@ -245,6 +256,176 @@ const MapView: React.FC<MapViewProps> = ({
   // imagery, no text). Only the Azure Maps provider supports this; the
   // Leaflet fallback ignores it.
   const [showMapLabels, setShowMapLabels] = useState<boolean>(true);
+  const restoredHistoryTokenRef = useRef<number | null>(null);
+  const pendingHistoryRestoreTokenRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    onAnalysisStateChange?.(analysisInProgress);
+  }, [analysisInProgress, onAnalysisStateChange]);
+
+  useEffect(() => {
+    if (
+      !historyRestore ||
+      !map ||
+      !mapLoaded ||
+      restoredHistoryTokenRef.current === historyRestore.token
+    ) {
+      return;
+    }
+
+    const context = historyRestore.context;
+    pendingHistoryRestoreTokenRef.current = historyRestore.token;
+    const restoredMap = context.map;
+    const restoredModule = restorableHistoryModule(context.selectedModule);
+    const restoredPin = context.pin || restoredMap?.vision_pin || null;
+
+    analysisAbortControllerRef.current?.abort();
+    analysisAbortControllerRef.current = null;
+    setAnalysisInProgress(false);
+    setIsExpanding(false);
+    setOriginalBounds(null);
+
+    const removeMarker = (marker: any) => {
+      if (!marker) return;
+      try {
+        if (mapProvider === 'leaflet') map.removeLayer(marker);
+        else map.markers?.remove(marker);
+      } catch (error) {
+        console.warn('MapView: could not remove stale module marker', error);
+      }
+    };
+    removeMarker(mobilityPinARef.current?.marker);
+    removeMarker(mobilityPinBRef.current?.marker);
+    if (terrainAnalysisPin.marker !== pinState.marker) {
+      removeMarker(terrainAnalysisPin.marker);
+    }
+    setMobilityPinA(null);
+    setMobilityPinB(null);
+    mobilityPinARef.current = null;
+    mobilityPinBRef.current = null;
+    setTerrainSessionId(null);
+    onTerrainSessionChange?.(null);
+    setComparisonState({
+      awaitingUserQuery: false,
+      beforeImagery: null,
+      afterImagery: null,
+      beforeScreenshot: null,
+      afterScreenshot: null,
+      showingBefore: true,
+    });
+
+    const staleLayers = new Set<any>([
+      ...(currentLayer ? [currentLayer] : []),
+      ...activeTileLayersRef.current,
+      ...leafletVectorLayersRef.current,
+      ...azureVectorArtifactsRef.current.flatMap((artifact) => artifact.layers),
+    ]);
+    staleLayers.forEach((layer) => {
+      try {
+        if (mapProvider === 'leaflet' && map.hasLayer?.(layer)) map.removeLayer(layer);
+        else if (mapProvider === 'azure') map.layers?.remove(layer);
+      } catch (error) {
+        console.warn('MapView: could not remove a stale history layer', error);
+      }
+    });
+    setCurrentLayer(null);
+    activeTileLayersRef.current = [];
+    leafletVectorLayersRef.current = [];
+    azureVectorArtifactsRef.current.forEach((artifact) => {
+      try { map.sources?.remove(artifact.source); } catch (_) { /* already removed */ }
+    });
+    azureVectorArtifactsRef.current = [];
+    mapRenderGenerationRef.current += 1;
+    leafletRenderGenerationRef.current += 1;
+    lastRenderedDataRef.current = null;
+    isRenderingRef.current = false;
+    setVisionScreenshot(null);
+    geofmOverlayRef.current?.remove();
+    geofmOverlayRef.current = null;
+    resilienceMarkersRef.current.forEach((marker) => {
+      try {
+        if (mapProvider === 'leaflet') map.removeLayer(marker);
+        else map.markers?.remove(marker);
+      } catch (error) {
+        console.warn('MapView: could not remove a stale facility marker', error);
+      }
+    });
+    resilienceMarkersRef.current = [];
+
+    if (pinState.marker) {
+      try {
+        if (mapProvider === 'leaflet' && window.L) map.removeLayer(pinState.marker);
+        else if (mapProvider === 'azure' && window.atlas) map.markers.remove(pinState.marker);
+      } catch (error) {
+        console.warn('MapView: could not remove the previous history pin', error);
+      }
+    }
+
+    let marker: any = null;
+    if (restoredPin) {
+      if (mapProvider === 'leaflet' && window.L) {
+        const icon = window.L.divIcon({
+          html: '<span style="display:block;width:18px;height:18px;border:3px solid white;border-radius:50%;background:#0d9488;box-shadow:0 2px 7px rgba(15,23,42,.35)"></span>',
+          className: 'history-pin-marker',
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+        marker = window.L.marker([restoredPin.lat, restoredPin.lng], { icon }).addTo(map);
+      } else if (mapProvider === 'azure' && window.atlas) {
+        marker = new window.atlas.HtmlMarker({
+          position: [restoredPin.lng, restoredPin.lat],
+          htmlContent: '<span style="display:block;width:18px;height:18px;border:3px solid white;border-radius:50%;background:#0d9488;box-shadow:0 2px 7px rgba(15,23,42,.35)"></span>',
+          anchor: 'center',
+        });
+        map.markers.add(marker);
+      }
+    }
+
+    setSelectedModule(restoredModule);
+    setPinMode(false);
+    setFreePinMode(false);
+    setVisionMode(restoredModule === 'vision');
+    setTerrainAnalysisMode(restoredModule === 'terrain');
+    setComparisonMode(false);
+    setVisionPin(restoredPin || { lat: null, lng: null });
+    setPinState(restoredPin
+      ? { ...restoredPin, active: true, marker }
+      : { lat: null, lng: null, active: false, marker: null });
+    setTerrainAnalysisPin(restoredModule === 'terrain' && restoredPin
+      ? { ...restoredPin, marker }
+      : { lat: null, lng: null, marker: null });
+    const restoredLayer = restoredLayerFromContext(restoredMap);
+    setSatelliteData(restoredLayer);
+    setOriginalBounds(restoredLayer?.bbox || null);
+    setLastCollection(restoredMap?.current_collection || null);
+
+    const bounds = restoredMap?.bounds;
+    if (bounds) {
+      if (mapProvider === 'leaflet' && window.L) {
+        map.fitBounds(
+          [[bounds.south, bounds.west], [bounds.north, bounds.east]],
+          { animate: false },
+        );
+      } else if (mapProvider === 'azure' && window.atlas) {
+        map.setCamera({
+          bounds: [bounds.west, bounds.south, bounds.east, bounds.north],
+          padding: 32,
+        });
+      }
+    } else if (restoredPin) {
+      if (mapProvider === 'leaflet' && window.L) {
+        map.setView([restoredPin.lat, restoredPin.lng], restoredMap?.zoom_level || 10, { animate: false });
+      } else if (mapProvider === 'azure' && window.atlas) {
+        map.setCamera({
+          center: [restoredPin.lng, restoredPin.lat],
+          zoom: restoredMap?.zoom_level || 10,
+        });
+      }
+    }
+
+    restoredHistoryTokenRef.current = historyRestore.token;
+    setMapPositionVersion((version) => version + 1);
+  }, [historyRestore, map, mapLoaded, mapProvider]);
 
   // Initialize fallback map using OpenStreetMap when Azure Maps fails
   const initializeFallbackMap = () => {
@@ -257,8 +438,8 @@ const MapView: React.FC<MapViewProps> = ({
       try {
         // Create Leaflet map
         const leafletMap = window.L.map(mapRef.current, {
-          center: [39.8282, -98.5795], // Center of United States
-          zoom: 4,
+          center: [56.1304, -106.3468], // Center of Canada
+          zoom: 3,
           zoomControl: true
         });
 
@@ -2101,8 +2282,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: azureMapsKey,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282] // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304] // Center on Canada
           });
           return;
         }
@@ -2132,8 +2313,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: apiAzureMapsKey,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282] // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304] // Center on Canada
           });
           return;
         } else if (apiAzureMapsKey === "DEVELOPMENT_MODE_NO_KEY" || config.azureMaps?.developmentMode) {
@@ -2142,8 +2323,8 @@ const MapView: React.FC<MapViewProps> = ({
           setMapsConfig({
             subscriptionKey: null,
             style: 'satellite_road_labels',
-            zoom: 4,
-            center: [-98.5795, 39.8282], // Center on United States
+            zoom: 3,
+            center: [-106.3468, 56.1304], // Center on Canada
             developmentMode: true
           });
           return;
@@ -2215,10 +2396,10 @@ const MapView: React.FC<MapViewProps> = ({
           setCurrentLayer(null);
         }
 
-        // Initialize the map with default US view
+        // Initialize the map with the default Canadian view.
         const mapConfig: any = {
-          center: [-98.5795, 39.8282], // Center of United States
-          zoom: 4, // Standard initial zoom for US view
+          center: [-106.3468, 56.1304], // Center of Canada
+          zoom: 3,
           language: 'en-US',
           // Use 'satellite_road_labels' basemap so label layers exist and can be moved on top
           // We'll programmatically move the label layers above our satellite tiles after adding them
@@ -2314,7 +2495,7 @@ const MapView: React.FC<MapViewProps> = ({
         newMap.events.add('ready', () => {
           mapInitialized = true;
           clearTimeout(initTimeout);
-          console.log('??? MapView: ? Azure Maps is ready and centered on United States');
+          console.log('??? MapView: ? Azure Maps is ready and centered on Canada');
 
           try {
             // Custom controls will be rendered in JSX - no default Azure Maps controls
@@ -2634,7 +2815,7 @@ const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
-    let expansionTimeoutId: NodeJS.Timeout | null = null;
+    let expansionTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const handleZoomChange = async () => {
       try {
@@ -2721,12 +2902,11 @@ const MapView: React.FC<MapViewProps> = ({
             const response = await authenticatedFetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                collections: [lastCollection],
-                bbox: expandedBbox,
-                limit: 50,
-                sortby: [{ field: 'datetime', direction: 'desc' }]
-              })
+              body: JSON.stringify(buildExpansionSearchBody(
+                lastCollection,
+                expandedBbox,
+                stacMode || 'public',
+              )),
             });
 
             if (response.ok) {
@@ -2765,7 +2945,11 @@ const MapView: React.FC<MapViewProps> = ({
                       // Extract tilejson URL from feature assets (cleaned by backend with proper rendering params)
                       const backendTilejsonUrl = feature.assets?.tilejson?.href;
                       // Fallback to generic URL only if backend didn't provide one
-                      const fallbackUrl = `https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=${feature.collection || lastCollection}&item=${feature.id}&assets=visual&asset_bidx=visual%7C1%2C2%2C3`;
+                      const fallbackCollection = encodeURIComponent(feature.collection || lastCollection);
+                      const fallbackItem = encodeURIComponent(feature.id);
+                      const fallbackUrl = stacMode === 'pro'
+                        ? `${API_BASE_URL}/api/pro/tilejson?collection=${fallbackCollection}&item=${fallbackItem}`
+                        : `https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=${fallbackCollection}&item=${fallbackItem}&assets=visual&asset_bidx=visual%7C1%2C2%2C3`;
                       
                       const tilejsonUrl = backendTilejsonUrl || fallbackUrl;
                       if (backendTilejsonUrl) {
@@ -2904,7 +3088,7 @@ const MapView: React.FC<MapViewProps> = ({
         map.off('moveend', handleZoomChange);
       };
     }
-  }, [map, mapLoaded, mapProvider, satelliteData, originalBounds, lastCollection, isExpanding]);
+  }, [map, mapLoaded, mapProvider, satelliteData, originalBounds, lastCollection, isExpanding, stacMode]);
 
   // Track zoom level changes and update state for UI
   useEffect(() => {
@@ -3282,14 +3466,23 @@ const MapView: React.FC<MapViewProps> = ({
   // Azure Maps clears all user-added layers when `styledata` fires (style reload).
   // This ref lets the styledata handler re-add the layers that were wiped.
   const activeTileLayersRef = useRef<any[]>([]);
+  const leafletVectorLayersRef = useRef<any[]>([]);
+  const azureVectorArtifactsRef = useRef<Array<{ source: any; layers: any[] }>>([]);
+  const leafletRenderGenerationRef = useRef(0);
+  const mapRenderGenerationRef = useRef(0);
   
   // Create a stable signature for satellite data to detect true changes
   const getSatelliteDataSignature = (data: SatelliteData | null): string | null => {
     if (!data) return null;
-    // Use tile_url + item count + first item ID as a unique signature
-    const firstItemId = data.items?.[0]?.id || 'none';
-    const itemCount = data.items?.length || 0;
-    return `${data.tile_url || 'no-url'}_${itemCount}_${firstItemId}`;
+    return JSON.stringify({
+      tileUrl: data.tile_url || null,
+      bbox: data.bbox || null,
+      itemIds: data.items?.map((item) => item.id) || [],
+      tiles: data.all_tile_urls?.map((tile) => ({
+        url: tile.tilejson_url,
+        bbox: tile.bbox,
+      })) || [],
+    });
   };
   
   // Reset rendering flag when TRULY new satellite data arrives (different signature)
@@ -3359,6 +3552,8 @@ const MapView: React.FC<MapViewProps> = ({
       console.log('??? MapView: Skipping satellite data rendering - Leaflet map not loaded yet');
       return;
     }
+
+    const mapRenderGeneration = ++mapRenderGenerationRef.current;
 
     console.log('??? MapView: ? Requirements met - proceeding with satellite data rendering');
     console.log('??? MapView: Adding satellite data to map:', satelliteData);
@@ -3563,6 +3758,9 @@ const MapView: React.FC<MapViewProps> = ({
 
             // Wait for all tiles to be processed
             const results = await Promise.all(tilePromises);
+            if (mapRenderGeneration !== mapRenderGenerationRef.current) {
+              return;
+            }
             
             // COLLECT all successful layers first, then add in ONE batch
             console.log('MapView: Collecting all tile layers for batch addition...');
@@ -3909,6 +4107,7 @@ const MapView: React.FC<MapViewProps> = ({
                   console.error('MapView: Failed to fetch TileJSON:', tilejsonResult.error);
                   return; // Cannot render without tile template
                 }
+                if (mapRenderGeneration !== mapRenderGenerationRef.current) return;
 
                 console.log('MapView: Using tile template from TileJSON:', tilejsonResult.tileTemplate);
                 console.log('MapView: TileJSON zoom range:', tilejsonResult.tilejson?.minzoom, '-', tilejsonResult.tilejson?.maxzoom);
@@ -4455,6 +4654,7 @@ const MapView: React.FC<MapViewProps> = ({
 
           const addGeoJsonLayers = () => {
             try {
+              if (mapRenderGeneration !== mapRenderGenerationRef.current) return;
               // Basic map check
               if (!map) {
                 console.log('??? MapView: No map instance for GeoJSON, skipping...');
@@ -4554,6 +4754,11 @@ const MapView: React.FC<MapViewProps> = ({
                 filter: ['!=', ['typeof', ['get', 'geometry']], 'null']
               });
 
+              azureVectorArtifactsRef.current.push({
+                source: dataSource,
+                layers: [polygonLayer, lineLayer],
+              });
+
               try {
                 map.layers.add([polygonLayer, lineLayer]);
                 console.log('? MapView: Successfully added GeoJSON features to Azure Maps');
@@ -4601,53 +4806,65 @@ const MapView: React.FC<MapViewProps> = ({
           return; // Exit and let the effect re-run with correct provider
         }
 
-        // Remove existing satellite layer if any
-        if (currentLayer) {
-          console.log('??? MapView: Removing existing Leaflet layer');
-          map.removeLayer(currentLayer);
-          setCurrentLayer(null);
-        }
-
-        // If we have a tile URL, add it as a tile layer
-        if (satelliteData.tile_url && window.L) {
-          console.log('??? MapView: Adding Leaflet tile layer:', satelliteData.tile_url);
-
-          // Configure tile layer options with bounds to prevent 404s outside data coverage
-          const tileLayerOptions: any = {
-            opacity: 0.8,
-            attribution: 'Planetary Computer',
-            errorTileUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', // Transparent 1x1 pixel
-            maxNativeZoom: 18, // Prevent requests beyond available zoom levels
-            tileSize: 256
-          };
-
-          // Add bounds if available to limit tile requests to actual data coverage
-          // This prevents excessive 404 errors for tiles outside the STAC item's bbox
-          if (satelliteData.bbox && satelliteData.bbox.length === 4) {
-            const [west, south, east, north] = satelliteData.bbox;
-            tileLayerOptions.bounds = window.L.latLngBounds(
-              window.L.latLng(south, west),
-              window.L.latLng(north, east)
-            );
-            console.log('??? MapView: Tile layer constrained to bbox:', satelliteData.bbox);
+        const renderGeneration = ++leafletRenderGenerationRef.current;
+        const previousLayers = new Set<any>([
+          ...(currentLayer ? [currentLayer] : []),
+          ...activeTileLayersRef.current,
+        ]);
+        previousLayers.forEach((layer) => {
+          try {
+            if (map.hasLayer?.(layer)) map.removeLayer(layer);
+          } catch (error) {
+            console.warn('MapView: Failed to remove previous Leaflet layer:', error);
           }
+        });
+        activeTileLayersRef.current = [];
+        setCurrentLayer(null);
 
-          const tileLayer = window.L.tileLayer(satelliteData.tile_url, tileLayerOptions);
-
-          // Suppress tile load errors in console (404s outside bounds are expected)
-          tileLayer.on('tileerror', (error: any) => {
-            // Silently handle tile errors - they're expected for tiles outside data coverage
-            // Only log if it's a repeated pattern that might indicate a real issue
-            const url = error.tile?.src || 'unknown';
-            if (Math.random() < 0.01) { // Log only 1% of errors to avoid console spam
-              console.debug('? MapView: Tile not available (expected for tiles outside data bounds):', url.substring(0, 120));
+        // Resolve raw TileJSON endpoints before passing templates to Leaflet.
+        if (satelliteData.tile_url && window.L) {
+          const collection = satelliteData.items?.[0]?.collection || 'unknown';
+          void resolveLeafletTileSources(
+            satelliteData,
+            collection,
+            fetchAndSignTileJSON,
+          ).then((sources) => {
+            if (renderGeneration !== leafletRenderGenerationRef.current) return;
+            const layers = sources.map((source) => {
+              const options: any = {
+                opacity: 0.8,
+                attribution: 'Planetary Computer',
+                errorTileUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+                maxNativeZoom: 18,
+                tileSize: 256,
+              };
+              if (source.bbox?.length === 4) {
+                const [west, south, east, north] = source.bbox;
+                options.bounds = window.L.latLngBounds(
+                  window.L.latLng(south, west),
+                  window.L.latLng(north, east),
+                );
+              }
+              const layer = window.L.tileLayer(source.tileTemplate, options);
+              layer.on('tileerror', (error: any) => {
+                if (Math.random() < 0.01) {
+                  const url = error.tile?.src || 'unknown';
+                  console.debug('MapView: Tile unavailable:', url.substring(0, 120));
+                }
+              });
+              layer.addTo(map);
+              return layer;
+            });
+            activeTileLayersRef.current = layers;
+            setCurrentLayer(layers[0] || null);
+            if (layers.length > 0) {
+              lastRenderedDataRef.current = getSatelliteDataSignature(satelliteData);
+            }
+          }).catch((error) => {
+            if (renderGeneration === leafletRenderGenerationRef.current) {
+              console.error('MapView: Failed to resolve Leaflet TileJSON sources:', error);
             }
           });
-
-          tileLayer.addTo(map);
-          setCurrentLayer(tileLayer);
-
-          console.log('? MapView: Successfully added Leaflet satellite tile layer');
         }
 
         // If we have map_data GeoJSON, add it as vector data
@@ -4665,6 +4882,7 @@ const MapView: React.FC<MapViewProps> = ({
             });
 
             geoJsonLayer.addTo(map);
+            leafletVectorLayersRef.current.push(geoJsonLayer);
           });
 
           console.log('? MapView: Successfully added GeoJSON featu to Leaflet');
@@ -5598,7 +5816,8 @@ const MapView: React.FC<MapViewProps> = ({
             query, 
             `Selected module: ${selectedModule}`,
             screenshot, // Pass screenshot (only populated for building_damage)
-            abortController.signal // Pass abort signal
+            abortController.signal, // Pass abort signal
+            { stac_mode: stacMode || 'public' },
           );
           
           // Send results to chat
@@ -5831,14 +6050,15 @@ const MapView: React.FC<MapViewProps> = ({
       const currentCollection = satelliteData?.items?.[0]?.collection || lastCollection || null;
       
       // Build tile URLs array from satelliteData for Vision Agent
-      const tileUrls = satelliteData?.all_tile_urls?.map((tile: { tilejson_url: string; item_id: string }) => ({
+      const tileUrls = satelliteData?.all_tile_urls?.map((tile: { tilejson_url: string; item_id: string; bbox: number[] }) => ({
         tilejson_url: tile.tilejson_url,
         item_id: tile.item_id,
+        bbox: tile.bbox,
         collection: currentCollection
       })) || [];
       
       // Build STAC items array with assets for Vision Agent raster analysis (NDVI, etc.)
-      const stacItems = satelliteData?.items?.map((item: { id: string; collection: string; bbox: number[]; datetime: string; assets?: Record<string, unknown> }) => ({
+      const stacItems = satelliteData?.items?.map((item: { id: string; collection: string; bbox?: number[]; datetime: string; assets?: Record<string, unknown> }) => ({
         id: item.id,
         collection: item.collection,
         bbox: item.bbox,
@@ -5850,14 +6070,16 @@ const MapView: React.FC<MapViewProps> = ({
 
       // Build map context - include vision screenshot if available
       const context = {
+        stac_mode: stacMode || 'public',
         bounds: bounds,
         imagery_base64: (visionMode || selectedModule === 'terrain' || selectedModule === 'mobility' || selectedModule === 'extreme_weather' || selectedModule === 'comparison' || selectedModule === 'building_damage') && visionScreenshot ? visionScreenshot : null, // Include screenshot for all GEOINT modules
         current_collection: currentCollection,
+        imagery_url: satelliteData?.tile_url || satelliteData?.preview_url,
         tile_urls: tileUrls, // TiTiler URLs for Vision Agent raster analysis
         stac_items: stacItems, // Full STAC items with assets for NDVI computation
         item_id: satelliteData?.items?.[0]?.id || null,
         datetime: satelliteData?.items?.[0]?.datetime || null,
-        zoom_level: mapProvider === 'leaflet' ? map.getZoom() : (map as atlas.Map).getCamera().zoom,
+        zoom_level: mapProvider === 'leaflet' ? map.getZoom() : (map as any).getCamera().zoom,
         has_satellite_data: !!satelliteData,  // Flag to indicate if STAC imagery is loaded
         vision_mode: visionMode,  // explicit vision mode flag
         // Pin coordinates for backend raster sampling / vision analysis.
@@ -5879,9 +6101,17 @@ const MapView: React.FC<MapViewProps> = ({
       });
 
       onMapContextChange(context);
+      if (pendingHistoryRestoreTokenRef.current !== null) {
+        pendingHistoryRestoreTokenRef.current = null;
+        onHistoryRestoreSettled?.();
+      }
     } catch (error) {
       console.error('MapView: Error updating map context:', error);
       onMapContextChange(null);
+      if (pendingHistoryRestoreTokenRef.current !== null) {
+        pendingHistoryRestoreTokenRef.current = null;
+        onHistoryRestoreSettled?.();
+      }
     }
     }, 250);
 
@@ -5891,7 +6121,7 @@ const MapView: React.FC<MapViewProps> = ({
         mapContextDebounceRef.current = null;
       }
     };
-  }, [satelliteData, map, mapLoaded, mapProvider, onMapContextChange, lastCollection, visionMode, visionPin, visionScreenshot, mapPositionVersion, selectedModule, pinState.active, pinState.lat, pinState.lng]);
+  }, [satelliteData, map, mapLoaded, mapProvider, onMapContextChange, onHistoryRestoreSettled, lastCollection, visionMode, visionPin, visionScreenshot, mapPositionVersion, selectedModule, pinState.active, pinState.lat, pinState.lng, stacMode]);
 
   // ─────────────────────────────────────────────────────────────────────
   // Resilience facility markers — listen for events from ResiliencePanel
