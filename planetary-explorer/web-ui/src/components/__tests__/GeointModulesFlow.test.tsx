@@ -153,6 +153,43 @@ describe('GEOINT module flow', () => {
     expect(onGeointAnalysis).not.toHaveBeenCalled();
   });
 
+  it('selects foundation change and arms a bounded AOI pin workflow', async () => {
+    const onGeointAnalysis = vi.fn();
+    const onModuleSelected = vi.fn();
+    const onPinChange = vi.fn();
+    renderMap({ selectedDataset: null, onGeointAnalysis, onModuleSelected, onPinChange });
+    await openModulePicker();
+
+    fireEvent.click(screen.getByText('Foundation Change'));
+
+    expect(onModuleSelected).toHaveBeenCalledWith('foundation_change');
+    expect(onGeointAnalysis).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'module_selected',
+      message: expect.stringContaining('Click the map to set the analysis area'),
+    }));
+
+    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const clickHandler = await waitFor(() => {
+      const handler = map.events.add.mock.calls
+        .filter(([event]: [string]) => event === 'click')
+        .at(-1)?.[1];
+      expect(handler).toBeTypeOf('function');
+      return handler;
+    });
+    act(() => clickHandler({ position: [-104.6189, 50.4452] }));
+
+    await waitFor(() => {
+      expect(onPinChange).toHaveBeenCalledWith({ lat: 50.4452, lng: -104.6189 });
+    });
+    await waitFor(() => {
+      expect(onGeointAnalysis).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'info',
+        message: expect.stringContaining('Analysis area set'),
+      }));
+    });
+    expect(apiMocks.triggerGeointAnalysis).not.toHaveBeenCalled();
+  });
+
   it('exposes the current satellite-label control', async () => {
     renderMap();
 

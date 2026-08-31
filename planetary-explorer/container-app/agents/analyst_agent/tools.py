@@ -11,6 +11,7 @@ All tools are async. Naming follows the catalog in REQ-ARCH-1.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -804,7 +805,13 @@ def _geofm_aoi() -> Dict[str, Any]:
 
     session = get_session()
     geod = Geod(ellps="WGS84")
-    if session.bbox:
+    if session.pin:
+        latitude, longitude = session.pin
+        west = geod.fwd(longitude, latitude, 270, 1000)[0]
+        east = geod.fwd(longitude, latitude, 90, 1000)[0]
+        south = geod.fwd(longitude, latitude, 180, 1000)[1]
+        north = geod.fwd(longitude, latitude, 0, 1000)[1]
+    elif session.bbox:
         west, south, east, north = session.bbox
         if west >= east or south >= north:
             raise ValueError("The current map bounds do not form a valid GeoFM AOI.")
@@ -816,12 +823,6 @@ def _geofm_aoi() -> Dict[str, Any]:
             raise ValueError(
                 "Zoom the map to an area no larger than 15.36 km by 15.36 km for PlanAura."
             )
-    elif session.pin:
-        latitude, longitude = session.pin
-        west = geod.fwd(longitude, latitude, 270, 1000)[0]
-        east = geod.fwd(longitude, latitude, 90, 1000)[0]
-        south = geod.fwd(longitude, latitude, 180, 1000)[1]
-        north = geod.fwd(longitude, latitude, 0, 1000)[1]
     else:
         raise ValueError("GeoFM comparison needs current map bounds or a dropped pin.")
     return {
@@ -836,6 +837,91 @@ def _geofm_aoi() -> Dict[str, Any]:
             ]
         ],
     }
+
+
+def _normalize_geofm_date(value: str, field_name: str) -> str:
+    """Return an ISO calendar date for a model-supplied GeoFM epoch."""
+    raw = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"GeoFM {field_name} must be an ISO date (YYYY-MM-DD).") from exc
+    return parsed.date().isoformat()
+
+
+def _hls_tile_id(item: Dict[str, Any]) -> str:
+    """Extract the shared HLS tile token from a STAC item identifier."""
+    parts = str(item.get("id") or "").split(".")
+    return parts[2] if len(parts) > 3 and parts[2].startswith("T") else ""
+
+
+def _cloud_cover(item: Dict[str, Any]) -> float:
+    value = (item.get("properties") or {}).get("eo:cloud_cover")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 100.0
+
+
+async def _resolve_geofm_pair_from_catalog(
+    collection_id: Optional[str],
+    before_date: str,
+    after_date: str,
+) -> tuple[str, str]:
+    """Resolve one same-tile HLS item for each requested date."""
+    from agents.vision_tools import _search_stac_items_sync
+
+    session = get_session()
+    supported = {"hls2-s30", "hls2-l30"}
+    loaded_supported = [
+        collection
+        for collection in session.loaded_collections
+        if collection in supported
+    ]
+    collection = collection_id or (loaded_supported[0] if loaded_supported else "")
+    if collection not in supported:
+        raise ValueError(
+            "Foundation Change needs a loaded HLS S30 or L30 collection."
+        )
+
+    before_day = _normalize_geofm_date(before_date, "before_date")
+    after_day = _normalize_geofm_date(after_date, "after_date")
+    if before_day >= after_day:
+        raise ValueError("GeoFM before_date must be earlier than after_date.")
+
+    aoi = _geofm_aoi()
+
+    def search(day: str) -> List[Dict[str, Any]]:
+        return _search_stac_items_sync(
+            {
+                "collections": [collection],
+                "intersects": aoi,
+                "datetime": f"{day}T00:00:00Z/{day}T23:59:59Z",
+                "limit": 20,
+            },
+            session.stac_mode,
+        )
+
+    before_items, after_items = await asyncio.gather(
+        asyncio.to_thread(search, before_day),
+        asyncio.to_thread(search, after_day),
+    )
+    pairs = [
+        (_cloud_cover(before) + _cloud_cover(after), before, after)
+        for before in before_items
+        for after in after_items
+        if _hls_tile_id(before)
+        and _hls_tile_id(before) == _hls_tile_id(after)
+        and before.get("id")
+        and after.get("id")
+    ]
+    if not pairs:
+        raise ValueError(
+            "No same-tile HLS scenes were found for both requested dates in "
+            "the current map area."
+        )
+    _, before_item, after_item = min(pairs, key=lambda pair: pair[0])
+    return str(before_item["id"]), str(after_item["id"])
 
 
 def _geofm_result(result: Any) -> Dict[str, Any]:
@@ -905,14 +991,19 @@ async def list_geofm_models() -> Dict[str, Any]:
 async def compare_with_geofm(
     before_item_id: Optional[str] = None,
     after_item_id: Optional[str] = None,
+    collection_id: Optional[str] = None,
+    before_date: Optional[str] = None,
+    after_date: Optional[str] = None,
     threshold: float = 0.35,
     max_features: int = 10,
 ) -> Dict[str, Any]:
-    """Submit a durable PlanAura comparison for two loaded HLS scenes.
+    """Submit a durable PlanAura comparison for two HLS scenes.
 
     Leave both item ids empty to use the earliest and latest loaded scenes
-    from one HLS collection. The operation requires user approval because it
-    starts billed GPU work.
+    from one HLS collection. If only one HLS scene is loaded, provide its
+    collection id plus before_date and after_date to resolve a trusted same-tile
+    pair in the current map area. The operation requires user approval because
+    it starts billed GPU work.
     """
     from mcp_runtime.traced_client import TracedMcpClient
 
@@ -945,10 +1036,23 @@ async def compare_with_geofm(
             and before_item_id in loaded_item_ids
             and after_item_id in loaded_item_ids
         )
-        epoch_a, epoch_b = _select_geofm_pair(
-            before_item_id if explicit_pair_is_loaded else None,
-            after_item_id if explicit_pair_is_loaded else None,
-        )
+        if explicit_pair_is_loaded:
+            epoch_a, epoch_b = _select_geofm_pair(
+                before_item_id,
+                after_item_id,
+            )
+        elif before_date or after_date:
+            if not before_date or not after_date:
+                raise ValueError(
+                    "Provide both before_date and after_date, or neither."
+                )
+            epoch_a, epoch_b = await _resolve_geofm_pair_from_catalog(
+                collection_id,
+                before_date,
+                after_date,
+            )
+        else:
+            epoch_a, epoch_b = _select_geofm_pair(None, None)
         requested_by = (
             session.authenticated_user_id or f"session:{session.session_id}"
         )

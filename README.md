@@ -101,8 +101,13 @@ Flip the **MPC Pro** toggle in the UI and every STAC query now runs against your
 | **Terrain** | For 2026, is this Metro Vancouver location suitable for a construction permit? Analyze slope, flood exposure, and flat areas. |
 | **Terrain** | Analyze 2026 elevation, slope, and line-of-sight near Calgary at 51.0447N, 114.0719W. |
 | **Comparison** | Compare Alberta wildfire activity on 2026-08-24 and 2026-08-26 and explain the change over 48 hours. |
+| **Foundation Change** | Use PlanAura to compare HLS L30 on 2026-07-17 and 2026-08-18 at a pinned Regina location. |
 | **Mobility** | Classify 2026 terrain traversability between two Kananaskis pins across five elevation layers. |
 | **Building Damage** | Use my MPC Pro 2026 before-and-after aerial collection to assess building damage in Jasper, Alberta. |
+
+Follow the [screenshot-backed Foundation Change walkthrough](documentation/geofm-foundation-change.md)
+to verify PlanAura, set a Canadian HLS area, approve GPU work, and poll the
+durable result.
 
 </details>
 

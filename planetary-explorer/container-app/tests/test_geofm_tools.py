@@ -6,6 +6,7 @@ from agents.analyst_agent.analyst_agent import AnalystAgent
 from agents.analyst_agent.session_context import AnalystSession, clear_session, set_session
 from agents.analyst_agent.tools import (
     _canonical_geofm_resource,
+    _geofm_aoi,
     compare_with_geofm,
     get_geofm_run,
 )
@@ -72,6 +73,25 @@ def test_given_equivalent_geofm_values_when_canonicalized_then_proofs_are_stable
 
     # Act & Assert
     assert _canonical_geofm_resource(raw) == _canonical_geofm_resource(normalized)
+
+
+def test_given_pin_and_broad_map_when_building_aoi_then_pin_defines_bounded_area() -> None:
+    # Arrange
+    session = _session()
+    session.pin = (50.4452, -104.6189)
+    session.bbox = (-105.2, 50.1, -104.0, 50.8)
+    set_session(session)
+
+    # Act
+    coordinates = _geofm_aoi()["coordinates"][0]
+
+    # Assert
+    west, south = coordinates[0]
+    east, north = coordinates[2]
+    assert west < -104.6189 < east
+    assert south < 50.4452 < north
+    assert east - west < 0.04
+    assert north - south < 0.04
 
 
 @pytest.mark.asyncio
@@ -164,6 +184,73 @@ async def test_given_untrusted_explicit_ids_when_submitting_then_loaded_pair_is_
     assert result["success"] is True
     assert request["item_id_epoch_a"] == "epoch-a"
     assert request["item_id_epoch_b"] == "epoch-b"
+
+
+@pytest.mark.asyncio
+async def test_given_one_loaded_hls_view_and_dates_when_submitting_then_catalog_pair_is_used(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient(
+        {
+            "summary": "GeoFM run run-1 is queued.",
+            "payload": {"run_id": "run-1", "status": "queued"},
+            "evidence": [],
+        }
+    )
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    session = _session()
+    session.loaded_collections = ["hls2-l30"]
+    session.stac_items = [
+        {
+            "id": "HLS.L30.T13UER.2026230T175247.v2.0",
+            "collection": "hls2-l30",
+            "properties": {"datetime": "2026-08-18T17:52:47Z"},
+        }
+    ]
+    set_session(session)
+
+    def fake_search(body, stac_mode):
+        assert stac_mode == "public"
+        day = body["datetime"][:10]
+        if day == "2026-07-17":
+            return [
+                {
+                    "id": "HLS.L30.T13UER.2026198T175230.v2.0",
+                    "properties": {"eo:cloud_cover": 1},
+                },
+                {
+                    "id": "HLS.L30.T14SPE.2026198T170709.v2.0",
+                    "properties": {"eo:cloud_cover": 0},
+                },
+            ]
+        return [
+            {
+                "id": "HLS.L30.T13UER.2026230T175247.v2.0",
+                "properties": {"eo:cloud_cover": 2},
+            }
+        ]
+
+    monkeypatch.setattr(vision_tools, "_search_stac_items_sync", fake_search)
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-l30",
+        before_date="2026-07-17",
+        after_date="2026-08-18",
+    )
+
+    # Assert
+    request = fake.calls[0][1]["request"]
+    assert result["success"] is True
+    assert request["item_id_epoch_a"] == "HLS.L30.T13UER.2026198T175230.v2.0"
+    assert request["item_id_epoch_b"] == "HLS.L30.T13UER.2026230T175247.v2.0"
 
 
 @pytest.mark.asyncio

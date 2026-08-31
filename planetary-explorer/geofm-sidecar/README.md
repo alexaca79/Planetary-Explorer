@@ -20,6 +20,8 @@ continues after the browser or agent turn disconnects.
 Standard chat uses the `/api/query/stream` endpoint so the approval card and
 tool trace remain visible while the agent turn is paused.
 
+For the web-app procedure, see [Run Foundation Change with PlanAura](../../documentation/geofm-foundation-change.md).
+
 ## Runtime boundary
 
 The capability uses two isolated containers:

@@ -112,6 +112,20 @@ function firstCollection(response: any, mapContext?: MapContext): string | undef
 export function deriveChatLegend(response: any, mapContext?: MapContext): ChatLegendDefinition | undefined {
   if (!response || response?.isError) return undefined;
 
+  const tools = Array.isArray(response?.tools_used) ? response.tools_used : [];
+  const structured = response?.structured || response?.data?.structured || {};
+  const isGeoFm = tools.some((tool: string) => tool.includes('geofm'))
+    || Boolean(structured?.compare_with_geofm)
+    || Boolean(structured?.get_geofm_run)
+    || Boolean(structured?.cancel_geofm_run)
+    || Boolean(structured?.list_geofm_models);
+  if (isGeoFm) {
+    return categorical('PlanAura contextual change', [
+      { color: '#ef4444', label: 'Red area', description: 'Detected change above the requested threshold' },
+      { color: '#7f1d1d', label: 'Dark red outline', description: 'Boundary of a detected change polygon' },
+    ], 'Red overlays are model detections. The HLS imagery underneath retains its natural-colour interpretation.');
+  }
+
   if (response?.isResilienceResponse && Array.isArray(response?.dossier?.facilities)) {
     return categorical('Facility risk severity', [
       { color: '#22c55e', label: 'Low', description: 'Routine monitoring' },

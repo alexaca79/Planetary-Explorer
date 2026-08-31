@@ -25,6 +25,41 @@ from cloud_config import cloud_cfg  # [CLOUD] Cloud environment configuration
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+
+def _qualify_location_for_geocoding(query: str, location_name: str) -> str:
+    """Restore an explicit Canadian qualifier omitted by entity extraction."""
+    if re.search(r"\bcanad(?:a|ian)\b", query or "", re.IGNORECASE):
+        candidates = []
+        for preposition in ("over", "near", "around", "within", "at", "in", "of", "for"):
+            candidates.extend(
+                match.group(1).strip(" ,.")
+                for match in re.finditer(
+                    rf"\b{preposition}\s+([^.;?!]{{1,100}}?\bCanada)\b",
+                    query,
+                    re.IGNORECASE,
+                )
+            )
+        if candidates:
+            return min(candidates, key=len)
+        if not re.search(r"\bcanada\b", location_name or "", re.IGNORECASE):
+            return f"{location_name}, Canada"
+    return location_name
+
+
+def _extract_explicit_iso_datetime(query: str) -> Optional[str]:
+    """Return a literal ISO date or range from the query when present."""
+    dates = []
+    for candidate in re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query or ""):
+        try:
+            datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if candidate not in dates:
+            dates.append(candidate)
+    if len(dates) >= 2:
+        return f"{dates[0]}/{dates[1]}"
+    return dates[0] if dates else None
+
 # ============================================================================
 # [SEARCH] PIPELINE LOGGING HELPER - Structured logging for debugging queries
 # ============================================================================
@@ -2395,11 +2430,12 @@ ESSENTIAL FIRE:
                 # so the resolver doesn't default to 'region' which triggers
                 # admin-division suffixing (the Lake Tahoe -> Michigan bug).
                 extracted_type = (location.get("type") if isinstance(location, dict) else None) or "region"
-                bbox = await self.resolve_location_to_bbox(location_name, extracted_type)
+                geocoding_name = _qualify_location_for_geocoding(query, location_name)
+                bbox = await self.resolve_location_to_bbox(geocoding_name, extracted_type)
                 
                 if bbox and self._validate_bbox(bbox):
                     stac_query["bbox"] = bbox
-                    stac_query["location_name"] = location_name  # Keep for reference
+                    stac_query["location_name"] = geocoding_name
                     
                     # ====================================================================
                     # [PIN] LOCATION AGENT OUTPUT LOGGING
@@ -3518,8 +3554,8 @@ IMPORTANT:
         is_static = any(is_static_collection(c) for c in collections)
         
         if not is_static:
-            # Add recent datetime for dynamic collections
-            stac_query["datetime"] = "2023-01-01/.."
+            # Preserve literal user dates even when the temporal agent is unavailable.
+            stac_query["datetime"] = _extract_explicit_iso_datetime(query) or "2023-01-01/.."
             stac_query["sortby"] = [{"field": "datetime", "direction": "desc"}]
         
         # CRITICAL FIX: Attempt basic location extraction even in fallback mode
@@ -3527,14 +3563,15 @@ IMPORTANT:
         try:
             location_name = await self._extract_location_basic(query)
             if location_name:
-                logger.info(f"[PIN] Fallback: Attempting to resolve '{location_name}' to bbox")
-                bbox = await self.resolve_location_to_bbox(location_name, "region")
+                geocoding_name = _qualify_location_for_geocoding(query, location_name)
+                logger.info(f"[PIN] Fallback: Attempting to resolve '{geocoding_name}' to bbox")
+                bbox = await self.resolve_location_to_bbox(geocoding_name, "region")
                 if bbox and self._validate_bbox(bbox):
                     stac_query["bbox"] = bbox
-                    stac_query["location_name"] = location_name
-                    logger.info(f"[OK] Fallback: Resolved '{location_name}' -> bbox: {bbox}")
+                    stac_query["location_name"] = geocoding_name
+                    logger.info(f"[OK] Fallback: Resolved '{geocoding_name}' -> bbox: {bbox}")
                 else:
-                    logger.warning(f"[WARN] Fallback: Could not resolve '{location_name}' to bbox")
+                    logger.warning(f"[WARN] Fallback: Could not resolve '{geocoding_name}' to bbox")
         except Exception as e:
             logger.warning(f"[WARN] Fallback location extraction failed: {e}")
         

@@ -4987,14 +4987,14 @@ const MapView: React.FC<MapViewProps> = ({
     }
 
     if (module === 'foundation_change') {
-      console.log('MapView: Foundation Change module selected - chat-driven flow');
-      setPinMode(false);
+      console.log('MapView: Foundation Change module selected - enabling AOI pin');
+      setPinMode(true);
       setVisionMode(false);
       if (onModuleSelected) onModuleSelected(module);
       if (onGeointAnalysis) {
         onGeointAnalysis({
           type: 'module_selected',
-          message: '**Foundation Change selected.** Load two HLS epochs, then ask what changed. The GeoFM registry is checked on every turn; PlanAura GPU work still requires approval.'
+          message: '**Foundation Change selected.** Click the map to set the analysis area, load an HLS view, then ask PlanAura to compare two ISO dates (for example, 2026-07-17 and 2026-08-18). The app resolves a same-tile pair at the pin; GPU work still requires your approval.'
         });
       }
       setShowModulesMenu(false);
@@ -5536,6 +5536,11 @@ const MapView: React.FC<MapViewProps> = ({
             query = 'Run the AI weather ensemble at this location';
             displayName = 'Forecast';
             break;
+          case 'foundation_change':
+            apiModule = 'foundation_change';
+            query = 'Compare two HLS dates with PlanAura';
+            displayName = 'Foundation Change';
+            break;
           case 'comparison':
             // Comparison module should NEVER reach here - it uses text queries, not pins
             console.error('MapView: Comparison module incorrectly triggered with pin drop');
@@ -5762,6 +5767,18 @@ const MapView: React.FC<MapViewProps> = ({
           onGeointAnalysis({
             type: 'forecast_ready',
             message: '**Pin Placed**\n\nAsk a forecast question (e.g., "Run Aurora and Earth-2 FCN for the next 72 hours and show ensemble spread on 2m temperature and precipitation").',
+            coordinates: { lat, lng }
+          });
+
+          setAnalysisInProgress(false);
+          analysisAbortControllerRef.current = null;
+          return;
+        } else if (selectedModule === 'foundation_change') {
+          console.log('MapView: Foundation Change AOI pin placed, waiting for dates...');
+
+          onGeointAnalysis({
+            type: 'info',
+            message: `**Analysis area set** at (${lat.toFixed(4)}°, ${lng.toFixed(4)}°)\n\nAsk PlanAura to compare two ISO dates. The app will resolve a same-tile HLS pair here before showing the approval card.`,
             coordinates: { lat, lng }
           });
 
@@ -6512,7 +6529,7 @@ const MapView: React.FC<MapViewProps> = ({
                     Foundation Change
                   </div>
                   <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                    PlanAura contextual change over two loaded HLS epochs
+                    PlanAura contextual change from one HLS view and two dates
                   </div>
                 </div>
 
