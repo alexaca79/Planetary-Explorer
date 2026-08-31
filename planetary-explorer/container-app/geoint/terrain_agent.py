@@ -91,6 +91,54 @@ Each message includes [Location Context] with:
 """
 
 
+def _format_tool_fallback(location_name: str, tool_calls: List[Dict[str, Any]]) -> str:
+    """Format completed terrain evidence when model synthesis is unavailable."""
+    sections: list[str] = []
+    for tool_call in tool_calls:
+        result = tool_call.get("result")
+        if not isinstance(result, dict) or result.get("error"):
+            continue
+        tool_name = str(tool_call.get("tool") or "terrain analysis")
+        if tool_name == "get_elevation_analysis":
+            required = {
+                "elevation_min_meters",
+                "elevation_max_meters",
+                "elevation_mean_meters",
+            }
+            if required.issubset(result):
+                sections.extend(
+                    [
+                        "**Elevation**",
+                        f"- Mean: {result['elevation_mean_meters']} metres",
+                        "- Range: "
+                        f"{result['elevation_min_meters']} to "
+                        f"{result['elevation_max_meters']} metres",
+                    ]
+                )
+                if result.get("terrain_type"):
+                    sections.append(f"- Terrain: {result['terrain_type']}")
+                if result.get("data_source"):
+                    sections.append(f"- Data source: {result['data_source']}")
+                continue
+
+        sections.append(f"**{tool_name.replace('_', ' ').title()}**")
+        for key, value in result.items():
+            if isinstance(value, (str, int, float, bool)):
+                sections.append(f"- {key.replace('_', ' ').capitalize()}: {value}")
+
+    if not sections:
+        return ""
+    return "\n".join(
+        [
+            f"Terrain analysis for **{location_name}** completed.",
+            "The measured tool results are shown directly because narrative "
+            "synthesis was unavailable.",
+            "",
+            *sections,
+        ]
+    )
+
+
 class TerrainAgentSession:
     """Represents a conversation session with the terrain agent.
     
@@ -231,6 +279,42 @@ class TerrainAgent:
         for sid in expired:
             del self.sessions[sid]
             logger.info(f"Cleaned up expired session: {sid}")
+
+    async def _get_run_tool_calls(
+        self,
+        thread_id: str,
+        run_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Read completed function outputs from an Agent Service run."""
+        tool_calls: List[Dict[str, Any]] = []
+        try:
+            run_steps_iterable = self._agents_client.run_steps.list(
+                thread_id=thread_id,
+                run_id=run_id,
+            )
+            async for step in run_steps_iterable:
+                details = getattr(step, "step_details", None)
+                for tool_call in getattr(details, "tool_calls", []):
+                    function = getattr(tool_call, "function", None)
+                    if function is None:
+                        continue
+                    tool_output = getattr(function, "output", None)
+                    result_parsed = tool_output
+                    if isinstance(tool_output, str):
+                        try:
+                            result_parsed = json.loads(tool_output)
+                        except (TypeError, ValueError):
+                            result_parsed = tool_output[:500]
+                    tool_calls.append(
+                        {
+                            "tool": function.name,
+                            "result": result_parsed,
+                        }
+                    )
+                    logger.info(f"Tool called: {function.name}")
+        except Exception as exc:
+            logger.debug(f"Could not extract run steps: {exc}")
+        return tool_calls
     
     async def _analyze_screenshot_direct(
         self,
@@ -417,8 +501,27 @@ Be specific and quantitative where possible."""
                     thread_id=session.thread_id,
                     agent_id=self._agent_id,
                 )
-                
+                tool_calls = await self._get_run_tool_calls(session.thread_id, run.id)
+
                 if run.status == "failed":
+                    fallback_response = _format_tool_fallback(location_name, tool_calls)
+                    if fallback_response:
+                        logger.warning(
+                            "Agent synthesis failed after %d completed terrain tools; "
+                            "returning deterministic evidence",
+                            len(tool_calls),
+                        )
+                        return {
+                            "response": fallback_response,
+                            "tool_calls": tool_calls,
+                            "session_id": session_id,
+                            "message_count": session.message_count + 1,
+                            "location": {
+                                "latitude": latitude,
+                                "longitude": longitude,
+                            },
+                            "synthesis_degraded": True,
+                        }
                     err_str = str(run.last_error)
                     is_retryable = any(p in err_str for p in _retryable_patterns)
                     if is_retryable and attempt < max_retries - 1:
@@ -435,55 +538,28 @@ Be specific and quantitative where possible."""
                         "error": str(run.last_error),
                         "session_id": session_id
                     }
-                
+
                 # Get messages from the thread (newest first)
                 from azure.ai.agents.models import ListSortOrder
                 messages_iterable = self._agents_client.messages.list(
                     thread_id=session.thread_id,
                     order=ListSortOrder.DESCENDING,
                 )
-                
+
                 # Extract the assistant's latest response
                 response_content = ""
-                tool_calls = []
-                
+
                 async for msg in messages_iterable:
                     if msg.run_id == run.id and msg.role == "assistant":
                         if msg.text_messages:
                             response_content = msg.text_messages[-1].text.value
                         break
-                
-                # Extract tool call info from run steps
-                try:
-                    run_steps_iterable = self._agents_client.run_steps.list(
-                        thread_id=session.thread_id,
-                        run_id=run.id,
-                    )
-                    async for step in run_steps_iterable:
-                        if hasattr(step, 'step_details') and hasattr(step.step_details, 'tool_calls'):
-                            for tc in step.step_details.tool_calls:
-                                if hasattr(tc, 'function'):
-                                    tool_name = tc.function.name
-                                    tool_output = getattr(tc.function, 'output', None)
-                                    result_parsed = tool_output
-                                    if isinstance(tool_output, str) and tool_output.startswith('{'):
-                                        try:
-                                            result_parsed = json.loads(tool_output)
-                                        except Exception:
-                                            pass
-                                    tool_calls.append({
-                                        "tool": tool_name,
-                                        "result": result_parsed if isinstance(result_parsed, dict) else str(tool_output)[:500] if tool_output else None
-                                    })
-                                    logger.info(f"Tool called: {tool_name}")
-                except Exception as e:
-                    logger.debug(f"Could not extract run steps: {e}")
-                
+
                 session.message_count += 2  # user + assistant
                 session.last_activity = datetime.utcnow()
-                
+
                 logger.info(f"Agent response ({len(response_content)} chars, {len(tool_calls)} tool calls)")
-                
+
                 return {
                     "response": response_content,
                     "tool_calls": tool_calls,
@@ -491,7 +567,7 @@ Be specific and quantitative where possible."""
                     "message_count": session.message_count,
                     "location": {"latitude": latitude, "longitude": longitude}
                 }
-                
+
             except Exception as e:
                 error_str = str(e)
                 is_retryable = any(p in error_str for p in _retryable_patterns)
@@ -515,7 +591,7 @@ Be specific and quantitative where possible."""
                 logger.error(f"Agent error: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                
+
                 return {
                     "response": f"I encountered an error analyzing this location: {str(e)}",
                     "error": str(e),
