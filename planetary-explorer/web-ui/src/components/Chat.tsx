@@ -2662,6 +2662,7 @@ const Chat: React.FC<ChatProps> = ({
           ? {
               bounds: mapContext.bounds,
               current_collection: mapContext.current_collection,
+              render_profile_id: mapContext.render_profile_id,
               has_satellite_data: mapContext.has_satellite_data,
               imagery_url: mapContext.imagery_url,
               item_id: mapContext.item_id,

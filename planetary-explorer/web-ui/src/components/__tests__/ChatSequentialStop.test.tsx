@@ -95,6 +95,11 @@ describe('Chat sequential parts cancellation', () => {
           geointMode={false}
           chatHistoryEnabled
           historyRestorePending={false}
+          mapContext={{
+            current_collection: 'hls2-s30',
+            render_profile_id: 'hls-s30-fire-false-colour',
+            imagery_url: 'https://tiles.example/fire/tilejson.json',
+          }}
         />
       </QueryClientProvider>
     );
@@ -104,6 +109,10 @@ describe('Chat sequential parts cancellation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await screen.findByText('Initial answer');
     await waitFor(() => expect(mockedSaveChatSession).toHaveBeenCalledTimes(1));
+    expect(mockedSaveChatSession.mock.calls[0][1].context.map).toMatchObject({
+      current_collection: 'hls2-s30',
+      render_profile_id: 'hls-s30-fire-false-colour',
+    });
     mockedSaveChatSession.mockClear();
 
     // Act

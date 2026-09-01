@@ -166,6 +166,7 @@ export interface MapContext {
   datetime?: string;
   zoom_level?: number;
   current_collection?: string;
+  render_profile_id?: string;
   tile_urls?: Array<{  // TiTiler URLs from prior STAC response for Vision Agent
     tilejson_url: string;
     item_id?: string;
