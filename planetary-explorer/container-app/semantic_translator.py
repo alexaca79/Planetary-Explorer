@@ -60,6 +60,37 @@ def _extract_explicit_iso_datetime(query: str) -> Optional[str]:
         return f"{dates[0]}/{dates[1]}"
     return dates[0] if dates else None
 
+
+def _extract_explicit_coordinates(query: str) -> tuple[float, float] | None:
+    """Return an explicitly labelled latitude and longitude from a query."""
+    match = re.search(
+        r"\blat(?:itude)?\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)"
+        r"\s*(?:degrees?|°)?\s*(?:,|\band\b)?\s*"
+        r"lon(?:gitude)?\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\b",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    latitude, longitude = (float(value) for value in match.groups())
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        return None
+    return latitude, longitude
+
+
+def _bbox_for_coordinates(
+    latitude: float,
+    longitude: float,
+    buffer_degrees: float = 0.01,
+) -> list[float]:
+    """Build a small STAC search box around explicit coordinates."""
+    return [
+        round(max(-180.0, longitude - buffer_degrees), 6),
+        round(max(-90.0, latitude - buffer_degrees), 6),
+        round(min(180.0, longitude + buffer_degrees), 6),
+        round(min(90.0, latitude + buffer_degrees), 6),
+    ]
+
 # ============================================================================
 # [SEARCH] PIPELINE LOGGING HELPER - Structured logging for debugging queries
 # ============================================================================
@@ -2423,7 +2454,20 @@ ESSENTIAL FIRE:
             # Without a location, STAC queries would return random global tiles
             # which is not useful for users and wastes API resources
             # ========================================================================
-            if location_name:
+            explicit_coordinates = _extract_explicit_coordinates(query)
+            if explicit_coordinates:
+                latitude, longitude = explicit_coordinates
+                bbox = _bbox_for_coordinates(latitude, longitude)
+                stac_query["bbox"] = bbox
+                stac_query["location_name"] = (
+                    f"Coordinates ({latitude:.4f}, {longitude:.4f})"
+                )
+                logger.info(
+                    "[PIN] Using explicit query coordinates: latitude=%s, longitude=%s",
+                    latitude,
+                    longitude,
+                )
+            elif location_name:
                 logger.info(f"[TOOL] UTILITY: Resolving '{location_name}' to coordinates...")
                 print(f"[TOOL] DEBUG: STEP 6 - Resolving location to bbox")
                 # Pass the extracted entity type (city/state/landmark/etc.)
@@ -3561,17 +3605,25 @@ IMPORTANT:
         # CRITICAL FIX: Attempt basic location extraction even in fallback mode
         # This prevents returning 1000 global tiles for location-specific queries
         try:
-            location_name = await self._extract_location_basic(query)
-            if location_name:
-                geocoding_name = _qualify_location_for_geocoding(query, location_name)
-                logger.info(f"[PIN] Fallback: Attempting to resolve '{geocoding_name}' to bbox")
-                bbox = await self.resolve_location_to_bbox(geocoding_name, "region")
-                if bbox and self._validate_bbox(bbox):
-                    stac_query["bbox"] = bbox
-                    stac_query["location_name"] = geocoding_name
-                    logger.info(f"[OK] Fallback: Resolved '{geocoding_name}' -> bbox: {bbox}")
-                else:
-                    logger.warning(f"[WARN] Fallback: Could not resolve '{geocoding_name}' to bbox")
+            explicit_coordinates = _extract_explicit_coordinates(query)
+            if explicit_coordinates:
+                latitude, longitude = explicit_coordinates
+                stac_query["bbox"] = _bbox_for_coordinates(latitude, longitude)
+                stac_query["location_name"] = (
+                    f"Coordinates ({latitude:.4f}, {longitude:.4f})"
+                )
+            else:
+                location_name = await self._extract_location_basic(query)
+                if location_name:
+                    geocoding_name = _qualify_location_for_geocoding(query, location_name)
+                    logger.info(f"[PIN] Fallback: Attempting to resolve '{geocoding_name}' to bbox")
+                    bbox = await self.resolve_location_to_bbox(geocoding_name, "region")
+                    if bbox and self._validate_bbox(bbox):
+                        stac_query["bbox"] = bbox
+                        stac_query["location_name"] = geocoding_name
+                        logger.info(f"[OK] Fallback: Resolved '{geocoding_name}' -> bbox: {bbox}")
+                    else:
+                        logger.warning(f"[WARN] Fallback: Could not resolve '{geocoding_name}' to bbox")
         except Exception as e:
             logger.warning(f"[WARN] Fallback location extraction failed: {e}")
         

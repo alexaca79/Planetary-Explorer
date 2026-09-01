@@ -1,5 +1,6 @@
 """AnalystAgent GeoFM tool tests."""
 
+import numpy as np
 import pytest
 
 from agents.analyst_agent.analyst_agent import AnalystAgent
@@ -7,6 +8,7 @@ from agents.analyst_agent.session_context import AnalystSession, clear_session, 
 from agents.analyst_agent.tools import (
     _canonical_geofm_resource,
     _geofm_aoi,
+    _geofm_pair_output_valid_fraction,
     compare_with_geofm,
     get_geofm_run,
 )
@@ -238,6 +240,17 @@ async def test_given_one_loaded_hls_view_and_dates_when_submitting_then_catalog_
         ]
 
     monkeypatch.setattr(vision_tools, "_search_stac_items_sync", fake_search)
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_context_quality",
+        lambda item, aoi: {
+            "item_id": item["id"],
+            "context_valid_fraction": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_pair_output_valid_fraction",
+        lambda before, after: 1.0,
+    )
 
     # Act
     result = await compare_with_geofm(
@@ -251,6 +264,297 @@ async def test_given_one_loaded_hls_view_and_dates_when_submitting_then_catalog_
     assert result["success"] is True
     assert request["item_id_epoch_a"] == "HLS.L30.T13UER.2026198T175230.v2.0"
     assert request["item_id_epoch_b"] == "HLS.L30.T13UER.2026230T175247.v2.0"
+
+
+@pytest.mark.asyncio
+async def test_given_equal_cloud_granules_when_resolving_then_valid_output_wins(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient(
+        {
+            "summary": "GeoFM run run-1 is queued.",
+            "payload": {"run_id": "run-1", "status": "queued"},
+            "evidence": [],
+        }
+    )
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    session = _session()
+    session.stac_items = [
+        {
+            "id": "HLS.S30.T15UYR.2026185T171721.v2.0",
+            "collection": "hls2-s30",
+            "properties": {"datetime": "2026-07-04T17:19:56Z"},
+        }
+    ]
+    set_session(session)
+    before_id = "HLS.S30.T15UYR.2026152T170711.v2.0"
+    clear_after_id = "HLS.S30.T15UYR.2026185T165839.v2.0"
+    cloudy_after_id = "HLS.S30.T15UYR.2026185T171721.v2.0"
+
+    def fake_search(body, _stac_mode):
+        if body["datetime"].startswith("2026-06-01"):
+            return [
+                {
+                    "id": before_id,
+                    "properties": {"eo:cloud_cover": 0},
+                }
+            ]
+        return [
+            {
+                "id": cloudy_after_id,
+                "properties": {"eo:cloud_cover": 18},
+            },
+            {
+                "id": clear_after_id,
+                "properties": {"eo:cloud_cover": 18},
+            },
+        ]
+
+    quality = {
+        before_id: 1.0,
+        clear_after_id: 0.88,
+        cloudy_after_id: 0.88,
+    }
+    monkeypatch.setattr(vision_tools, "_search_stac_items_sync", fake_search)
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_context_quality",
+        lambda item, aoi: {
+            "item_id": item["id"],
+            "context_valid_fraction": quality[item["id"]],
+        },
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_pair_output_valid_fraction",
+        lambda before, after: 0.5 if after["item_id"] == clear_after_id else 0.0,
+    )
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-s30",
+        before_date="2026-06-01",
+        after_date="2026-07-04",
+    )
+
+    # Assert
+    request = fake.calls[0][1]["request"]
+    assert result["success"] is True
+    assert request["item_id_epoch_a"] == before_id
+    assert request["item_id_epoch_b"] == clear_after_id
+
+
+@pytest.mark.asyncio
+async def test_given_cloudy_date_pair_when_resolving_then_submission_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient({})
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+    monkeypatch.setattr(
+        vision_tools,
+        "_search_stac_items_sync",
+        lambda body, stac_mode: [
+            {
+                "id": (
+                    "HLS.S30.T15UYR.2026152T170711.v2.0"
+                    if body["datetime"].startswith("2026-06-01")
+                    else "HLS.S30.T15UYR.2026185T171721.v2.0"
+                ),
+                "properties": {"eo:cloud_cover": 10},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_context_quality",
+        lambda item, aoi: {
+            "item_id": item["id"],
+            "context_valid_fraction": 0.69,
+        },
+    )
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-s30",
+        before_date="2026-06-01",
+        after_date="2026-07-04",
+    )
+
+    # Assert
+    assert result["success"] is False
+    assert "70% valid-context" in result["error"]
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_given_no_valid_output_in_aoi_when_resolving_then_submission_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient({})
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+    monkeypatch.setattr(
+        vision_tools,
+        "_search_stac_items_sync",
+        lambda body, stac_mode: [
+            {
+                "id": (
+                    "HLS.S30.T15UYR.2026152T170711.v2.0"
+                    if body["datetime"].startswith("2026-06-01")
+                    else "HLS.S30.T15UYR.2026185T165839.v2.0"
+                ),
+                "properties": {"eo:cloud_cover": 0},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_context_quality",
+        lambda item, aoi: {
+            "item_id": item["id"],
+            "context_valid_fraction": 0.8,
+        },
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_pair_output_valid_fraction",
+        lambda before, after: 0.0,
+    )
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-s30",
+        before_date="2026-06-01",
+        after_date="2026-07-04",
+    )
+
+    # Assert
+    assert result["success"] is False
+    assert "valid PlanAura output pixels" in result["error"]
+    assert fake.calls == []
+
+
+def test_given_clear_tokens_in_aoi_when_scoring_then_output_fraction_is_positive() -> None:
+    # Arrange
+    valid = np.ones((512, 512), dtype=bool)
+    aoi = np.zeros((512, 512), dtype=bool)
+    aoi[220:292, 220:292] = True
+    quality = {"valid_mask": valid, "aoi_mask": aoi}
+
+    # Act
+    fraction = _geofm_pair_output_valid_fraction(quality, quality)
+
+    # Assert
+    assert fraction == 1.0
+
+
+@pytest.mark.asyncio
+async def test_given_dates_over_45_days_apart_when_resolving_then_submission_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient({})
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+
+    def unexpected_search(*_args, **_kwargs):
+        raise AssertionError("Inadmissible dates must fail before STAC search.")
+
+    monkeypatch.setattr(
+        vision_tools,
+        "_search_stac_items_sync",
+        unexpected_search,
+    )
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-s30",
+        before_date="2026-06-01",
+        after_date="2026-08-18",
+    )
+
+    # Assert
+    assert result["success"] is False
+    assert "seasonally aligned within 45 days" in result["error"]
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_given_same_season_in_different_years_when_resolving_then_pair_is_allowed(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import agents.vision_tools as vision_tools
+
+    fake = FakeGeoFmClient(
+        {
+            "summary": "GeoFM run run-1 is queued.",
+            "payload": {"run_id": "run-1", "status": "queued"},
+            "evidence": [],
+        }
+    )
+    monkeypatch.setattr(
+        TracedMcpClient,
+        "from_geofm",
+        classmethod(lambda cls, **kwargs: fake),
+    )
+    set_session(_session())
+
+    def fake_search(body, _stac_mode):
+        year = body["datetime"][:4]
+        return [
+            {
+                "id": f"HLS.S30.T15UYR.{year}185T170000.v2.0",
+                "properties": {"eo:cloud_cover": 0},
+            }
+        ]
+
+    monkeypatch.setattr(vision_tools, "_search_stac_items_sync", fake_search)
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_context_quality",
+        lambda item, aoi: {
+            "item_id": item["id"],
+            "context_valid_fraction": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools._geofm_pair_output_valid_fraction",
+        lambda before, after: 1.0,
+    )
+
+    # Act
+    result = await compare_with_geofm(
+        collection_id="hls2-s30",
+        before_date="2025-07-04",
+        after_date="2026-07-04",
+    )
+
+    # Assert
+    assert result["success"] is True
+    assert fake.calls[0][0] == "geofm_compare_epochs"
 
 
 @pytest.mark.asyncio

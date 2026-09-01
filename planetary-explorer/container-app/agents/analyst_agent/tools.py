@@ -863,6 +863,141 @@ def _cloud_cover(item: Dict[str, Any]) -> float:
         return 100.0
 
 
+def _geofm_context_quality(
+    item: Dict[str, Any],
+    aoi: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the exact valid-pixel mask for PlanAura's fixed context grid."""
+    import numpy as np
+    import planetary_computer
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.features import geometry_mask
+    from rasterio.transform import Affine
+    from rasterio.vrt import WarpedVRT
+    from rasterio.warp import transform_geom
+    from shapely.geometry import shape
+
+    assets = item.get("assets") or {}
+    collection = item.get("collection") or item.get("collection_id")
+    band_assets = {
+        "hls2-s30": ("B02", "B03", "B04", "B8A", "B11", "B12"),
+        "hls2-l30": ("B02", "B03", "B04", "B05", "B06", "B07"),
+    }.get(str(collection))
+    if band_assets is None:
+        raise ValueError(f"HLS item '{item.get('id')}' has an unsupported collection.")
+
+    quality_asset = assets.get("Fmask") or {}
+    href = quality_asset.get("href")
+    if not href:
+        raise ValueError(f"HLS item '{item.get('id')}' has no Fmask asset.")
+
+    signed_href = planetary_computer.sign_url(str(href))
+    size = 512
+    resolution_m = 30.0
+    side_m = size * resolution_m
+    with rasterio.open(signed_href) as source:
+        if source.crs is None:
+            raise ValueError(f"HLS item '{item.get('id')}' has no raster CRS.")
+        target_crs = source.crs
+        projected = shape(transform_geom("EPSG:4326", target_crs, aoi))
+        min_x, min_y, max_x, max_y = projected.bounds
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+        target_transform = Affine(
+            resolution_m,
+            0,
+            center_x - side_m / 2,
+            0,
+            -resolution_m,
+            center_y + side_m / 2,
+        )
+        with WarpedVRT(
+            source,
+            crs=source.crs,
+            transform=target_transform,
+            width=size,
+            height=size,
+            resampling=Resampling.nearest,
+        ) as aligned:
+            quality = aligned.read(1, masked=True)
+
+    values = quality.filled(255).astype(np.uint8)
+    valid = (values & np.uint8(0b0001_1111)) == 0
+    valid &= ((values >> np.uint8(6)) & np.uint8(0b11)) != 0b11
+    valid &= ~np.ma.getmaskarray(quality)
+    for asset_key in band_assets:
+        band_href = (assets.get(asset_key) or {}).get("href")
+        if not band_href:
+            raise ValueError(
+                f"HLS item '{item.get('id')}' has no {asset_key} asset."
+            )
+        with (
+            rasterio.open(planetary_computer.sign_url(str(band_href))) as source,
+            WarpedVRT(
+                source,
+                crs=target_crs,
+                transform=target_transform,
+                width=size,
+                height=size,
+                resampling=Resampling.bilinear,
+            ) as aligned,
+        ):
+            band = aligned.read(1, masked=True)
+        valid &= ~np.ma.getmaskarray(band)
+        valid &= np.asarray(band) != -9999
+
+    projected_aoi = transform_geom("EPSG:4326", target_crs, aoi)
+    aoi_mask = geometry_mask(
+        [projected_aoi],
+        out_shape=(size, size),
+        transform=target_transform,
+        invert=True,
+    )
+    return {
+        "item_id": str(item.get("id") or ""),
+        "context_valid_fraction": float(np.count_nonzero(valid) / valid.size),
+        "valid_mask": valid,
+        "aoi_mask": aoi_mask,
+    }
+
+
+def _geofm_pair_output_valid_fraction(
+    before_quality: Dict[str, Any],
+    after_quality: Dict[str, Any],
+) -> float:
+    """Predict valid PlanAura output pixels inside the AOI after token masking."""
+    import numpy as np
+
+    before_mask = np.asarray(before_quality["valid_mask"], dtype=bool)
+    after_mask = np.asarray(after_quality["valid_mask"], dtype=bool)
+    aoi_mask = np.asarray(before_quality["aoi_mask"], dtype=bool)
+    if before_mask.shape != (512, 512) or after_mask.shape != before_mask.shape:
+        raise ValueError("GeoFM context masks must be 512 by 512 pixels.")
+    if aoi_mask.shape != before_mask.shape or not aoi_mask.any():
+        raise ValueError("GeoFM AOI does not intersect the fixed context grid.")
+
+    valid_tokens = (before_mask & after_mask).reshape(32, 16, 32, 16).all(
+        axis=(1, 3)
+    ).astype(np.float32)
+    coordinates = (np.arange(512, dtype=np.float32) + 0.5) / 16 - 0.5
+    lower = np.floor(coordinates).astype(int)
+    upper = lower + 1
+    weight = coordinates - lower
+    lower = np.clip(lower, 0, 31)
+    upper = np.clip(upper, 0, 31)
+    rows = (
+        (1 - weight)[:, None] * valid_tokens[lower, :]
+        + weight[:, None] * valid_tokens[upper, :]
+    )
+    denominator = (
+        (1 - weight)[None, :] * rows[:, lower]
+        + weight[None, :] * rows[:, upper]
+    )
+    output_valid = denominator > 0.9
+    return float(np.count_nonzero(output_valid & aoi_mask) / np.count_nonzero(aoi_mask))
+
+
 async def _resolve_geofm_pair_from_catalog(
     collection_id: Optional[str],
     before_date: str,
@@ -888,6 +1023,13 @@ async def _resolve_geofm_pair_from_catalog(
     after_day = _normalize_geofm_date(after_date, "after_date")
     if before_day >= after_day:
         raise ValueError("GeoFM before_date must be earlier than after_date.")
+    before_year_day = datetime.fromisoformat(before_day).timetuple().tm_yday
+    after_year_day = datetime.fromisoformat(after_day).timetuple().tm_yday
+    year_day_difference = abs(before_year_day - after_year_day)
+    if min(year_day_difference, 366 - year_day_difference) > 45:
+        raise ValueError(
+            "PlanAura comparison dates must be seasonally aligned within 45 days."
+        )
 
     aoi = _geofm_aoi()
 
@@ -907,7 +1049,7 @@ async def _resolve_geofm_pair_from_catalog(
         asyncio.to_thread(search, after_day),
     )
     pairs = [
-        (_cloud_cover(before) + _cloud_cover(after), before, after)
+        (before, after)
         for before in before_items
         for after in after_items
         if _hls_tile_id(before)
@@ -920,7 +1062,61 @@ async def _resolve_geofm_pair_from_catalog(
             "No same-tile HLS scenes were found for both requested dates in "
             "the current map area."
         )
-    _, before_item, after_item = min(pairs, key=lambda pair: pair[0])
+
+    unique_items = {
+        str(item["id"]): item
+        for pair in pairs
+        for item in pair
+    }
+    quality_values = await asyncio.gather(
+        *(
+            asyncio.to_thread(_geofm_context_quality, item, aoi)
+            for item in unique_items.values()
+        )
+    )
+    quality_by_id = dict(zip(unique_items, quality_values))
+    context_eligible_pairs = [
+        (before, after)
+        for before, after in pairs
+        if min(
+            quality_by_id[str(before["id"])]["context_valid_fraction"],
+            quality_by_id[str(after["id"])]["context_valid_fraction"],
+        ) >= 0.7
+    ]
+    if not context_eligible_pairs:
+        raise ValueError(
+            "No same-tile HLS pair for the requested dates meets PlanAura's "
+            "70% valid-context requirement. Choose clearer dates or another pin."
+        )
+    scored_pairs = [
+        (
+            _geofm_pair_output_valid_fraction(
+                quality_by_id[str(before["id"])],
+                quality_by_id[str(after["id"])],
+            ),
+            min(
+                quality_by_id[str(before["id"])]["context_valid_fraction"],
+                quality_by_id[str(after["id"])]["context_valid_fraction"],
+            ),
+            _cloud_cover(before) + _cloud_cover(after),
+            str(before["id"]),
+            str(after["id"]),
+            before,
+            after,
+        )
+        for before, after in context_eligible_pairs
+    ]
+    eligible_pairs = [pair for pair in scored_pairs if pair[0] > 0]
+    if not eligible_pairs:
+        raise ValueError(
+            "No same-tile HLS pair for the requested dates contains valid "
+            "PlanAura output pixels inside the pinned area. Choose clearer "
+            "dates or another pin."
+        )
+    _, _, _, _, _, before_item, after_item = min(
+        eligible_pairs,
+        key=lambda pair: (-pair[0], -pair[1], pair[2], pair[3], pair[4]),
+    )
     return str(before_item["id"]), str(after_item["id"])
 
 

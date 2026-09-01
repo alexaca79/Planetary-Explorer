@@ -24,6 +24,9 @@ The screenshots below were captured from the deployed application using the
 completed Regina run `888b78bf-ffce-4dde-bbc5-bed955d0659a`; they are not mock
 UI states.
 
+For a wildfire-specific example grounded in Ontario's official 2026 perimeter,
+see [Analyze the Thunder Bay 36 wildfire with PlanAura](geofm-thunder-bay-fire.md).
+
 ## Verify the model connection
 
 1. Open Planetary Explorer.
@@ -58,7 +61,9 @@ GeoFM before you continue. See the [GeoFM operator guide](../planetary-explorer/
 
 The pin defines a bounded area around the selected location. You do not need to
 load two scenes into the map. Planetary Explorer resolves one same-tile HLS item
-for each date through the active Public or MPC Pro catalog.
+for each date through the active Public or MPC Pro catalog. Before showing the
+approval card, the app requires seasonally aligned dates and at least 70% valid
+HLS quality-mask coverage across PlanAura's fixed context.
 
 ## Submit and approve the comparison
 
@@ -120,7 +125,10 @@ and other evidence before operational use.
 | Foundation Models is not connected | Ask an operator to verify the GeoFM MCP and model deployment |
 | No approval card appears | Confirm an HLS view is loaded, Foundation Change is selected, a pin is set, and both dates use ISO `YYYY-MM-DD` format |
 | No same-tile scenes are found | Choose dates with HLS coverage at the pin or switch between HLS L30 and S30 |
+| Dates are not seasonally aligned | Choose acquisition dates whose calendar days are within 45 days; the years may differ |
+| No pair meets the valid-context requirement | Choose clearer dates or move the pin; PlanAura requires at least 70% valid pixels across each fixed model context |
 | The response warns that the area is outside Canada | Deny the request, reload a country-qualified Canadian place, inspect the map, and set the pin again |
 | The run stays queued or running | Wait for the scale-to-zero worker to start, then poll again in the same chat |
+| Chat polling hits language-model quota | Keep the existing run ID and poll it later from the same browser session; do not submit or retry the GPU run |
 | Polling reports that the run is not found | Return to the browser session that submitted the run; run access is owner-bound |
 | The run fails | Read the returned error. Retry only after correcting the cause because retry starts another billed attempt |

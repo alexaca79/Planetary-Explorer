@@ -10,6 +10,8 @@ import pytest
 from _framework.agent_runtime import AgentFrameworkRuntime
 from semantic_translator import (
     SemanticQueryTranslator,
+    _bbox_for_coordinates,
+    _extract_explicit_coordinates,
     _qualify_location_for_geocoding,
 )
 
@@ -130,6 +132,74 @@ async def test_given_basic_fallback_when_query_has_city_and_dates_then_both_are_
         "Regina, Saskatchewan, Canada",
         "region",
     )
+
+
+def test_given_labelled_coordinates_when_extracting_then_values_are_preserved() -> None:
+    result = _extract_explicit_coordinates(
+        "Show HLS S30 at latitude 50.7696 and longitude -89.3291"
+    )
+
+    assert result == (50.7696, -89.3291)
+    assert _bbox_for_coordinates(*result) == [
+        -89.3391,
+        50.7596,
+        -89.3191,
+        50.7796,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_given_agent_path_when_query_has_coordinates_then_geocoding_is_skipped() -> None:
+    translator = _translator_stub(api_key="test-key")
+    translator._agent_runtime_initialized = True
+    translator.agent_runtime = object()
+    translator._ensure_agent_runtime_initialized = AsyncMock()
+    translator.location_extraction_agent = AsyncMock(
+        return_value={
+            "location": {"name": "Thunder Bay", "type": "city", "confidence": 0.9}
+        }
+    )
+    translator.datetime_translation_agent = AsyncMock(
+        return_value="2026-06-01/2026-08-18"
+    )
+    translator.cloud_filtering_agent = AsyncMock(return_value=None)
+    translator._build_stac_parameters = AsyncMock(
+        return_value={
+            "collections": ["hls2-s30"],
+            "datetime": "2026-06-01/2026-08-18",
+            "limit": 50,
+        }
+    )
+    translator.resolve_location_to_bbox = AsyncMock()
+
+    result = await translator.build_stac_query_agent(
+        "Show HLS S30 at latitude 50.7696 and longitude -89.3291 "
+        "from 2026-06-01 to 2026-08-18",
+        ["hls2-s30"],
+    )
+
+    assert result["bbox"] == [-89.3391, 50.7596, -89.3191, 50.7796]
+    assert result["location_name"] == "Coordinates (50.7696, -89.3291)"
+    translator.resolve_location_to_bbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_given_basic_fallback_when_query_has_coordinates_then_geocoding_is_skipped() -> None:
+    translator = _translator_stub(api_key="test-key")
+    translator._extract_location_basic = AsyncMock(return_value="Thunder Bay")
+    translator.resolve_location_to_bbox = AsyncMock()
+
+    result = await translator._build_stac_query_basic(
+        "Show HLS S30 at latitude 50.7696 and longitude -89.3291 "
+        "from 2026-06-01 to 2026-08-18",
+        ["hls2-s30"],
+    )
+
+    assert result["bbox"] == [-89.3391, 50.7596, -89.3191, 50.7796]
+    assert result["location_name"] == "Coordinates (50.7696, -89.3291)"
+    assert result["datetime"] == "2026-06-01/2026-08-18"
+    translator._extract_location_basic.assert_not_awaited()
+    translator.resolve_location_to_bbox.assert_not_awaited()
 
 
 @pytest.mark.asyncio
