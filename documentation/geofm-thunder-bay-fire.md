@@ -1,6 +1,6 @@
 ---
-title: Analyze the Thunder Bay 36 wildfire with PlanAura
-description: Use Planetary Explorer and GeoFM to compare pre-impact and post-impact HLS imagery inside the 2026 Thunder Bay 36 perimeter
+title: Analyze the Thunder Bay 36 wildfire with fire false colour and PlanAura
+description: Use a scene-stretched HLS fire composite and GeoFM to inspect change inside the 2026 Thunder Bay 36 perimeter
 ms.date: 2026-09-01
 ms.topic: how-to
 keywords:
@@ -10,7 +10,7 @@ keywords:
   - THU036
   - wildfire
   - HLS
-estimated_reading_time: 8
+estimated_reading_time: 10
 ---
 
 ## Understand the example
@@ -35,6 +35,8 @@ uses imagery as recent as August 17, 2026 for later comparison.
 | Later date | `2026-07-04` |
 | Analysis point | `50.2680, -89.8572` |
 | Expected HLS tile | `T15UYR` |
+| Display profile | `B12/B8A/B04` fire false colour |
+| Display stretch | Per-band item percentiles 2 to 98 |
 | GeoFM profile | `NRCan/Planaura-1.0` |
 
 The public catalog resolves these exact source items:
@@ -51,7 +53,36 @@ pixels inside the AOI before any GPU work was approved.
 
 The screenshots in this guide were captured from the deployed application
 using owner-bound run `756c1545-7164-46be-88f8-5175652097f1`. They are real
-application states, not mockups. The run was approved and submitted once.
+application states, not mockups. The run was approved and submitted once. The
+updated approval screenshot was denied before submission, then the completed
+run was rendered with read-only status tools, so no duplicate GPU run was
+created.
+
+## Understand the fire display
+
+The fire profile changes the map display, not the PlanAura model input. The map
+assigns HLS band B12 (shortwave infrared 2) to red, B8A (narrow near infrared)
+to green, and B04 (visible red) to blue. Dry, burned, or heated surfaces can
+appear red or rust, healthy vegetation often appears green, and water or
+shadow appears dark.
+
+Planetary Explorer requests the 2nd and 98th percentiles for each band from the
+selected HLS item and uses those values for one consistent scene-wide stretch.
+If item statistics are unavailable or invalid, the renderer uses bounded
+static ranges instead of blocking the image. The selected profile and strategy
+are returned in `translation_metadata.render_profile`, including the
+application workload ID `wildfire-contextual-change`.
+
+For the exact July 4 item, the deployed renderer used `3` to `3486` for B12,
+`0` to `4950` for B8A, and `0` to `3320` for B04. At zoom 14, the fraction of
+near-black pixels in the tile containing the analysis point fell from 99.3%
+with the former natural-colour stretch to 22.0% with the fire profile.
+
+The profile is designed for visual review. It does not classify active fire or
+burn severity. The independent NBR check in this example uses B8A and B12 and
+found a median before-minus-after change of `0.448` inside the quality-masked
+local patch. Use that quantitative evidence alongside the false-colour image,
+PlanAura polygons, official perimeter, and field observations.
 
 > [!IMPORTANT]
 > PlanAura detects contextual surface change. Its polygons are not an official
@@ -70,19 +101,22 @@ The **Foundation Models** panel must show **MCP connected**,
 1. Enter this exact query on the Planetary Explorer landing page:
 
    ```text
-   Show HLS S30 imagery at latitude 50.2680 and longitude -89.8572 from 2026-06-01 to 2026-07-04
+   Show HLS S30 fire false-colour imagery at latitude 50.2680 and longitude -89.8572 on 2026-07-04
    ```
 
-2. Wait for the HLS image to load.
+2. Wait for the HLS fire false-colour image to load.
 3. Confirm the map is near `50.2680, -89.8572`, the response uses
-   `2026-06-01/2026-07-04`, and the displayed item contains `.T15UYR.`.
-4. Do not continue if the app resolves the City of Thunder Bay, another
+   `2026-07-04`, and the displayed item is
+   `HLS.S30.T15UYR.2026185T165839.v2.0`.
+4. Confirm the legend says **HLS fire false colour** and identifies the
+   `B12/B8A/B04` scene stretch.
+5. Do not continue if the app resolves the City of Thunder Bay, another
    country, or a different HLS tile.
-5. Open **Geointelligence Modules** and select **Foundation Change**.
-6. Click near the centre of the loaded image.
-7. Confirm chat reports **Analysis area set** near `50.2680, -89.8572`.
+6. Open **Geointelligence Modules** and select **Foundation Change**.
+7. Click near the centre of the loaded image.
+8. Confirm chat reports **Analysis area set** near `50.2680, -89.8572`.
 
-![THU036 HLS area with the Foundation Change pin](images/geofm-thu036/01-thu036-area.png)
+![THU036 HLS fire false-colour area with the Foundation Change pin](images/geofm-thu036/01-thu036-area.png)
 
 ## Review and approve the comparison
 
@@ -93,7 +127,7 @@ The **Foundation Models** panel must show **MCP connected**,
    ```
 
 2. Expand **arguments** on the approval-required **WRITE action** card.
-3. Confirm the geometry remains near `50.2644, -89.8780`.
+3. Confirm the geometry encloses the pinned point near `50.2680, -89.8572`.
 4. Confirm both item identifiers contain `.T15UYR.` and match the source items
    listed above.
 5. Confirm `threshold` is `0.05` and `max_features` is `10`.
@@ -124,8 +158,6 @@ If chat polling is interrupted by language-model quota, do not approve another
 comparison or retry the GPU run. Keep the run ID and poll it from the same
 browser session after model capacity is available.
 
-![Queued THU036 PlanAura run](images/geofm-thu036/03-thu036-queued.png)
-
 ![Completed THU036 PlanAura run status](images/geofm-thu036/04-thu036-run-status.png)
 
 The captured run completed on its first attempt with these durable results:
@@ -147,8 +179,10 @@ for each artifact.
 
 The app draws returned polygons in translucent red with dark red outlines. The
 **PlanAura contextual change** legend identifies the model overlay. Compare the
-polygons with the HLS image and the official perimeter before drawing any
-conclusion about fire effects.
+polygons with the HLS fire false-colour image, NBR evidence, and official
+perimeter before drawing any conclusion about fire effects. The PlanAura
+inference still uses all six required HLS bands; changing the displayed bands
+does not change or retrain the model.
 
 ![Completed THU036 change polygons and PlanAura legend](images/geofm-thu036/05-thu036-complete.png)
 

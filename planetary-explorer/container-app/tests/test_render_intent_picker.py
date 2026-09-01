@@ -12,6 +12,10 @@ tables to maintain.
 from __future__ import annotations
 
 from hybrid_rendering_system import (
+    HybridRenderingSystem,
+    _SCENE_STRETCH_CACHE,
+    _get_scene_percentile_stretches,
+    is_scene_aware_fire_render,
     _pick_preset,
     _pick_preset_by_intent,
     _score_preset,
@@ -124,3 +128,176 @@ def test_empty_renders_returns_none():
     key, preset, matched = _pick_preset_by_intent({}, "fire")
     assert key is None and preset is None
     assert matched is False
+
+
+def test_hls_s30_fire_query_uses_explicit_false_colour_profile(monkeypatch):
+    monkeypatch.setattr(
+        "hybrid_rendering_system.fetch_renders_config",
+        lambda *args, **kwargs: None,
+    )
+
+    config = HybridRenderingSystem.get_render_config(
+        "hls2-s30",
+        "Show HLS S30 fire imagery near Thunder Bay",
+    )
+
+    assert config.assets == ["B12", "B8A", "B04"]
+    assert "explicit-intent" in config.notes
+    assert is_scene_aware_fire_render(config) is True
+
+
+def test_hls_s30_query_without_fire_intent_keeps_natural_colour(monkeypatch):
+    monkeypatch.setattr(
+        "hybrid_rendering_system.fetch_renders_config",
+        lambda *args, **kwargs: None,
+    )
+
+    config = HybridRenderingSystem.get_render_config(
+        "hls2-s30",
+        "Show HLS S30 imagery near Thunder Bay",
+    )
+
+    assert config.assets == ["B04", "B03", "B02"]
+    assert "explicit-intent" not in config.notes
+    assert is_scene_aware_fire_render(config) is False
+
+
+def test_hls_s30_pro_query_does_not_claim_public_scene_statistics(monkeypatch):
+    monkeypatch.setattr(
+        "hybrid_rendering_system.fetch_renders_config",
+        lambda *args, **kwargs: None,
+    )
+
+    config = HybridRenderingSystem.get_render_config(
+        "hls2-s30",
+        "Show wildfire imagery",
+        is_pro=True,
+    )
+
+    assert config.assets == ["B04", "B03", "B02"]
+    assert is_scene_aware_fire_render(config) is False
+
+
+def test_fire_tile_url_uses_one_scene_stretch_per_asset(monkeypatch):
+    monkeypatch.setattr(
+        "hybrid_rendering_system.fetch_renders_config",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hybrid_rendering_system._get_scene_percentile_stretches",
+        lambda *args: ((3.0, 3486.0), (0.0, 4950.0), (0.0, 3320.0)),
+    )
+
+    url = HybridRenderingSystem.build_titiler_tilejson_url(
+        "HLS.S30.T15UYR.2026185T165839.v2.0",
+        "hls2-s30",
+        query_context="Show fire false-colour HLS S30 imagery",
+    )
+
+    assert "assets=B12&assets=B8A&assets=B04" in url
+    assert url.count("rescale=") == 3
+    assert "rescale=3,3486&rescale=0,4950&rescale=0,3320" in url
+    assert "rescale=0.0,5000.0" not in url
+
+
+def test_scene_stretch_is_cached(monkeypatch):
+    class StatisticsResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "B12_b1": {"percentile_2": 3, "percentile_98": 3486},
+                "B8A_b1": {"percentile_2": -3, "percentile_98": 4950},
+                "B04_b1": {"percentile_2": -72, "percentile_98": 3320},
+            }
+
+    calls = []
+
+    def get_statistics(*args, **kwargs):
+        calls.append((args, kwargs))
+        return StatisticsResponse()
+
+    _SCENE_STRETCH_CACHE.clear()
+    monkeypatch.setattr("hybrid_rendering_system.requests.get", get_statistics)
+
+    first = _get_scene_percentile_stretches(
+        "hls2-s30",
+        "HLS.S30.TEST",
+        ("B12", "B8A", "B04"),
+    )
+    second = _get_scene_percentile_stretches(
+        "hls2-s30",
+        "HLS.S30.TEST",
+        ("B12", "B8A", "B04"),
+    )
+
+    assert first == ((3.0, 3486.0), (0.0, 4950.0), (0.0, 3320.0))
+    assert second == first
+    assert len(calls) == 1
+
+
+def test_scene_stretch_cache_evicts_oldest_entry(monkeypatch):
+    class StatisticsResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "B12_b1": {"percentile_2": 3, "percentile_98": 3486},
+                "B8A_b1": {"percentile_2": 0, "percentile_98": 4950},
+                "B04_b1": {"percentile_2": 0, "percentile_98": 3320},
+            }
+
+    _SCENE_STRETCH_CACHE.clear()
+    monkeypatch.setattr(
+        "hybrid_rendering_system._SCENE_STRETCH_CACHE_MAX_ENTRIES",
+        2,
+    )
+    monkeypatch.setattr(
+        "hybrid_rendering_system.requests.get",
+        lambda *args, **kwargs: StatisticsResponse(),
+    )
+
+    for item_id in ("HLS.S30.ONE", "HLS.S30.TWO", "HLS.S30.THREE"):
+        _get_scene_percentile_stretches(
+            "hls2-s30",
+            item_id,
+            ("B12", "B8A", "B04"),
+        )
+
+    assert len(_SCENE_STRETCH_CACHE) == 2
+    assert not any(key[1] == "HLS.S30.ONE" for key in _SCENE_STRETCH_CACHE)
+
+
+def test_invalid_scene_statistics_keep_static_fire_fallback(monkeypatch):
+    class InvalidStatisticsResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "B12_b1": {"percentile_2": 10, "percentile_98": 20},
+                "B8A_b1": {"percentile_2": 0, "percentile_98": 4950},
+                "B04_b1": {"percentile_2": 0, "percentile_98": 3320},
+            }
+
+    _SCENE_STRETCH_CACHE.clear()
+    monkeypatch.setattr(
+        "hybrid_rendering_system.fetch_renders_config",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hybrid_rendering_system.requests.get",
+        lambda *args, **kwargs: InvalidStatisticsResponse(),
+    )
+
+    url = HybridRenderingSystem.build_titiler_tilejson_url(
+        "HLS.S30.INVALID",
+        "hls2-s30",
+        query_context="Show wildfire imagery",
+    )
+
+    assert "assets=B12&assets=B8A&assets=B04" in url
+    assert url.count("rescale=") == 1
+    assert "rescale=0.0,5000.0" in url
