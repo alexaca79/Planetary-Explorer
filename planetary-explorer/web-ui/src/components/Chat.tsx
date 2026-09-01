@@ -3019,6 +3019,8 @@ const Chat: React.FC<ChatProps> = ({
                   ? "Ask about climate projections, temperature trends, extreme heat days..."
                   : selectedModule === 'site_audit'
                   ? "Ask about this candidate site (e.g., 'Audit a 200 MW data center here')..."
+                  : selectedModule === 'foundation_change'
+                  ? "Ask PlanAura to compare 2026-07-17 and 2026-08-18..."
                   : isVedaMode 
                   ? "Ask about climate data, earth observations, or environmental datasets..."
                   : selectedDataset

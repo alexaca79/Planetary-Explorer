@@ -1042,6 +1042,10 @@ class EnhancedLocationResolver:
                         self.cache.set(location_name, location_type, bbox)
                         return bbox
         
+        # Preserve the type inferred from the original place across generated
+        # query variants such as "Regina, Saskatchewan, Canada city".
+        location_type = self._normalize_location_type(location_name, location_type)
+
         # Step 1: Semantic preprocessing to improve API query accuracy
         processed_queries = self._preprocess_location_query(location_name, location_type)
         self.logger.info(f"[NOTE] Preprocessed queries: {processed_queries}")
@@ -1142,14 +1146,17 @@ class EnhancedLocationResolver:
                 return bbox
         
         # Strategy 2: Smart fuzzy search with intelligent result ranking
-        bbox = await self._azure_maps_fuzzy_search(location_name)
-        if bbox and self._is_reasonable_admin_bbox(bbox):
-            return bbox
+        bbox = await self._azure_maps_fuzzy_search(location_name, location_type)
+        if bbox:
+            if location_type == 'city' and self._is_valid_geographic_bbox(bbox):
+                return bbox
+            if location_type != 'city' and self._is_reasonable_admin_bbox(bbox):
+                return bbox
         
         # Strategy 3: For cities, try population-priority search
         if self._looks_like_city(location_name):
             bbox = await self._azure_maps_with_population_priority(location_name)
-            if bbox and self._is_reasonable_admin_bbox(bbox):
+            if bbox and self._is_valid_geographic_bbox(bbox):
                 return bbox
         
         # Strategy 4: Fallback to address search
@@ -1224,11 +1231,12 @@ class EnhancedLocationResolver:
         
         # Use a more specific query that prioritizes major populated places
         url = f"{cloud_cfg.azure_maps_base_url}/search/fuzzy/json"
+        country_code, country_name = self._azure_maps_country_context(location_name)
         params.update({
-            "query": f"{location_name} city United States",  # Add "city" to prioritize urban areas
+            "query": f"{location_name} city {country_name}",
             "limit": 5,
             "entityType": "Municipality,PopulatedPlace",
-            "countrySet": "US"
+            "countrySet": country_code,
         })
         
         try:
@@ -1264,8 +1272,27 @@ class EnhancedLocationResolver:
             'idaho', 'hawaii', 'new hampshire', 'maine', 'montana', 'rhode island',
             'delaware', 'south dakota', 'north dakota', 'alaska', 'vermont', 'wyoming'
         }
+        canadian_provinces = {
+            'alberta', 'british columbia', 'manitoba', 'new brunswick',
+            'newfoundland and labrador', 'northwest territories', 'nova scotia',
+            'nunavut', 'ontario', 'prince edward island', 'quebec',
+            'saskatchewan', 'yukon',
+        }
+        first_component = name_lower.split(',', 1)[0].strip()
         
-        return name_lower in us_states or 'state' in name_lower or 'province' in name_lower
+        return (
+            name_lower in us_states
+            or first_component in canadian_provinces
+            or 'state' in name_lower
+            or 'province' in name_lower
+        )
+
+    @staticmethod
+    def _azure_maps_country_context(location_name: str) -> tuple[str, str]:
+        """Return the Azure Maps country filter implied by a qualified name."""
+        if re.search(r"\bcanada\b", location_name or "", re.IGNORECASE):
+            return "CA", "Canada"
+        return "US", "United States"
     
     def _looks_like_city(self, location_name: str) -> bool:
         """Detect if location name refers to a city/populated place using heuristics"""
@@ -1328,6 +1355,16 @@ class EnhancedLocationResolver:
         # Strong signal: name is a known admin division
         if self._looks_like_admin_division(location_name):
             return 'state'
+        # Entity extraction can return ``country`` after seeing the trailing
+        # qualifier. Trust a non-admin first component such as "Regina" over
+        # that coarse hint while retaining "Saskatchewan, Canada" as a region.
+        components = [part.strip() for part in location_name.split(',') if part.strip()]
+        if (
+            len(components) >= 2
+            and components[-1].casefold() == 'canada'
+            and self._looks_like_city(components[0])
+        ):
+            return 'city'
         # Trust caller when they gave an explicit non-default hint
         if declared and declared not in ('region', 'unknown', ''):
             return declared
@@ -1477,7 +1514,11 @@ class EnhancedLocationResolver:
         
         return None
     
-    async def _azure_maps_fuzzy_search(self, location_name: str) -> Optional[List[float]]:
+    async def _azure_maps_fuzzy_search(
+        self,
+        location_name: str,
+        location_type: str | None = None,
+    ) -> Optional[List[float]]:
         """Use Azure Maps Fuzzy Search with improved accuracy"""
         
         if not self._is_azure_maps_configured():
@@ -1487,22 +1528,23 @@ class EnhancedLocationResolver:
         headers, params = self._get_azure_maps_auth()
         
         url = f"{cloud_cfg.azure_maps_base_url}/search/fuzzy/json"
+        country_code, country_name = self._azure_maps_country_context(location_name)
         
         # For cities, prioritize population/importance over administrative divisions
-        if self._looks_like_city(location_name):
+        if location_type == "city" or self._looks_like_city(location_name):
             params.update({
                 "query": location_name,  # Don't force ", United States" - let ranking find the most important match
                 "limit": 10,  # Get more results to find the best match
                 "entityType": "Municipality,PopulatedPlace",  # Focus on populated places for cities
-                "countrySet": "US"
+                "countrySet": country_code,
             })
         else:
             # For regions/states, use administrative division search
             params.update({
-                "query": f"{location_name}, United States",
+                "query": f"{location_name}, {country_name}",
                 "limit": 5,
                 "entityType": "CountrySubdivision,CountrySecondarySubdivision",
-                "countrySet": "US"
+                "countrySet": country_code,
             })
         
         try:
@@ -2060,6 +2102,9 @@ Location: {location_name}"""
     def _likely_international_location(self, location_name: str) -> bool:
         """Detect if a location is likely international (non-US) to avoid USA bias in preprocessing"""
         name_lower = location_name.lower().strip()
+
+        if re.search(r"\bcanada\b", name_lower):
+            return True
         
         # Famous international cities
         international_cities = {

@@ -865,9 +865,10 @@ class AnalystAgent:
                 "\n\n[Foundation Change Module]\n"
                 "The Geospatial Foundation Models registry was already queried for "
                 "this turn. Use that preflight result and prioritize PlanAura "
-                "contextual-change tools. Submit compare_with_geofm only when two "
-                "compatible HLS scenes are available and the user approves billed "
-                "GPU work."
+                "contextual-change tools. When the user supplies two dates and one "
+                "HLS view is loaded, submit compare_with_geofm with that collection "
+                "and the two ISO dates; the tool resolves the scene pair. Billed GPU "
+                "work still requires the user's approval."
             )
 
         return (

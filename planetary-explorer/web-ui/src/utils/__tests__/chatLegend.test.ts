@@ -32,6 +32,19 @@ describe('chat legend derivation', () => {
     ]);
   });
 
+  it('uses the exact PlanAura polygon colours for a completed GeoFM run', () => {
+    const legend = deriveChatLegend({
+      tools_used: ['get_geofm_run'],
+      structured: {
+        get_geofm_run: { structured: { status: 'complete', features: [{}] } },
+      },
+    });
+
+    expect(legend?.title).toBe('PlanAura contextual change');
+    expect(legend?.items.map((item) => item.color)).toEqual(['#ef4444', '#7f1d1d']);
+    expect(legend?.items[0].description).toContain('above the requested threshold');
+  });
+
   it('derives a productivity legend for the Canadian MODIS GPP collection', () => {
     const legend = legendForCollection('modis-17A2H-061');
 
