@@ -7464,6 +7464,29 @@ async def unified_query_processor(request: Request):
             collection_id.startswith(oc) or collection_id == oc 
             for oc in optical_collections_needing_mosaic
         )
+
+        # A bounded, single-item HLS fire view uses item-level percentile
+        # stretches. Routing it through the mosaic service would discard
+        # those scene statistics and fall back to a static RGB stretch.
+        if (
+            needs_mosaic
+            and stac_endpoint != "planetary_computer_pro"
+            and len(features) == 1
+            and collection_id == "hls2-s30"
+        ):
+            from hybrid_rendering_system import is_scene_aware_fire_render
+
+            fire_render_config = HybridRenderingSystem.get_render_config(
+                collection_id,
+                natural_query,
+                is_pro=(stac_endpoint == "planetary_computer_pro"),
+            )
+            if is_scene_aware_fire_render(fire_render_config):
+                needs_mosaic = False
+                logger.info(
+                    "[FIRE-RENDER] Using scene-aware item tiles for bounded %s view",
+                    collection_id,
+                )
         
         # MOSAIC ROUTING.
         # ``get_mosaic_tilejson_url`` registers a search against the
@@ -7626,11 +7649,37 @@ async def unified_query_processor(request: Request):
                             all_bboxes.append(feature_bbox)
                         continue
                     
-                    # Build quality parameters for this collection
-                    quality_params = build_tile_url_params(collection_id, natural_query)
+                    render_config = HybridRenderingSystem.get_render_config(
+                        collection_id,
+                        natural_query,
+                        is_pro=(stac_endpoint == "planetary_computer_pro"),
+                    )
+
+                    # Scene-aware fire rendering needs the item ID to fetch
+                    # one set of percentile stretches for the whole scene.
+                    from hybrid_rendering_system import is_scene_aware_fire_render
+
+                    if (
+                        stac_endpoint != "planetary_computer_pro"
+                        and is_scene_aware_fire_render(render_config)
+                    ):
+                        optimized_url = await asyncio.to_thread(
+                            HybridRenderingSystem.build_titiler_tilejson_url,
+                            feature.get("id"),
+                            collection_id,
+                            query_context=natural_query,
+                        )
+                        # The complete URL is already built in the worker
+                        # thread. Keep this non-empty so the generic fallback
+                        # below does not emit a false missing-params warning.
+                        quality_params = optimized_url.split("?", 1)[-1]
+                    else:
+                        # Build quality parameters for this collection.
+                        quality_params = build_tile_url_params(collection_id, natural_query)
+                        optimized_url = None
                     
                     # Enhance the URL with quality parameters
-                    if quality_params:
+                    if quality_params and not optimized_url:
                         # Parse URL to replace/append quality parameters
                         if "?" in original_url:
                             base_url, existing_params = original_url.split("?", 1)
@@ -7651,8 +7700,9 @@ async def unified_query_processor(request: Request):
                         
                         logger.info(f"[ART] Optimized tile URL for {feature.get('id')}: {quality_params}")
                     else:
-                        optimized_url = original_url
-                        logger.info(f"[WARN] No quality params generated for {feature.get('id')}")
+                        optimized_url = optimized_url or original_url
+                        if not quality_params:
+                            logger.info(f"[WARN] No quality params generated for {feature.get('id')}")
                     
                     all_tile_urls.append({
                         "item_id": feature.get("id"),
@@ -7709,6 +7759,23 @@ async def unified_query_processor(request: Request):
             user_query=natural_query,
             explicit_preset=stac_query.get("_v2_render_preset"),
         )
+        render_profile = None
+        if collection_id:
+            from hybrid_rendering_system import is_scene_aware_fire_render
+
+            selected_render_config = HybridRenderingSystem.get_render_config(
+                collection_id,
+                natural_query,
+                is_pro=(stac_endpoint == "planetary_computer_pro"),
+            )
+            if is_scene_aware_fire_render(selected_render_config):
+                render_profile = {
+                    "id": "hls-s30-fire-false-colour",
+                    "workload": "wildfire-contextual-change",
+                    "assets": list(selected_render_config.assets or []),
+                    "stretch": "item-percentile-2-98-with-static-fallback",
+                    "interpretation": "fire-and-burn-review",
+                }
 
         # ----------------------------------------------------------------
         # POST-RENDER CHAT SUMMARY (LOAD turns).
@@ -7856,7 +7923,8 @@ async def unified_query_processor(request: Request):
                 "translation_timestamp": datetime.utcnow().isoformat(),
                 "all_tile_urls": all_tile_urls if all_tile_urls else None,  # [+] Individual tile URLs for multi-tile rendering
                 # [GLOBE] NEW: Mosaic tilejson for seamless composited coverage
-                "mosaic_tilejson": mosaic_result if mosaic_result else None
+                "mosaic_tilejson": mosaic_result if mosaic_result else None,
+                "render_profile": render_profile,
             },
             "debug": {
                 "stac_routing": _stac_routing_debug,

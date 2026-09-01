@@ -33,8 +33,10 @@ Usage:
 from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
 import logging
+import math
 import os
 import re
+import threading
 import time
 
 import requests
@@ -658,6 +660,123 @@ EXPLICIT_RENDER_CONFIGS: Dict[str, RenderingConfig] = {
     
     # Add more explicit configs as needed...
 }
+
+
+EXPLICIT_INTENT_RENDER_PRESETS: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "hls2-s30": {
+        "fire-false-color": {
+            "title": "Fire false colour",
+            "description": "SWIR, narrow NIR, and red composite for fire and burn-scar review",
+            "assets": ["B12", "B8A", "B04"],
+            "rescale": [[0, 3500], [0, 5000], [0, 3300]],
+            "color_formula": "gamma RGB 1.3, saturation 1.35",
+            "resampling": "lanczos",
+            "min_zoom": 8,
+            "max_zoom": 18,
+        },
+    },
+}
+
+_HLS_FIRE_ASSETS = ("B12", "B8A", "B04")
+_SCENE_STRETCH_TTL_SEC = 3600
+_SCENE_STRETCH_NEG_TTL_SEC = 60
+_SCENE_STRETCH_CACHE_MAX_ENTRIES = 256
+_SCENE_STRETCH_CACHE: Dict[
+    Tuple[str, str, Tuple[str, ...]],
+    Tuple[float, Optional[Tuple[Tuple[float, float], ...]]],
+] = {}
+_SCENE_STRETCH_CACHE_LOCK = threading.Lock()
+
+
+def _get_scene_percentile_stretches(
+    collection_id: str,
+    item_id: str,
+    assets: Tuple[str, ...],
+) -> Optional[Tuple[Tuple[float, float], ...]]:
+    """Return validated item-level 2nd/98th percentile stretches."""
+    cache_key = (collection_id, item_id, assets)
+    now = time.time()
+    with _SCENE_STRETCH_CACHE_LOCK:
+        cached = _SCENE_STRETCH_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        if cached:
+            del _SCENE_STRETCH_CACHE[cache_key]
+
+    stretches: Optional[Tuple[Tuple[float, float], ...]] = None
+    try:
+        response = requests.get(
+            "https://planetarycomputer.microsoft.com/api/data/v1/item/statistics",
+            params=[
+                ("collection", collection_id),
+                ("item", item_id),
+                *(("assets", asset) for asset in assets),
+            ],
+            timeout=8,
+        )
+        response.raise_for_status()
+        statistics = response.json()
+        candidates: List[Tuple[float, float]] = []
+        for asset in assets:
+            band_statistics = statistics.get(f"{asset}_b1") or {}
+            lower = max(0.0, float(band_statistics["percentile_2"]))
+            upper = min(10000.0, float(band_statistics["percentile_98"]))
+            if not math.isfinite(lower) or not math.isfinite(upper):
+                raise ValueError(f"Non-finite scene statistics for {asset}")
+            if upper - lower < 100.0:
+                raise ValueError(f"Insufficient scene contrast for {asset}")
+            candidates.append((lower, upper))
+        stretches = tuple(candidates)
+    except (KeyError, TypeError, ValueError, requests.RequestException) as exc:
+        logger.warning(
+            "[FIRE-RENDER] Scene stretch unavailable for %s/%s: %s",
+            collection_id,
+            item_id,
+            exc,
+        )
+
+    ttl = _SCENE_STRETCH_TTL_SEC if stretches else _SCENE_STRETCH_NEG_TTL_SEC
+    with _SCENE_STRETCH_CACHE_LOCK:
+        expired = [
+            key
+            for key, (expires_at, _) in _SCENE_STRETCH_CACHE.items()
+            if expires_at <= now
+        ]
+        for key in expired:
+            del _SCENE_STRETCH_CACHE[key]
+        while len(_SCENE_STRETCH_CACHE) >= _SCENE_STRETCH_CACHE_MAX_ENTRIES:
+            oldest_key = min(
+                _SCENE_STRETCH_CACHE,
+                key=lambda key: _SCENE_STRETCH_CACHE[key][0],
+            )
+            del _SCENE_STRETCH_CACHE[oldest_key]
+        _SCENE_STRETCH_CACHE[cache_key] = (now + ttl, stretches)
+    return stretches
+
+
+def _replace_rescales(
+    render_params: str,
+    stretches: Tuple[Tuple[float, float], ...],
+) -> str:
+    """Replace a shared rescale with one ordered range per rendered asset."""
+    parameters = [
+        parameter
+        for parameter in render_params.split("&")
+        if parameter and not parameter.startswith("rescale=")
+    ]
+    parameters.extend(
+        f"rescale={lower:g},{upper:g}" for lower, upper in stretches
+    )
+    return "&".join(parameters)
+
+
+def is_scene_aware_fire_render(config: Optional[RenderingConfig]) -> bool:
+    """Return whether a config uses the item-statistics HLS fire profile."""
+    return bool(
+        config
+        and tuple(config.assets or ()) == _HLS_FIRE_ASSETS
+        and "explicit-intent" in (config.notes or "")
+    )
 
 
 # ============================================================================
@@ -1380,6 +1499,30 @@ class HybridRenderingSystem:
                 logger.info(f"   [OK] CONFIG SOURCE: STAC renders (intent-matched, tier-0)")
                 return intent_config
 
+            explicit_presets = (
+                EXPLICIT_INTENT_RENDER_PRESETS.get(collection_id)
+                if not is_pro
+                else None
+            )
+            if explicit_presets:
+                preset_name, preset, intent_matched = _pick_preset_by_intent(
+                    explicit_presets,
+                    query_context,
+                )
+                if preset and intent_matched:
+                    explicit_intent_config = _preset_to_rendering_config(
+                        collection_id,
+                        preset_name or "default",
+                        preset,
+                    )
+                    if explicit_intent_config:
+                        explicit_intent_config.notes += " [explicit-intent]"
+                        logger.info(
+                            "   [OK] CONFIG SOURCE: explicit intent preset '%s'",
+                            preset_name,
+                        )
+                        return explicit_intent_config
+
         # SOURCE 1: EXPLICIT_RENDER_CONFIGS - preferred for collections we've optimized
         # These configs use raw bands instead of 'visual' asset, which works better with TiTiler
         # Location: hybrid_rendering_system.py > EXPLICIT_RENDER_CONFIGS dict
@@ -1440,6 +1583,7 @@ class HybridRenderingSystem:
         collection_id: str,
         query_context: Optional[str] = None,
         is_pro: bool = False,
+        render_config: Optional[RenderingConfig] = None,
     ) -> str:
         """
         Build TiTiler URL parameters from rendering config.
@@ -1448,7 +1592,11 @@ class HybridRenderingSystem:
         
         FORCE REBUILD: 2025-11-09-16:45 - Removed tile_format, format, scale params
         """
-        config = HybridRenderingSystem.get_render_config(collection_id, query_context, is_pro=is_pro)
+        config = render_config or HybridRenderingSystem.get_render_config(
+            collection_id,
+            query_context,
+            is_pro=is_pro,
+        )
         if not config:
             logger.warning(f"No config found for {collection_id}, returning empty params")
             return ""
@@ -1614,7 +1762,28 @@ class HybridRenderingSystem:
 
         # Add rendering parameters from config (intent-aware when query_context given,
         # mode-aware when is_pro is set so private mirror renders blocks are honored)
-        render_params = HybridRenderingSystem.build_titiler_url_params(collection_id, query_context, is_pro=is_pro)
+        render_config = HybridRenderingSystem.get_render_config(
+            collection_id,
+            query_context,
+            is_pro=is_pro,
+        )
+        render_params = HybridRenderingSystem.build_titiler_url_params(
+            collection_id,
+            query_context,
+            is_pro=is_pro,
+            render_config=render_config,
+        )
+        if (
+            not is_pro
+            and is_scene_aware_fire_render(render_config)
+        ):
+            stretches = _get_scene_percentile_stretches(
+                collection_id,
+                item_id,
+                _HLS_FIRE_ASSETS,
+            )
+            if stretches:
+                render_params = _replace_rescales(render_params, stretches)
         if render_params:
             params.append(render_params)
 

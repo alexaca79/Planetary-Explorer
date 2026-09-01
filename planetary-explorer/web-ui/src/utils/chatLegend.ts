@@ -109,8 +109,42 @@ function firstCollection(response: any, mapContext?: MapContext): string | undef
   return candidates.find((candidate) => typeof candidate === 'string' && candidate.trim())?.trim();
 }
 
+function hasHlsFireFalseColour(response: any, mapContext?: MapContext): boolean {
+  const collection = firstCollection(response, mapContext)?.toLowerCase() || '';
+  if (!collection.includes('hls')) return false;
+
+  if (response?.translation_metadata?.render_profile?.id === 'hls-s30-fire-false-colour') {
+    return true;
+  }
+
+  const urls = [
+    response?.translation_metadata?.mosaic_tilejson?.tilejson_url,
+    ...(response?.translation_metadata?.all_tile_urls || []).map((tile: any) => tile?.tilejson_url),
+    mapContext?.imagery_url,
+    ...(mapContext?.tile_urls || []).map((tile) => tile.tilejson_url),
+  ].filter((url): url is string => typeof url === 'string');
+
+  return urls.some((url) => {
+    const decoded = decodeURIComponent(url);
+    return ['B12', 'B8A', 'B04'].every((asset) => (
+      new RegExp(`[?&]assets=${asset}(?:&|$)`).test(decoded)
+    ));
+  });
+}
+
+function hlsFireLegend(): ChatLegendDefinition {
+  return categorical('HLS fire false colour', [
+    { color: '#22c55e', label: 'Green', description: 'Vegetation with stronger near-infrared response' },
+    { color: '#b91c1c', label: 'Red or rust', description: 'SWIR-bright dry, burned, or heated surface' },
+    { color: '#ec4899', label: 'Pink or tan', description: 'Sparse vegetation or bare ground' },
+    { color: '#111827', label: 'Dark', description: 'Water, shadow, or masked pixels' },
+  ], 'B12/B8A/B04 uses scene-level 2nd to 98th percentile stretches. Colours are relative to this scene, not official burn severity.');
+}
+
 export function deriveChatLegend(response: any, mapContext?: MapContext): ChatLegendDefinition | undefined {
   if (!response || response?.isError) return undefined;
+
+  const isHlsFireFalseColour = hasHlsFireFalseColour(response, mapContext);
 
   const tools = Array.isArray(response?.tools_used) ? response.tools_used : [];
   const structured = response?.structured || response?.data?.structured || {};
@@ -123,8 +157,12 @@ export function deriveChatLegend(response: any, mapContext?: MapContext): ChatLe
     return categorical('PlanAura contextual change', [
       { color: '#ef4444', label: 'Red area', description: 'Detected change above the requested threshold' },
       { color: '#7f1d1d', label: 'Dark red outline', description: 'Boundary of a detected change polygon' },
-    ], 'Red overlays are model detections. The HLS imagery underneath retains its natural-colour interpretation.');
+    ], isHlsFireFalseColour
+      ? 'Red overlays are model detections. The HLS background is a scene-stretched B12/B8A/B04 fire false-colour composite.'
+      : 'Red overlays are model detections. The HLS imagery underneath retains its natural-colour interpretation.');
   }
+
+  if (isHlsFireFalseColour) return hlsFireLegend();
 
   if (response?.isResilienceResponse && Array.isArray(response?.dossier?.facilities)) {
     return categorical('Facility risk severity', [

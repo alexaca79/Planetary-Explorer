@@ -65,6 +65,12 @@ for each date through the active Public or MPC Pro catalog. Before showing the
 approval card, the app requires seasonally aligned dates and at least 70% valid
 HLS quality-mask coverage across PlanAura's fixed context.
 
+For wildfire review with Public HLS S30, include `fire false-colour` in the load
+query. The app displays B12/B8A/B04 with one item-level 2nd-to-98th percentile
+stretch per band while preserving PlanAura's six-band inference inputs. See the
+[Thunder Bay 36 wildfire case study](geofm-thunder-bay-fire.md) for the exact
+workflow and interpretation limits.
+
 ## Submit and approve the comparison
 
 1. Enter this prompt in chat:
@@ -127,6 +133,7 @@ and other evidence before operational use.
 | No same-tile scenes are found | Choose dates with HLS coverage at the pin or switch between HLS L30 and S30 |
 | Dates are not seasonally aligned | Choose acquisition dates whose calendar days are within 45 days; the years may differ |
 | No pair meets the valid-context requirement | Choose clearer dates or move the pin; PlanAura requires at least 70% valid pixels across each fixed model context |
+| Fire imagery is almost black | Include `fire false-colour` in a Public HLS S30 load query; verify the legend reports B12/B8A/B04 and a scene-level percentile stretch |
 | The response warns that the area is outside Canada | Deny the request, reload a country-qualified Canadian place, inspect the map, and set the pin again |
 | The run stays queued or running | Wait for the scale-to-zero worker to start, then poll again in the same chat |
 | Chat polling hits language-model quota | Keep the existing run ID and poll it later from the same browser session; do not submit or retry the GPU run |
