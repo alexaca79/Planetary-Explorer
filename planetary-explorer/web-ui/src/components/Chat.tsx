@@ -475,7 +475,9 @@ const Chat: React.FC<ChatProps> = ({
             });
           });
           setConversationId(sessionId);
-          conversationHistoryStartRef.current = messagesRef.current.length;
+          conversationHistoryStartRef.current = messagesRef.current.filter(
+            (message) => !message.isThinking,
+          ).length;
           historyGenerationRef.current += 1;
           pendingHistorySaveRef.current = null;
           retryHistorySaveRef.current = null;

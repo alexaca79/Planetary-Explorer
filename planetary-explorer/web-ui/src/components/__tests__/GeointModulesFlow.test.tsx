@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MapView from '../MapView';
@@ -335,6 +336,10 @@ describe('GEOINT module flow', () => {
     expect(resilience).toHaveAttribute('aria-disabled', 'true');
     expect(forecast).toHaveAttribute('aria-disabled', 'true');
     expect(buildingDamage).toHaveAttribute('aria-disabled', 'true');
+    expect(siteIntel).toBeDisabled();
+    expect(resilience).toBeDisabled();
+    expect(forecast).toBeDisabled();
+    expect(buildingDamage).toBeDisabled();
     fireEvent.click(siteIntel);
     fireEvent.click(buildingDamage);
     act(() => window.dispatchEvent(new CustomEvent('planetaryexplorer-select-module', {
@@ -369,6 +374,29 @@ describe('GEOINT module flow', () => {
       message: '**Building Damage selected.**',
     });
     expect(screen.queryByText('Geointelligence Modules')).not.toBeInTheDocument();
+  });
+
+  it('selects an available gated module from the keyboard', async () => {
+    const user = userEvent.setup();
+    const onModuleSelected = vi.fn();
+    renderMap({
+      selectedDataset: null,
+      onModuleSelected,
+      features: {
+        mpcPublic: true,
+        mpcPro: true,
+        fabric: false,
+        resilience: false,
+        weather: false,
+      },
+    });
+    await openModulePicker();
+    const buildingDamage = screen.getByRole('button', { name: /Building Damage/ });
+    buildingDamage.focus();
+
+    await user.keyboard('{Enter}');
+
+    expect(onModuleSelected).toHaveBeenCalledWith('building_damage');
   });
 
   it('selects foundation change and arms a bounded AOI pin workflow', async () => {

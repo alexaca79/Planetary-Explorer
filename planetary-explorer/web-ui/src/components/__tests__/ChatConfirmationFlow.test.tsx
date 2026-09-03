@@ -332,7 +332,8 @@ describe('Chat Foundation Change confirmation', () => {
     let resolvePrior: ((value: any) => void) | undefined;
     mockedSendChatMessage
       .mockImplementationOnce(() => new Promise((resolve) => { resolvePrior = resolve; }))
-      .mockResolvedValueOnce({ response: 'Loaded Toronto.' });
+      .mockResolvedValueOnce({ response: 'Loaded Toronto.' })
+      .mockResolvedValueOnce({ response: 'Toronto follow-up.' });
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
@@ -358,6 +359,19 @@ describe('Chat Foundation Change confirmation', () => {
       resolvePrior?.({ response: 'Late answer from the old location.' });
     });
     expect(screen.queryByText('Late answer from the old location.')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'What is visible in Toronto?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(3));
+
+    const followUpHistory = mockedSendChatMessage.mock.calls[2][3] ?? [];
+    expect(followUpHistory.map((message: { content: string }) => message.content)).toEqual([
+      query,
+      'Loaded Toronto.',
+      'What is visible in Toronto?',
+    ]);
   });
 
   it('denies pending confirmations when a new Setup supersedes the turn', async () => {

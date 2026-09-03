@@ -6873,12 +6873,16 @@ const MapView: React.FC<MapViewProps> = ({
                   </div>
                 </div>
 
-                <div
-                  role="button"
+                <button
+                  type="button"
+                  disabled={features?.mpcPro === false}
                   aria-disabled={features?.mpcPro === false}
                   title={features?.mpcPro === false ? 'Building Damage requires MPC Pro tenant imagery.' : undefined}
                   onClick={() => features?.mpcPro !== false && handleModuleSelect('building_damage')}
                   style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
                     padding: '12px',
                     borderRadius: '8px',
                     cursor: features?.mpcPro === false ? 'not-allowed' : 'pointer',
@@ -6904,7 +6908,7 @@ const MapView: React.FC<MapViewProps> = ({
                   <div style={{ fontSize: '12px', color: '#6b7280' }}>
                     Assess structures from private before-and-after aerial imagery
                   </div>
-                </div>
+                </button>
 
                 {/* Site Audit Module */}
                 <div
@@ -6937,12 +6941,16 @@ const MapView: React.FC<MapViewProps> = ({
                 </div>
 
                 {/* Site Audit Module */}
-                <div
-                  role="button"
+                <button
+                  type="button"
+                  disabled={features?.fabric === false}
                   aria-disabled={features?.fabric === false}
                   title={features?.fabric === false ? 'Site Intel requires Microsoft Fabric integration.' : undefined}
                   onClick={() => features?.fabric !== false && handleModuleSelect('site_audit')}
                   style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
                     padding: '12px',
                     borderRadius: '8px',
                     cursor: features?.fabric === false ? 'not-allowed' : 'pointer',
@@ -6968,15 +6976,19 @@ const MapView: React.FC<MapViewProps> = ({
                   <div style={{ fontSize: '12px', color: '#6b7280' }}>
                     Drop a pin on candidate site, then ask your question providing relevant details
                   </div>
-                </div>
+                </button>
 
                 {/* Resilience Module */}
-                <div
-                  role="button"
+                <button
+                  type="button"
+                  disabled={features?.resilience === false}
                   aria-disabled={features?.resilience === false}
                   title={features?.resilience === false ? 'Resilience is unavailable in this deployment.' : undefined}
                   onClick={() => features?.resilience !== false && handleModuleSelect('resilience')}
                   style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
                     padding: '12px',
                     borderRadius: '8px',
                     cursor: features?.resilience === false ? 'not-allowed' : 'pointer',
@@ -7002,15 +7014,19 @@ const MapView: React.FC<MapViewProps> = ({
                   <div style={{ fontSize: '12px', color: '#6b7280' }}>
                     Monitor facilities and supply chains for climate & hazard disruption risk
                   </div>
-                </div>
+                </button>
 
                 {/* Extreme Weather Module */}
-                <div
-                  role="button"
+                <button
+                  type="button"
+                  disabled={features?.weather === false}
                   aria-disabled={features?.weather === false}
                   title={features?.weather === false ? 'Forecast requires a configured weather provider.' : undefined}
                   onClick={() => features?.weather !== false && handleModuleSelect('forecast')}
                   style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    fontFamily: 'inherit',
                     padding: '12px',
                     borderRadius: '8px',
                     cursor: features?.weather === false ? 'not-allowed' : 'pointer',
@@ -7036,7 +7052,7 @@ const MapView: React.FC<MapViewProps> = ({
                   <div style={{ fontSize: '12px', color: '#6b7280' }}>
                     Configured AI weather ensemble — global forecasts, cyclone tracks, model disagreement
                   </div>
-                </div>
+                </button>
 
                 {/* Extreme Weather Module */}
                 <div
