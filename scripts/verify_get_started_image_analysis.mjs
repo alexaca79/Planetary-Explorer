@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB_UI = join(ROOT, 'planetary-explorer', 'web-ui');
@@ -157,6 +158,26 @@ async function verifyRelease(options) {
     encoding: 'utf8',
   });
   return JSON.parse(output);
+}
+
+function releaseBindingSnapshot(release) {
+  const snapshot = structuredClone(release);
+  if (snapshot.verification) {
+    delete snapshot.verification.verified_at;
+    if (Object.keys(snapshot.verification).length === 0) {
+      delete snapshot.verification;
+    }
+  }
+  return snapshot;
+}
+
+export function assertReleaseUnchanged(initialRelease, currentRelease) {
+  if (!isDeepStrictEqual(
+    releaseBindingSnapshot(initialRelease),
+    releaseBindingSnapshot(currentRelease),
+  )) {
+    throw new Error('Release binding changed during browser scenario execution');
+  }
 }
 
 function loadScenarios() {
@@ -939,12 +960,18 @@ async function main() {
       process.stderr.write(`${result.outcome.toUpperCase()} (${result.elapsed_ms} ms)\n`);
       writeFileSync(
         join(options.outputDir, 'results.json'),
-        `${JSON.stringify({ generated_at: new Date().toISOString(), app_url: options.appUrl, release, results }, null, 2)}\n`,
+        `${JSON.stringify({ generated_at: new Date().toISOString(), app_url: options.appUrl, release, release_verification_complete: false, results }, null, 2)}\n`,
       );
     }
   } finally {
     await browser.close();
   }
+  const currentRelease = await verifyRelease(options);
+  assertReleaseUnchanged(release, currentRelease);
+  writeFileSync(
+    join(options.outputDir, 'results.json'),
+    `${JSON.stringify({ generated_at: new Date().toISOString(), app_url: options.appUrl, release: currentRelease, release_verification_complete: true, results }, null, 2)}\n`,
+  );
   const failed = results.filter((result) => result.outcome === 'fail');
   console.log(JSON.stringify({ total: results.length, passed: results.length - failed.length, failed: failed.length }, null, 2));
   process.exitCode = failed.length > 0 ? 1 : 0;

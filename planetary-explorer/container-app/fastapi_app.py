@@ -8826,6 +8826,11 @@ async def geoint_mobility_analysis(request: Request):
             )
         
         logger.info(f"Validated coordinates: ({latitude}, {longitude})")
+        if (latitude_b is None) != (longitude_b is None):
+            raise HTTPException(
+                status_code=400,
+                detail="latitude_b and longitude_b must be provided together.",
+            )
         if latitude_b is not None and longitude_b is not None:
             if not (-90 <= latitude_b <= 90):
                 raise HTTPException(status_code=400, detail=f"Invalid latitude_b: {latitude_b}. Must be between -90 and 90.")
@@ -9765,6 +9770,39 @@ async def clear_vision_chat_session(session_id: str):
 # NOTE: Duplicate /api/geoint/mobility endpoint removed (was preventing terrain endpoint from registering)
 # The correct mobility endpoint is at line ~2266
 
+
+async def _verify_mpc_pro_scene_refs(stac_items: Any) -> bool:
+    """Verify client scene references against the configured MPC Pro catalog."""
+    from pro_stac_client import get_pro_stac_base, pro_get_item_sync
+
+    if (
+        not _env_flag("PE_FEATURE_MPC_PRO", default=False)
+        or not get_pro_stac_base()
+        or not isinstance(stac_items, list)
+        or not stac_items
+        or len(stac_items) > 20
+    ):
+        return False
+
+    scene_refs: list[tuple[str, str]] = []
+    for item in stac_items:
+        if not isinstance(item, dict):
+            return False
+        collection_id = str(item.get("collection") or "").strip()
+        item_id = str(item.get("id") or "").strip()
+        if not collection_id or not item_id:
+            return False
+        scene_refs.append((collection_id, item_id))
+
+    verified_items = await asyncio.gather(*(
+        asyncio.to_thread(pro_get_item_sync, collection_id, item_id)
+        for collection_id, item_id in scene_refs
+    ))
+    return all(
+        isinstance(item, dict) and str(item.get("id") or "") == item_id
+        for (_, item_id), item in zip(scene_refs, verified_items)
+    )
+
 @app.post("/api/geoint/building-damage")
 async def geoint_building_damage_analysis(request: Request):
     """
@@ -9812,20 +9850,11 @@ async def geoint_building_damage_analysis(request: Request):
         if not (-180 <= longitude <= 180):
             raise HTTPException(status_code=400, detail=f"Invalid longitude: {longitude}")
 
-        item_modes = {
-            str(
-                item.get("stac_mode")
-                or item.get("_planetary_explorer_stac_mode")
-                or ""
-            ).casefold()
-            for item in stac_items
-            if isinstance(item, dict)
-        }
         if (
             stac_mode != "pro"
-            or not stac_items
-            or item_modes != {"pro"}
+            or not isinstance(screenshot, str)
             or not screenshot
+            or not await _verify_mpc_pro_scene_refs(stac_items)
         ):
             raise HTTPException(
                 status_code=409,

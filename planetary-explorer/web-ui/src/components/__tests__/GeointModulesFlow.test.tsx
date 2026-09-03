@@ -260,6 +260,46 @@ describe('GEOINT module flow', () => {
     expect(map.markers.remove).toHaveBeenCalled();
   });
 
+  it('does not emit stale terrain output after a Get Started Setup', async () => {
+    const onGeointAnalysis = vi.fn();
+    renderMap({ selectedDataset: null, onGeointAnalysis });
+    await openModulePicker();
+    fireEvent.click(screen.getByText('Terrain Analysis'));
+
+    const map = lastMockValue(atlasMock.Map);
+    map.getCamera.mockReturnValue({
+      center: [-106.3468, 56.1304],
+      zoom: 10,
+      bounds: [-110, 50, -100, 60],
+    });
+    const clickHandler = await waitFor(() => {
+      const handler = map.events.add.mock.calls
+        .filter(([event]: [string]) => event === 'click')
+        .at(-1)?.[1];
+      expect(handler).toBeTypeOf('function');
+      return handler;
+    });
+
+    vi.useFakeTimers();
+    try {
+      act(() => clickHandler({ position: [-115, 50.7] }));
+      act(() => window.dispatchEvent(new CustomEvent('planetaryexplorer-stac-query', {
+        detail: {
+          query: 'Whitehorse, Yukon, Canada',
+          clearSessions: true,
+          resetContext: true,
+        },
+      })));
+      const callCountAfterReset = onGeointAnalysis.mock.calls.length;
+
+      await act(async () => vi.runAllTimersAsync());
+
+      expect(onGeointAnalysis).toHaveBeenCalledTimes(callCountAfterReset);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('removes rendered imagery before a navigation-only Get Started Setup', async () => {
     renderMap({ selectedDataset: null, lastChatResponse: createHlsFireResponse() });
     await waitFor(() => expect(imageryLayerSetOptions).toHaveBeenCalled());

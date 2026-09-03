@@ -204,6 +204,7 @@ const MapView: React.FC<MapViewProps> = ({
   const [freePinMode, setFreePinMode] = useState<boolean>(false);
   const [analysisInProgress, setAnalysisInProgress] = useState<boolean>(false);
   const analysisAbortControllerRef = useRef<AbortController | null>(null);
+  const analysisWorkflowGenerationRef = useRef(0);
   const [pinState, setPinState] = useState<{
     lat: number | null;
     lng: number | null;
@@ -2036,6 +2037,11 @@ const MapView: React.FC<MapViewProps> = ({
       return;
     }
 
+    const workflowGeneration = ++analysisWorkflowGenerationRef.current;
+    const isCurrentWorkflow = () => (
+      workflowGeneration === analysisWorkflowGenerationRef.current
+    );
+
     console.log('MapView: Processing comparison user query:', comparisonUserQuery);
 
     // Ensure comparison mode is enabled (may not be if triggered from Get Started button)
@@ -2089,11 +2095,13 @@ const MapView: React.FC<MapViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(comparisonRequestBody)
         });
+        if (!isCurrentWorkflow()) return;
 
         if (!response.ok) {
           let errorMessage = `Comparison analysis failed: ${response.statusText}`;
           try {
             const errorData = await response.json();
+            if (!isCurrentWorkflow()) return;
             if (errorData.message) {
               errorMessage = errorData.message;
             } else if (errorData.detail) {
@@ -2106,6 +2114,7 @@ const MapView: React.FC<MapViewProps> = ({
         }
 
         const data = await response.json();
+  if (!isCurrentWorkflow()) return;
         console.log('MapView: Comparison agent response:', data);
 
         // Reset awaiting flag
@@ -2165,8 +2174,10 @@ const MapView: React.FC<MapViewProps> = ({
             try {
               const tileJsonUrl = result.before.tile_urls[0];
               const tileJsonResponse = await fetch(tileJsonUrl);
+              if (!isCurrentWorkflow()) return;
               if (tileJsonResponse.ok) {
                 const tileJson = await tileJsonResponse.json();
+                if (!isCurrentWorkflow()) return;
                 console.log('MapView: BEFORE TileJSON:', tileJson);
                 
                 // Set satellite data to trigger tile layer rendering
@@ -2205,6 +2216,7 @@ const MapView: React.FC<MapViewProps> = ({
             // Fire-and-forget: capture + analyze in background so the user sees tiles immediately
             (async () => {
               try {
+                if (!isCurrentWorkflow()) return;
                 console.log('[SNAP] Comparison: Starting dual screenshot capture for Vision analysis...');
 
                 // Helper: strip data-URL prefix
@@ -2218,8 +2230,10 @@ const MapView: React.FC<MapViewProps> = ({
                 const renderAndCapture = async (tileUrls: string[], label: string): Promise<string | null> => {
                   const tileJsonUrl = tileUrls[0];
                   const tjResp = await fetch(tileJsonUrl);
+                  if (!isCurrentWorkflow()) return null;
                   if (!tjResp.ok) return null;
                   const tj = await tjResp.json();
+                  if (!isCurrentWorkflow()) return null;
 
                   setSatelliteData({
                     bbox: result.bbox || tj.bounds,
@@ -2234,8 +2248,10 @@ const MapView: React.FC<MapViewProps> = ({
                     try { (map as any).render(); } catch { /* ok */ }
                   }
                   await new Promise(r => setTimeout(r, mapProvider === 'azure' ? 3000 : 2000));
+                  if (!isCurrentWorkflow()) return null;
 
                   const snap = await captureMapScreenshot();
+                  if (!isCurrentWorkflow()) return null;
                   if (snap && snap.length > 1000) {
                     console.log(`[SNAP] Comparison: ${label} screenshot captured (${Math.round(snap.length / 1024)}KB)`);
                     return stripPrefix(snap);
@@ -2250,8 +2266,10 @@ const MapView: React.FC<MapViewProps> = ({
                   try { (map as any).render(); } catch { /* ok */ }
                 }
                 await new Promise(r => setTimeout(r, mapProvider === 'azure' ? 3000 : 2000));
+                if (!isCurrentWorkflow()) return;
 
                 const beforeSnap = await captureMapScreenshot();
+                if (!isCurrentWorkflow()) return;
                 const beforeScreenshot = beforeSnap && beforeSnap.length > 1000 ? stripPrefix(beforeSnap) : null;
                 if (beforeScreenshot) {
                   console.log(`[SNAP] Comparison: BEFORE screenshot captured (${Math.round(beforeScreenshot.length / 1024)}KB)`);
@@ -2261,13 +2279,16 @@ const MapView: React.FC<MapViewProps> = ({
 
                 // 2) Render AFTER tiles and capture
                 const afterScreenshot = await renderAndCapture(result.after.tile_urls, 'AFTER');
+                if (!isCurrentWorkflow()) return;
 
                 // 3) Switch back to BEFORE view (user expects to start on BEFORE)
                 if (result.before.tile_urls?.length > 0) {
                   try {
                     const tjResp = await fetch(result.before.tile_urls[0]);
+                    if (!isCurrentWorkflow()) return;
                     if (tjResp.ok) {
                       const tj = await tjResp.json();
+                      if (!isCurrentWorkflow()) return;
                       setSatelliteData({
                         bbox: result.bbox || tj.bounds,
                         items: result.before.stac_items || [],
@@ -2311,9 +2332,11 @@ const MapView: React.FC<MapViewProps> = ({
                     download_rasters: false  // We already have screenshots, skip raster download
                   })
                 });
+                if (!isCurrentWorkflow()) return;
 
                 if (visionResp.ok) {
                   const visionData = await visionResp.json();
+                  if (!isCurrentWorkflow()) return;
                   const visionText = visionData.result?.text || visionData.result?.analysis;
                   if (visionText && onGeointAnalysis) {
                     onGeointAnalysis({
@@ -2350,6 +2373,7 @@ const MapView: React.FC<MapViewProps> = ({
         }
 
       } catch (error) {
+        if (!isCurrentWorkflow()) return;
         console.error('MapView: Error processing comparison query:', error);
         if (onGeointAnalysis) {
           onGeointAnalysis({
@@ -2362,6 +2386,11 @@ const MapView: React.FC<MapViewProps> = ({
     };
 
     processComparisonQuery();
+    return () => {
+      if (isCurrentWorkflow()) {
+        analysisWorkflowGenerationRef.current += 1;
+      }
+    };
   }, [comparisonUserQuery]);
 
   // Fetch Azure Maps configuration
@@ -3236,6 +3265,10 @@ const MapView: React.FC<MapViewProps> = ({
   // Terrain analysis click handler
   const handleTerrainAnalysisClick = async (lat: number, lng: number) => {
     console.log(`MapView: Terrain analysis pin placed at (${lat.toFixed(6)}, ${lng.toFixed(6)})`);
+    const workflowGeneration = ++analysisWorkflowGenerationRef.current;
+    const isCurrentWorkflow = () => (
+      workflowGeneration === analysisWorkflowGenerationRef.current
+    );
 
     // Cancel any pending thinking messages from previous terrain analysis
     // This handles the case where user repositions pin while analysis is in progress
@@ -3335,6 +3368,7 @@ const MapView: React.FC<MapViewProps> = ({
         // Wait for tiles to load at new zoom level
         console.log('[SNAP] MapView: Waiting for tiles to load at new zoom...');
         await new Promise(resolve => setTimeout(resolve, 2500));
+        if (!isCurrentWorkflow()) return;
       }
       
       // For Azure Maps, we need to force a render and wait a bit longer
@@ -3355,8 +3389,10 @@ const MapView: React.FC<MapViewProps> = ({
         // Leaflet renders faster
         await new Promise(resolve => setTimeout(resolve, 500));
       }
+      if (!isCurrentWorkflow()) return;
       
       const screenshot = await captureMapScreenshot();
+      if (!isCurrentWorkflow()) return;
       
       if (!screenshot) {
         console.error('MapView: Failed to capture screenshot');
@@ -3445,6 +3481,7 @@ const MapView: React.FC<MapViewProps> = ({
       }
 
     } catch (error) {
+      if (!isCurrentWorkflow()) return;
       console.error('MapView: Error in terrain analysis:', error);
       if (onGeointAnalysis) {
         onGeointAnalysis({
@@ -5323,6 +5360,7 @@ const MapView: React.FC<MapViewProps> = ({
     const handleGetStartedSetup = (event: CustomEvent<{ resetContext?: boolean }>) => {
       if (event.detail?.resetContext === false) return;
 
+      analysisWorkflowGenerationRef.current += 1;
       analysisAbortControllerRef.current?.abort();
       analysisAbortControllerRef.current = null;
       mapRenderGenerationRef.current += 1;
@@ -5421,6 +5459,10 @@ const MapView: React.FC<MapViewProps> = ({
     };
   }, [currentLayer, map, mapProvider, onModuleSelected, onPinChange, onTerrainSessionChange, pinState.marker, terrainAnalysisPin.marker]);
   const toggleBeforeAfter = async () => {
+    const workflowGeneration = ++analysisWorkflowGenerationRef.current;
+    const isCurrentWorkflow = () => (
+      workflowGeneration === analysisWorkflowGenerationRef.current
+    );
     console.log('MapView: Toggling between BEFORE and AFTER views');
     
     const newShowingBefore = !comparisonState.showingBefore;
@@ -5443,8 +5485,10 @@ const MapView: React.FC<MapViewProps> = ({
         console.log(`MapView: Fetching TileJSON from: ${tileJsonUrl}`);
         
         const tileJsonResponse = await fetch(tileJsonUrl);
+        if (!isCurrentWorkflow()) return;
         if (tileJsonResponse.ok) {
           const tileJson = await tileJsonResponse.json();
+          if (!isCurrentWorkflow()) return;
           console.log('MapView: TileJSON loaded:', tileJson);
           
           setSatelliteData({
@@ -5459,6 +5503,7 @@ const MapView: React.FC<MapViewProps> = ({
           console.warn(`MapView: Failed to fetch TileJSON: ${tileJsonResponse.status}`);
         }
       } catch (error) {
+        if (!isCurrentWorkflow()) return;
         console.error('MapView: Error loading tile data:', error);
       }
     }
@@ -5489,6 +5534,10 @@ const MapView: React.FC<MapViewProps> = ({
 
   // Map click handler for pin placement
   const handleMapClickForPin = async (lat: number, lng: number) => {
+    const workflowGeneration = ++analysisWorkflowGenerationRef.current;
+    const isCurrentWorkflow = () => (
+      workflowGeneration === analysisWorkflowGenerationRef.current
+    );
     // Universal pin drop: no module required. Place a pin, bubble it up to the
     // chat (which sends it on /api/query as the `pin` field), and let the
     // analysis router pick the right analyzer (raster_sampling, vision,
@@ -5588,9 +5637,11 @@ const MapView: React.FC<MapViewProps> = ({
         try { (map as any).render(); } catch { /* ok */ }
       }
       await new Promise(resolve => setTimeout(resolve, mapProvider === 'azure' ? 1500 : 500));
+      if (!isCurrentWorkflow()) return;
       
       try {
         const captured = await captureMapScreenshot();
+        if (!isCurrentWorkflow()) return;
         if (captured) {
           let clean = captured;
           if (clean.startsWith('data:image/png;base64,')) clean = clean.replace('data:image/png;base64,', '');
@@ -5603,6 +5654,7 @@ const MapView: React.FC<MapViewProps> = ({
       } catch (snapErr) {
         console.warn('[SNAP] MapView: Failed to capture comparison pin screenshot:', snapErr);
       }
+      if (!isCurrentWorkflow()) return;
       
       // Set state to await user's temporal query
       setComparisonState(prev => ({ ...prev, awaitingUserQuery: true }));
@@ -5709,6 +5761,7 @@ const MapView: React.FC<MapViewProps> = ({
       // This gives the agent visual context (e.g., nearby airports, roads, landmarks)
       try {
         const screenshot = await captureMapScreenshot();
+        if (!isCurrentWorkflow()) return;
         if (screenshot) {
           let base64 = screenshot;
           if (screenshot.startsWith('data:image/jpeg;base64,')) {
@@ -5724,6 +5777,7 @@ const MapView: React.FC<MapViewProps> = ({
       } catch (e) {
         console.warn('[SNAP] MapView: Failed to capture mobility screenshot:', e);
       }
+      if (!isCurrentWorkflow()) return;
       
       // Both pins placed — prompt user to type their mobility question
       const pinA = mobilityPinARef.current!;
@@ -5916,9 +5970,11 @@ const MapView: React.FC<MapViewProps> = ({
           } else {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
+          if (!isCurrentWorkflow()) return;
           
           // Capture screenshot for context (will be sent via mapContext)
           const capturedScreenshot = await captureMapScreenshot();
+          if (!isCurrentWorkflow()) return;
           
           if (capturedScreenshot) {
             let cleanScreenshot = capturedScreenshot;
@@ -5970,9 +6026,11 @@ const MapView: React.FC<MapViewProps> = ({
           } else {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
+          if (!isCurrentWorkflow()) return;
           
           // Capture screenshot for context (will be sent via mapContext)
           const capturedScreenshot = await captureMapScreenshot();
+          if (!isCurrentWorkflow()) return;
           
           if (capturedScreenshot) {
             // Strip data URL prefix for backend - handle both jpeg and png
@@ -6026,9 +6084,11 @@ const MapView: React.FC<MapViewProps> = ({
           } else {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
+          if (!isCurrentWorkflow()) return;
           
           // Capture screenshot for visual context
           const capturedScreenshot = await captureMapScreenshot();
+          if (!isCurrentWorkflow()) return;
           if (capturedScreenshot) {
             let cleanScreenshot = capturedScreenshot;
             if (cleanScreenshot.startsWith('data:image/png;base64,')) {
@@ -6123,9 +6183,11 @@ const MapView: React.FC<MapViewProps> = ({
           } else {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
+          if (!isCurrentWorkflow()) return;
           
           if (!screenshot) {
             const capturedScreenshot = await captureMapScreenshot();
+            if (!isCurrentWorkflow()) return;
             if (capturedScreenshot) {
               screenshot = capturedScreenshot.startsWith('data:image/png;base64,')
                 ? capturedScreenshot.replace('data:image/png;base64,', '')
@@ -6147,6 +6209,7 @@ const MapView: React.FC<MapViewProps> = ({
         // Trigger analysis based on selected module
         try {
           const { triggerGeointAnalysis } = await import('../services/api');
+          if (!isCurrentWorkflow()) return;
           
           const result = await triggerGeointAnalysis(
             lat, 
@@ -6158,6 +6221,7 @@ const MapView: React.FC<MapViewProps> = ({
             abortController.signal, // Pass abort signal
             { stac_mode: stacMode || 'public' },
           );
+          if (!isCurrentWorkflow()) return;
           
           // Send results to chat
           onGeointAnalysis({
@@ -6172,6 +6236,7 @@ const MapView: React.FC<MapViewProps> = ({
           analysisAbortControllerRef.current = null;
           
         } catch (error) {
+          if (!isCurrentWorkflow()) return;
           // Check if this was an abort (user repositioned pin)
           if (error instanceof Error && error.name === 'AbortError') {
             console.log('[SKIP] MapView: Analysis cancelled (pin repositioned)');

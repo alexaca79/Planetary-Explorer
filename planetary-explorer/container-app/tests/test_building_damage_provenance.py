@@ -59,12 +59,37 @@ async def test_given_unproven_source_when_assessing_damage_then_request_is_rejec
 
 
 @pytest.mark.asyncio
+async def test_given_forged_pro_labels_when_scene_is_absent_then_request_is_rejected(
+    monkeypatch,
+) -> None:
+    # Arrange
+    import fastapi_app
+    import pro_stac_client
+
+    monkeypatch.setenv("PE_FEATURE_MPC_PRO", "true")
+    monkeypatch.setenv(
+        "MPC_PRO_STAC_URL",
+        "https://tenant.geocatalog.spatio.azure.com/stac",
+    )
+    monkeypatch.setattr(pro_stac_client, "pro_get_item_sync", lambda *_args: None)
+
+    # Act and Assert
+    with pytest.raises(fastapi_app.HTTPException) as error:
+        await fastapi_app.geoint_building_damage_analysis(
+            _JsonRequest(_request_payload())
+        )
+
+    assert error.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_given_pro_screenshot_when_assessing_damage_then_vision_runs(
     monkeypatch,
 ) -> None:
     # Arrange
     import fastapi_app
     import pipeline._aoai as aoai_module
+    import pro_stac_client
 
     class Completions:
         async def create(self, **_kwargs):
@@ -80,6 +105,16 @@ async def test_given_pro_screenshot_when_assessing_damage_then_vision_runs(
         aoai_module,
         "get_aoai_client",
         lambda: SimpleNamespace(chat=SimpleNamespace(completions=Completions())),
+    )
+    monkeypatch.setenv("PE_FEATURE_MPC_PRO", "true")
+    monkeypatch.setenv(
+        "MPC_PRO_STAC_URL",
+        "https://tenant.geocatalog.spatio.azure.com/stac",
+    )
+    monkeypatch.setattr(
+        pro_stac_client,
+        "pro_get_item_sync",
+        lambda _collection_id, item_id: {"id": item_id},
     )
 
     # Act

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   adversarialMinimumZoom,
+  assertReleaseUnchanged,
   assertProductionAllowed,
   deniesRequestedImagery,
   isExpectedApiOrigin,
@@ -129,5 +130,27 @@ test('binds observed requests to the declared API origin', () => {
       'https://api.example',
     ),
     false,
+  );
+});
+
+test('rejects release drift after browser scenarios complete', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: {
+      verified_at: '2026-09-03T12:00:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+  const changed = {
+    api_revision: 'api--release-2',
+    verification: {
+      verified_at: '2026-09-03T12:30:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+
+  assert.throws(
+    () => assertReleaseUnchanged(initial, changed),
+    /changed during browser scenario execution/,
   );
 });

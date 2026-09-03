@@ -18,6 +18,42 @@ class _JsonRequest:
         }
 
 
+class _PartialDestinationRequest:
+    def __init__(self, destination: dict) -> None:
+        self.destination = destination
+
+    async def json(self) -> dict:
+        return {
+            "latitude": 60.7212,
+            "longitude": -135.0568,
+            **self.destination,
+        }
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        {"latitude_b": 60.7562},
+        {"longitude_b": -135.0068},
+    ],
+)
+@pytest.mark.asyncio
+async def test_given_partial_destination_when_analyzing_then_request_is_rejected(
+    destination,
+) -> None:
+    # Arrange
+    import fastapi_app
+
+    # Act and Assert
+    with pytest.raises(fastapi_app.HTTPException) as error:
+        await fastapi_app.geoint_mobility_analysis(
+            _PartialDestinationRequest(destination)
+        )
+
+    assert error.value.status_code == 400
+    assert "must be provided together" in error.value.detail
+
+
 @pytest.mark.asyncio
 async def test_given_two_points_when_analyzing_then_direct_traverse_is_returned(
     monkeypatch,

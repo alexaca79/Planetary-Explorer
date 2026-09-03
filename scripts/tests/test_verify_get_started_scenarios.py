@@ -246,6 +246,34 @@ def test_given_live_release_when_verifying_then_control_plane_and_https_are_boun
     assert release["verification"]["geofm_worker_active_replicas"] == 0
 
 
+def test_given_release_drift_when_reverifying_then_matrix_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    initial = {
+        "api_revision": "api--release-1",
+        "verification": {
+            "verified_at": "2026-09-03T12:00:00Z",
+            "api_traffic_weight": 100,
+        },
+    }
+    monkeypatch.setattr(
+        verifier,
+        "_verify_release_metadata",
+        lambda *_args: {
+            "api_revision": "api--release-2",
+            "verification": {
+                "verified_at": "2026-09-03T12:30:00Z",
+                "api_traffic_weight": 100,
+            },
+        },
+    )
+
+    # Act and Assert
+    with pytest.raises(ValueError, match="changed during scenario execution"):
+        verifier._reverify_release_metadata(SimpleNamespace(), "https://api.example", initial)
+
+
 def test_given_unmarked_429_when_classifying_then_retry_is_suppressed() -> None:
     assert (
         verifier._is_transient_result(
@@ -312,6 +340,33 @@ def test_given_disabled_pro_when_building_result_then_elapsed_time_is_reportable
 
     assert result["outcome"] == "blocked"
     assert result["elapsed_ms"] == 0
+
+
+def test_given_enabled_pro_when_building_analysis_lacks_rendered_evidence_then_blocked() -> (
+    None
+):
+    # Arrange
+    scenario = verifier.Scenario(
+        "Building Damage",
+        "Jasper",
+        (
+            "Show my MPC Pro aerial imagery over Jasper, Alberta "
+            "from 2026-01-01 to 2026-08-26"
+        ),
+        question="Assess potential building damage.",
+    )
+
+    # Act
+    endpoint, body, blocked_reason = verifier._module_request(
+        scenario,
+        base_url="http://localhost:8000",
+        features={"mpcPro": True},
+    )
+
+    # Assert
+    assert endpoint == ""
+    assert body is None
+    assert "browser-captured screenshot" in blocked_reason
 
 
 def test_given_adversarial_context_when_running_setup_then_stale_location_is_sent(

@@ -902,13 +902,13 @@ def _module_request(
         if not features.get("mpcPro"):
             return "", None, "MPC Pro tenant imagery is disabled in this deployment."
         return (
-            "/api/geoint/building-damage",
-            {
-                "latitude": latitude,
-                "longitude": longitude,
-                "user_query": scenario.question,
-            },
+            "",
             None,
+            (
+                "Building Damage requires a browser-captured screenshot backed by "
+                "authenticated MPC Pro scene references; the API-only matrix does "
+                "not manufacture that evidence."
+            ),
         )
     if scenario.family == "Site Intel":
         if not features.get("fabric"):
@@ -1820,6 +1820,32 @@ def _verify_release_metadata(
     return release
 
 
+def _release_binding_snapshot(release: dict[str, Any]) -> dict[str, Any]:
+    """Return release evidence without the expected verification timestamp drift."""
+    snapshot = dict(release)
+    verification = dict(snapshot.get("verification") or {})
+    verification.pop("verified_at", None)
+    if verification:
+        snapshot["verification"] = verification
+    else:
+        snapshot.pop("verification", None)
+    return snapshot
+
+
+def _reverify_release_metadata(
+    args: argparse.Namespace,
+    base_url: str,
+    initial_release: dict[str, Any],
+) -> dict[str, Any]:
+    """Recheck live release evidence and reject any mid-matrix drift."""
+    current_release = _verify_release_metadata(args, base_url)
+    if _release_binding_snapshot(current_release) != _release_binding_snapshot(
+        initial_release
+    ):
+        raise ValueError("Release binding changed during scenario execution")
+    return current_release
+
+
 def main() -> int:
     """Validate and optionally print the scenario inventory."""
     parser = create_parser()
@@ -1858,6 +1884,16 @@ def main() -> int:
             release_metadata=release_metadata,
             adversarial_context=args.adversarial_context,
         )
+        try:
+            release_metadata = _reverify_release_metadata(
+                args,
+                args.base_url,
+                release_metadata,
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+            parser.error(str(error))
+        if release_metadata:
+            report["release"] = release_metadata
         rendered = json.dumps(report, indent=2)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1876,6 +1912,16 @@ def main() -> int:
             model=args.model or None,
             release_metadata=release_metadata,
         )
+        try:
+            release_metadata = _reverify_release_metadata(
+                args,
+                args.base_url,
+                release_metadata,
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
+            parser.error(str(error))
+        if release_metadata:
+            report["release"] = release_metadata
         rendered = json.dumps(report, indent=2)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

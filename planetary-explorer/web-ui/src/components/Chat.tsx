@@ -2740,6 +2740,7 @@ const Chat: React.FC<ChatProps> = ({
             } else if (pendingHistorySaveRef.current) {
               try {
                 const server = await apiService.getChatSession(pending.sessionId);
+                if (pending.generation !== historyGenerationRef.current) continue;
                 const resolution = reconcileAmbiguousHistorySave(
                   server,
                   pending.snapshot.mutationId,
@@ -2758,6 +2759,7 @@ const Chat: React.FC<ChatProps> = ({
                 terminalHistoryFailureRef.current = true;
                 if (historyMountedRef.current) setHistorySaveState('error');
               } catch (reconcileError) {
+                if (pending.generation !== historyGenerationRef.current) continue;
                 console.error(' Chat: Failed to reconcile chat history:', reconcileError);
                 conflictBlocked = true;
                 terminalHistoryFailureRef.current = true;
@@ -2766,6 +2768,7 @@ const Chat: React.FC<ChatProps> = ({
             } else {
               try {
                 const server = await apiService.getChatSession(pending.sessionId);
+                if (pending.generation !== historyGenerationRef.current) continue;
                 const resolution = reconcileAmbiguousHistorySave(
                   server,
                   pending.snapshot.mutationId,
@@ -2783,6 +2786,7 @@ const Chat: React.FC<ChatProps> = ({
                   if (historyMountedRef.current) setHistorySaveState('error');
                 }
               } catch (reconcileError) {
+                if (pending.generation !== historyGenerationRef.current) continue;
                 console.error(' Chat: Failed to reconcile chat history:', reconcileError);
                 pendingHistorySaveRef.current = pending;
                 conflictBlocked = true;
