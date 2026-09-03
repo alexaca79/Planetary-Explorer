@@ -12,7 +12,7 @@ const analysisResult = {
   },
 };
 
-const createHlsFireResponse = () => {
+const createHlsFireResponse = (): any => {
   const tilejsonUrl = (
     'https://example.test/tilejson.json?assets=B12&assets=B8A&assets=B04'
     + '&rescale=3,3486&rescale=0,4950&rescale=0,3320'
@@ -124,7 +124,7 @@ const createMapInstance = () => {
   return instance;
 };
 
-const atlasMock = {
+const atlasMock: any = {
   Map: vi.fn().mockImplementation(function MockMap() {
     return createMapInstance();
   }),
@@ -171,7 +171,11 @@ Object.assign(atlasMock, {
 });
 
 const renderMap = (props: React.ComponentProps<typeof MapView> = { selectedDataset: null }) =>
-  render(<MapView selectedDataset={null} {...props} />);
+  render(<MapView {...props} />);
+
+const lastMockValue = (mock: { mock: { results: Array<{ value: any }> } }) => (
+  mock.mock.results[mock.mock.results.length - 1]?.value
+);
 
 const openModulePicker = async () => {
   const button = await screen.findByTitle('Geointelligence Modules');
@@ -223,13 +227,65 @@ describe('GEOINT module flow', () => {
     expect(screen.queryByText('Geointelligence Modules')).not.toBeInTheDocument();
   });
 
+  it('clears map-owned module and pin state before a Get Started Setup', async () => {
+    const onPinChange = vi.fn();
+    const onModuleSelected = vi.fn();
+    renderMap({ selectedDataset: null, onPinChange, onModuleSelected });
+    await openModulePicker();
+    fireEvent.click(screen.getByText('Mobility Assessment'));
+
+    const map = lastMockValue(atlasMock.Map);
+    const clickHandler = await waitFor(() => {
+      const handler = map.events.add.mock.calls
+        .filter(([event]: [string]) => event === 'click')
+        .at(-1)?.[1];
+      expect(handler).toBeTypeOf('function');
+      return handler;
+    });
+    act(() => clickHandler({ position: [-115, 50.7] }));
+
+    act(() => window.dispatchEvent(new CustomEvent('planetaryexplorer-stac-query', {
+      detail: {
+        query: 'Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26',
+        clearSessions: true,
+        resetContext: true,
+      },
+    })));
+
+    await waitFor(() => {
+      expect(onModuleSelected).toHaveBeenLastCalledWith(null);
+      expect(onPinChange).toHaveBeenLastCalledWith(null);
+    });
+    expect(map.markers.remove).toHaveBeenCalled();
+  });
+
+  it('removes rendered imagery before a navigation-only Get Started Setup', async () => {
+    renderMap({ selectedDataset: null, lastChatResponse: createHlsFireResponse() });
+    await waitFor(() => expect(imageryLayerSetOptions).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: 'Map layers' })).toBeInTheDocument();
+    const map = lastMockValue(atlasMock.Map);
+
+    act(() => window.dispatchEvent(new CustomEvent('planetaryexplorer-stac-query', {
+      detail: {
+        query: 'Whitehorse, Yukon, Canada',
+        clearSessions: true,
+        resetContext: true,
+      },
+    })));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Map layers' })).not.toBeInTheDocument();
+    });
+    expect(map.layers.remove).toHaveBeenCalled();
+  });
+
   it('places a Canadian pin with the universal drop-pin control', async () => {
     const onPinChange = vi.fn();
     renderMap({ selectedDataset: null, onPinChange });
     const dropPinButton = await screen.findByTitle('Drop Pin: click the map to place a pin and ask any question about that location');
     fireEvent.click(dropPinButton);
 
-    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const map = lastMockValue(atlasMock.Map);
     const clickHandler = await waitFor(() => {
       const handler = map.events.add.mock.calls
         .filter(([event]: [string]) => event === 'click')
@@ -256,6 +312,65 @@ describe('GEOINT module flow', () => {
     expect(onGeointAnalysis).not.toHaveBeenCalled();
   });
 
+  it('blocks unavailable modules from clicks and selection events', async () => {
+    const onModuleSelected = vi.fn();
+    renderMap({
+      selectedDataset: null,
+      onModuleSelected,
+      features: {
+        mpcPublic: true,
+        mpcPro: false,
+        fabric: false,
+        resilience: false,
+        weather: false,
+      },
+    });
+    await openModulePicker();
+
+    const siteIntel = screen.getByRole('button', { name: /Site Intel/ });
+    const resilience = screen.getByRole('button', { name: /Resilience/ });
+    const forecast = screen.getByRole('button', { name: /Forecast/ });
+    const buildingDamage = screen.getByRole('button', { name: /Building Damage/ });
+    expect(siteIntel).toHaveAttribute('aria-disabled', 'true');
+    expect(resilience).toHaveAttribute('aria-disabled', 'true');
+    expect(forecast).toHaveAttribute('aria-disabled', 'true');
+    expect(buildingDamage).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(siteIntel);
+    fireEvent.click(buildingDamage);
+    act(() => window.dispatchEvent(new CustomEvent('planetaryexplorer-select-module', {
+      detail: { module: 'resilience' },
+    })));
+
+    expect(onModuleSelected).not.toHaveBeenCalled();
+  });
+
+  it('selects Building Damage when MPC Pro tenant imagery is enabled', async () => {
+    const onGeointAnalysis = vi.fn();
+    const onModuleSelected = vi.fn();
+    renderMap({
+      selectedDataset: null,
+      onGeointAnalysis,
+      onModuleSelected,
+      features: {
+        mpcPublic: true,
+        mpcPro: true,
+        fabric: false,
+        resilience: false,
+        weather: false,
+      },
+    });
+    await openModulePicker();
+
+    fireEvent.click(screen.getByRole('button', { name: /Building Damage/ }));
+
+    expect(onModuleSelected).toHaveBeenCalledWith('building_damage');
+    expect(onGeointAnalysis).toHaveBeenCalledWith({
+      type: 'module_selected',
+      message: '**Building Damage selected.**',
+    });
+    expect(screen.queryByText('Geointelligence Modules')).not.toBeInTheDocument();
+  });
+
   it('selects foundation change and arms a bounded AOI pin workflow', async () => {
     const onGeointAnalysis = vi.fn();
     const onModuleSelected = vi.fn();
@@ -271,7 +386,7 @@ describe('GEOINT module flow', () => {
       message: expect.stringContaining('Click the map to set the analysis area'),
     }));
 
-    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const map = lastMockValue(atlasMock.Map);
     const clickHandler = await waitFor(() => {
       const handler = map.events.add.mock.calls
         .filter(([event]: [string]) => event === 'click')
@@ -290,6 +405,73 @@ describe('GEOINT module flow', () => {
         message: expect.stringContaining('Analysis area set'),
       }));
     });
+    expect(apiMocks.triggerGeointAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('keeps the exact Thunder Bay HLS layer after a denied Foundation Change request', async () => {
+    const onGeointAnalysis = vi.fn();
+    const onModuleSelected = vi.fn();
+    const onPinChange = vi.fn();
+    const view = renderMap({
+      selectedDataset: null,
+      lastChatResponse: createHlsFireResponse(),
+      onGeointAnalysis,
+      onModuleSelected,
+      onPinChange,
+    });
+
+    await waitFor(() => {
+      expect(tileJsonMocks.fetchAndSignTileJSON).toHaveBeenCalledWith(
+        expect.stringContaining('assets=B12&assets=B8A&assets=B04'),
+        expect.anything(),
+      );
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Map layers' }));
+    expect(await screen.findByText('HLS fire false colour')).toBeInTheDocument();
+    expect(screen.queryByText('PlanAura contextual change')).not.toBeInTheDocument();
+
+    await openModulePicker();
+    fireEvent.click(screen.getByText('Foundation Change'));
+    const map = lastMockValue(atlasMock.Map);
+    const clickHandler = await waitFor(() => {
+      const handler = map.events.add.mock.calls
+        .filter(([event]: [string]) => event === 'click')
+        .at(-1)?.[1];
+      expect(handler).toBeTypeOf('function');
+      return handler;
+    });
+    act(() => clickHandler({ position: [-89.8572, 50.268] }));
+
+    await waitFor(() => {
+      expect(onPinChange).toHaveBeenCalledWith({ lat: 50.268, lng: -89.8572 });
+      expect(onGeointAnalysis).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'info',
+        message: expect.stringContaining('Analysis area set'),
+      }));
+    });
+    view.rerender(
+      <MapView
+        selectedDataset={null}
+        lastChatResponse={{
+          response: 'GeoFM submission was not approved.',
+          tools_used: ['compare_with_geofm'],
+          structured: {
+            compare_with_geofm: {
+              success: false,
+              structured: { status: 'denied' },
+            },
+          },
+        }}
+        onGeointAnalysis={onGeointAnalysis}
+        onModuleSelected={onModuleSelected}
+        onPinChange={onPinChange}
+      />,
+    );
+
+    expect(await screen.findByText('HLS fire false colour')).toBeInTheDocument();
+    expect(screen.queryByText('PlanAura contextual change')).not.toBeInTheDocument();
+    expect(atlasMock.layer.PolygonLayer).not.toHaveBeenCalled();
+    expect(atlasMock.layer.LineLayer).not.toHaveBeenCalled();
     expect(apiMocks.triggerGeointAnalysis).not.toHaveBeenCalled();
   });
 
@@ -332,7 +514,7 @@ describe('GEOINT module flow', () => {
     expect(geoFmPolygonSetOptions).toHaveBeenLastCalledWith({ visible: false, fillOpacity: 0 });
     expect(geoFmLineSetOptions).toHaveBeenLastCalledWith({ visible: false, strokeOpacity: 0 });
 
-    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const map = lastMockValue(atlasMock.Map);
     const sourceAddsBeforeReload = map.sources.add.mock.calls.length;
     const layerAddsBeforeReload = map.layers.add.mock.calls.length;
     const styleDataHandler = map.events.add.mock.calls.find(
@@ -361,6 +543,19 @@ describe('GEOINT module flow', () => {
     });
     expect(map.sources.remove).toHaveBeenCalledTimes(sourceRemovalsBeforeFollowUp);
     expect(map.layers.remove).toHaveBeenCalledTimes(layerRemovalsBeforeFollowUp);
+
+    view.rerender(
+      <MapView
+        selectedDataset={null}
+        lastChatResponse={createHlsFireResponse()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText('PlanAura contextual change')).not.toBeInTheDocument();
+      expect(map.sources.remove.mock.calls.length).toBeGreaterThan(sourceRemovalsBeforeFollowUp);
+      expect(map.layers.remove.mock.calls.length).toBeGreaterThan(layerRemovalsBeforeFollowUp);
+    });
   });
 
   it('uses configured opacity and keeps the HLS layer control after navigation', async () => {
@@ -416,8 +611,8 @@ describe('GEOINT module flow', () => {
       lastChatResponse: createHlsFireResponse(),
     });
     await waitFor(() => expect(imageryLayerSetOptions).toHaveBeenCalled());
-    const rasterLayer = atlasMock.layer.TileLayer.mock.results.at(-1)?.value;
-    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const rasterLayer = lastMockValue(atlasMock.layer.TileLayer);
+    const map = lastMockValue(atlasMock.Map);
 
     view.rerender(
       <MapView selectedDataset={null} lastChatResponse={createTilelessResponse()} />,
@@ -437,7 +632,7 @@ describe('GEOINT module flow', () => {
       lastChatResponse: createHlsFireResponse(),
     });
     await waitFor(() => expect(tileJsonMocks.fetchAndSignTileJSON).toHaveBeenCalled());
-    const map = atlasMock.Map.mock.results.at(-1)?.value;
+    const map = lastMockValue(atlasMock.Map);
 
     view.rerender(
       <MapView selectedDataset={null} lastChatResponse={createTilelessResponse()} />,
@@ -498,6 +693,47 @@ describe('GEOINT module flow', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Map layers' }));
     expect(screen.getByText('85%')).toBeInTheDocument();
+  });
+
+  it('preserves STAC assets and catalog provenance for follow-up inspection', async () => {
+    const onMapContextChange = vi.fn();
+    const response = createHlsFireResponse();
+    response.data.stac_results.features[0]._planetary_explorer_stac_mode = 'public';
+    response.data.stac_results.features[0].assets = {
+      B04: {
+        href: 'https://example.test/B04.tif',
+        type: 'image/tiff',
+        'raster:bands': [{ scale: 0.0000275, offset: -0.2 }],
+      },
+      B8A: { href: 'https://example.test/B8A.tif', type: 'image/tiff' },
+      B12: { href: 'https://example.test/B12.tif', type: 'image/tiff' },
+    };
+
+    renderMap({
+      selectedDataset: null,
+      lastChatResponse: response,
+      onMapContextChange,
+      stacMode: 'public',
+    });
+
+    await waitFor(() => {
+      const context = onMapContextChange.mock.calls
+        .map(([value]) => value)
+        .find((value) => value?.stac_items?.length);
+      expect(context?.stac_items[0]).toEqual(expect.objectContaining({
+        id: 'HLS.S30.T15UYR.2026185T165839.v2.0',
+        collection: 'hls2-s30',
+        stac_mode: 'public',
+        assets: expect.objectContaining({
+          B04: expect.objectContaining({
+            href: 'https://example.test/B04.tif',
+            'raster:bands': [{ scale: 0.0000275, offset: -0.2 }],
+          }),
+          B8A: expect.objectContaining({ href: 'https://example.test/B8A.tif' }),
+          B12: expect.objectContaining({ href: 'https://example.test/B12.tif' }),
+        }),
+      }));
+    });
   });
 
   it('restores layer labels from the saved imagery render profile', async () => {

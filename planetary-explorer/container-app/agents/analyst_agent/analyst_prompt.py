@@ -93,8 +93,10 @@ SELECTION RULES (read carefully)
    the user to "pick a time range" before sampling is a bug, not a
    safeguard.
 
-5. If a pin is set and the question is about TERRAIN
-   (elevation/slope/landing zone) → ``get_terrain_stats``.
+5. If a pin is set and the question asks for AREA TERRAIN statistics
+  (slope, aspect, elevation range/mean, flat areas, landing zone)
+  → ``get_terrain_stats``. An exact elevation value at one pin remains
+  governed by Rule 4 and MUST use ``sample_raster_value``.
 
 6. If a pin is set and the question is about MOBILITY / trafficability /
    "can a vehicle cross" → ``get_mobility_path``.
