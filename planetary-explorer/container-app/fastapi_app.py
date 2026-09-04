@@ -9771,8 +9771,28 @@ async def clear_vision_chat_session(session_id: str):
 # The correct mobility endpoint is at line ~2266
 
 
-async def _verify_mpc_pro_scene_refs(stac_items: Any) -> bool:
-    """Verify client scene references against the configured MPC Pro catalog."""
+def _stac_item_covers_point(
+    item: dict[str, Any],
+    latitude: float,
+    longitude: float,
+) -> bool:
+    """Return whether a STAC item's server-provided bounds cover a point."""
+    bbox = item.get("bbox")
+    return (
+        isinstance(bbox, list)
+        and len(bbox) >= 4
+        and all(isinstance(value, (int, float)) for value in bbox[:4])
+        and float(bbox[0]) <= longitude <= float(bbox[2])
+        and float(bbox[1]) <= latitude <= float(bbox[3])
+    )
+
+
+async def _resolve_mpc_pro_scene_ref(
+    stac_items: Any,
+    latitude: float,
+    longitude: float,
+) -> dict[str, Any] | None:
+    """Resolve one client scene reference to a covering authenticated Pro item."""
     from pro_stac_client import get_pro_stac_base, pro_get_item_sync
 
     if (
@@ -9782,26 +9802,109 @@ async def _verify_mpc_pro_scene_refs(stac_items: Any) -> bool:
         or not stac_items
         or len(stac_items) > 20
     ):
-        return False
+        return None
 
     scene_refs: list[tuple[str, str]] = []
     for item in stac_items:
         if not isinstance(item, dict):
-            return False
+            return None
         collection_id = str(item.get("collection") or "").strip()
         item_id = str(item.get("id") or "").strip()
         if not collection_id or not item_id:
-            return False
+            return None
         scene_refs.append((collection_id, item_id))
 
     verified_items = await asyncio.gather(*(
         asyncio.to_thread(pro_get_item_sync, collection_id, item_id)
         for collection_id, item_id in scene_refs
     ))
-    return all(
-        isinstance(item, dict) and str(item.get("id") or "") == item_id
-        for (_, item_id), item in zip(scene_refs, verified_items)
+    for (collection_id, item_id), item in zip(scene_refs, verified_items):
+        if (
+            isinstance(item, dict)
+            and str(item.get("id") or "") == item_id
+            and str(item.get("collection") or "") == collection_id
+            and _stac_item_covers_point(item, latitude, longitude)
+        ):
+            return item
+    return None
+
+
+async def _render_mpc_pro_scene_tile(
+    item: dict[str, Any],
+    latitude: float,
+    longitude: float,
+) -> tuple[str, str]:
+    """Render a trusted GeoCatalog item tile at a point and return base64 data."""
+    import base64
+    import math
+    from urllib.parse import quote, urlencode
+
+    import yarl
+
+    from pro_stac_client import (
+        PRO_API_VERSION,
+        _auth_headers,
+        get_pro_data_base,
     )
+
+    collection_id = str(item.get("collection") or "")
+    item_id = str(item.get("id") or "")
+    pro_data_base = get_pro_data_base()
+    if not pro_data_base or not collection_id or not item_id:
+        raise RuntimeError("Verified MPC Pro scene cannot be rendered")
+
+    assets, asset_bidx, rescale, color_formula = _infer_pro_render_defaults(
+        collection_id=collection_id,
+        item_doc=item,
+    )
+    zoom = 17
+    tile_count = 2**zoom
+    safe_latitude = max(-85.05112878, min(85.05112878, latitude))
+    tile_x = int((longitude + 180.0) / 360.0 * tile_count)
+    latitude_radians = math.radians(safe_latitude)
+    tile_y = int(
+        (
+            1.0
+            - math.asinh(math.tan(latitude_radians)) / math.pi
+        )
+        / 2.0
+        * tile_count
+    )
+    tile_x = max(0, min(tile_count - 1, tile_x))
+    tile_y = max(0, min(tile_count - 1, tile_y))
+
+    query: list[tuple[str, str]] = [
+        ("api-version", PRO_API_VERSION),
+        *(("assets", asset) for asset in assets),
+        *(("asset_bidx", band) for band in asset_bidx),
+    ]
+    if rescale:
+        query.append(("rescale", rescale))
+    if color_formula:
+        query.append(("color_formula", color_formula))
+    tile_url = (
+        f"{pro_data_base.rstrip('/')}/collections/"
+        f"{quote(collection_id, safe='')}/items/{quote(item_id, safe='')}"
+        f"/tiles/WebMercatorQuad/{zoom}/{tile_x}/{tile_y}@2x"
+        f"?{urlencode(query)}"
+    )
+
+    headers = await _auth_headers()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            yarl.URL(tile_url, encoded=True),
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30.0),
+        ) as response:
+            image_bytes = await response.read()
+            media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+            if response.status != 200 or not media_type.startswith("image/"):
+                raise RuntimeError(
+                    f"MPC Pro tile render returned HTTP {response.status}"
+                )
+    if len(image_bytes) < 1_000:
+        raise RuntimeError("MPC Pro tile render returned an empty image")
+    return base64.b64encode(image_bytes).decode("ascii"), media_type
 
 @app.post("/api/geoint/building-damage")
 async def geoint_building_damage_analysis(request: Request):
@@ -9810,10 +9913,10 @@ async def geoint_building_damage_analysis(request: Request):
     
     Structure damage assessment using GPT-5 Vision and satellite imagery.
     
-    When a screenshot is provided (user has loaded data on the map), analysis is
-    performed on the VISIBLE imagery—the loaded tiles—not independently-fetched
-    Sentinel-2.  When no screenshot is available the agent falls back to its own
-    satellite imagery retrieval via the Agent Service tools.
+    The client screenshot proves that the browser completed its map workflow,
+    but it is not trusted as analysis input. The server resolves a referenced
+    item through the configured GeoCatalog, verifies point coverage, renders
+    that exact Pro item with managed identity, and submits those bytes to vision.
     
     Request body:
     {
@@ -9821,7 +9924,7 @@ async def geoint_building_damage_analysis(request: Request):
         "longitude": float,
         "user_query": str (optional - user's question),
         "user_context": str (optional - legacy alias for user_query),
-        "screenshot": str (optional - base64 map screenshot),
+        "screenshot": str (required browser-readiness evidence; not analyzed),
         "stac_mode": "pro",
         "stac_items": list (MPC Pro items currently rendered on the map),
         "radius_miles": float (optional, default 5.0)
@@ -9832,7 +9935,7 @@ async def geoint_building_damage_analysis(request: Request):
         latitude = body.get("latitude")
         longitude = body.get("longitude")
         user_query = body.get("user_query") or body.get("user_context") or ""
-        screenshot = body.get("screenshot")
+        client_screenshot = body.get("screenshot")
         stac_mode = str(body.get("stac_mode") or "").casefold()
         stac_items = body.get("stac_items") or []
         radius_miles = body.get("radius_miles", 5.0)
@@ -9850,12 +9953,14 @@ async def geoint_building_damage_analysis(request: Request):
         if not (-180 <= longitude <= 180):
             raise HTTPException(status_code=400, detail=f"Invalid longitude: {longitude}")
 
-        if (
-            stac_mode != "pro"
-            or not isinstance(screenshot, str)
-            or not screenshot
-            or not await _verify_mpc_pro_scene_refs(stac_items)
-        ):
+        verified_scene = None
+        if stac_mode == "pro" and isinstance(client_screenshot, str) and client_screenshot:
+            verified_scene = await _resolve_mpc_pro_scene_ref(
+                stac_items,
+                latitude,
+                longitude,
+            )
+        if verified_scene is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -9863,9 +9968,26 @@ async def geoint_building_damage_analysis(request: Request):
                     "exclusively by loaded MPC Pro imagery."
                 ),
             )
+        try:
+            screenshot, screenshot_media_type = await _render_mpc_pro_scene_tile(
+                verified_scene,
+                latitude,
+                longitude,
+            )
+        except Exception as render_error:
+            logger.warning("Building Damage: trusted Pro render failed: %s", render_error)
+            raise HTTPException(
+                status_code=502,
+                detail="Verified MPC Pro imagery could not be rendered for analysis.",
+            ) from render_error
         
         logger.info(f"Building Damage endpoint: ({latitude}, {longitude})")
-        logger.info(f"Building Damage: screenshot={'yes' if screenshot else 'no'}, query='{user_query[:100]}'" if user_query else "Building Damage: no query")
+        logger.info(
+            "Building Damage: trusted_scene=%s/%s, query=%r",
+            verified_scene.get("collection"),
+            verified_scene.get("id"),
+            user_query[:100],
+        )
         
         import time
         agent_start = time.time()
@@ -9874,10 +9996,7 @@ async def geoint_building_damage_analysis(request: Request):
         from pipeline._aoai import get_aoai_client
         _vision_client = get_aoai_client()
         
-        # ── PATH 1: Screenshot provided — analyze the loaded map imagery ──
-        # When the user has loaded data (NAIP, Sentinel-2, Landsat, etc.) and
-        # the frontend captured a screenshot, analyze THAT imagery directly via
-        # GPT-5 Vision.  Do NOT fetch independent Sentinel-2 tiles.
+        # ── PATH 1: Analyze the trusted server-rendered MPC Pro tile ──
         if screenshot:
             logger.info("Building Damage: Analyzing loaded map imagery via screenshot")
             
@@ -9925,7 +10044,7 @@ async def geoint_building_damage_analysis(request: Request):
                         {"role": "system", "content": "You are a GEOINT Building Damage Assessment expert. Analyze the provided imagery and give structured damage assessments. Keep the response concise."},
                         {"role": "user", "content": [
                             {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{clean_b64}", "detail": "low"}}
+                            {"type": "image_url", "image_url": {"url": f"data:{screenshot_media_type};base64,{clean_b64}", "detail": "low"}}
                         ]}
                     ],
                     temperature=1.0,
@@ -9944,17 +10063,26 @@ async def geoint_building_damage_analysis(request: Request):
                         "summary": response_text[:500],
                         "tool_calls": [{"tool": "gpt_vision_analysis"}],
                         "location": {"latitude": latitude, "longitude": longitude},
+                        "imagery_metadata": {
+                            "source": "MPC Pro server-rendered tile",
+                            "collection": verified_scene.get("collection"),
+                            "item_id": verified_scene.get("id"),
+                            "media_type": screenshot_media_type,
+                        },
                         "radius_miles": radius_miles,
                         "timestamp": datetime.utcnow().isoformat()
                     },
                     "timestamp": datetime.utcnow().isoformat()
                 }
             except Exception as vis_err:
-                logger.warning(f"Building Damage: Screenshot vision analysis failed: {vis_err}, falling back to Agent Service")
-                # Fall through to Agent Service path
+                logger.warning("Building Damage: trusted Pro vision analysis failed: %s", vis_err)
+                raise HTTPException(
+                    status_code=502,
+                    detail="Verified MPC Pro imagery could not be analyzed.",
+                ) from vis_err
         
-        # ── PATH 2: No screenshot — use Agent Service to fetch and analyze imagery ──
-        logger.info("Building Damage: No screenshot, using Agent Service with tool-based imagery fetch")
+        # ── PATH 2: Vision-call failure fallback ──
+        logger.info("Building Damage: Using Agent Service fallback after vision failure")
         analysis_result = None
         try:
             from geoint.agents import building_damage_agent
@@ -9995,7 +10123,7 @@ async def geoint_building_damage_analysis(request: Request):
             assess_result = await _assess_damage_async(latitude, longitude, radius_miles)
             classify_result = await _classify_severity_async(latitude, longitude)
             
-            # 2) If screenshot provided, analyze it with _vision_client
+            # 2) Analyze the same trusted server-rendered tile with _vision_client
             visual_analysis = None
             if screenshot:
                 try:
@@ -10012,7 +10140,7 @@ async def geoint_building_damage_analysis(request: Request):
                                  f"Look for: collapsed structures, debris fields, burn scars, water damage, infrastructure impact. "
                                  f"Classify severity as: No Damage, Minor Damage, Major Damage, or Destroyed. "
                                  f"{'Additional context: ' + user_query if user_query else ''}"},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{clean_b64}", "detail": "low"}}
+                                {"type": "image_url", "image_url": {"url": f"data:{screenshot_media_type};base64,{clean_b64}", "detail": "low"}}
                             ]}
                         ],
                         temperature=1.0,

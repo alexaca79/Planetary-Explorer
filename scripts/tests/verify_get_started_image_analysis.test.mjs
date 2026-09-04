@@ -6,6 +6,7 @@ import {
   assertReleaseUnchanged,
   assertProductionAllowed,
   deniesRequestedImagery,
+  isBuildingDamageRequest,
   isExpectedApiOrigin,
 } from '../verify_get_started_image_analysis.mjs';
 
@@ -152,5 +153,44 @@ test('rejects release drift after browser scenarios complete', () => {
   assert.throws(
     () => assertReleaseUnchanged(initial, changed),
     /changed during browser scenario execution/,
+  );
+});
+
+test('accepts a stable release with a newer verification timestamp', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: {
+      verified_at: '2026-09-03T12:00:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+  const current = structuredClone(initial);
+  current.verification.verified_at = '2026-09-03T12:30:00Z';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+});
+
+test('matches Building Damage requests only on the declared API origin', () => {
+  const body = { user_query: 'Assess potential building damage.' };
+
+  assert.equal(
+    isBuildingDamageRequest(
+      'https://api.example/api/geoint/building-damage',
+      'POST',
+      body,
+      body.user_query,
+      'https://api.example',
+    ),
+    true,
+  );
+  assert.equal(
+    isBuildingDamageRequest(
+      'https://other.example/api/geoint/building-damage',
+      'POST',
+      body,
+      body.user_query,
+      'https://api.example',
+    ),
+    false,
   );
 });

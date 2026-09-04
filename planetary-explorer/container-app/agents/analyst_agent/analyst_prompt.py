@@ -51,13 +51,9 @@ TEMPORAL COMPARISON
 
 GEOSPATIAL FOUNDATION MODELS
 - list_geofm_models() : exact available model revisions and deployment gates
-- compare_with_geofm(before_item_id, after_item_id, collection_id,
-                     before_date, after_date, threshold, max_features)
+- compare_with_geofm(before_item_id, after_item_id, threshold, max_features)
   : omit item ids to select the earliest and latest compatible HLS scenes from
     the loaded map state; never invent or abbreviate item ids
-  : when one HLS view is loaded and the user supplies two dates, pass the
-    loaded collection id plus ISO before_date and after_date; the tool resolves
-    a trusted same-tile pair from the current map area
   : submit durable PlanAura contextual-change inference over two loaded HLS scenes
 - get_geofm_run(run_id) : poll status; completed runs return validated statistics,
                polygons, and artefact references
@@ -93,10 +89,8 @@ SELECTION RULES (read carefully)
    the user to "pick a time range" before sampling is a bug, not a
    safeguard.
 
-5. If a pin is set and the question asks for AREA TERRAIN statistics
-  (slope, aspect, elevation range/mean, flat areas, landing zone)
-  → ``get_terrain_stats``. An exact elevation value at one pin remains
-  governed by Rule 4 and MUST use ``sample_raster_value``.
+5. If a pin is set and the question is about TERRAIN
+   (elevation/slope/landing zone) → ``get_terrain_stats``.
 
 6. If a pin is set and the question is about MOBILITY / trafficability /
    "can a vehicle cross" → ``get_mobility_path``.

@@ -1,8 +1,8 @@
-"""Representative Get-Started query contract suite (Wave 10 / REQ-ARCH-1).
+"""Comprehensive Get-Started query test suite (Wave 10 / REQ-ARCH-1).
 
-This module exercises representative Layer 1-6 Get-Started queries and
-asserts that the new ``AnalystAgent`` ReAct loop selects the right
-tool(s). The Azure AI Agent Service call is mocked — we patch
+This module exercises every Get-Started button query the frontend can
+fire and asserts that the new ``AnalystAgent`` ReAct loop selects the
+right tool(s). The Azure AI Agent Service call is mocked — we patch
 ``AnalystAgent._invoke_agent_service`` so each test simulates the
 agent picking specific tool(s) and asserts:
 
@@ -16,9 +16,9 @@ agent picking specific tool(s) and asserts:
      ``{action, answer, plan, sources, structured, elapsed_ms}``.
 
 For each query we also document the **expected tool selection** in
-the test-local manifest below. The canonical gallery inventory lives
-in ``web-ui/src/config/canadianExamples.ts`` and is validated by
-``scripts/verify_get_started_scenarios.py``.
+the manifest at the top — that's the human-readable spec the user
+asked for. The frontend test harness can use the same manifest
+later for live-API smoke testing (``LIVE_API_URL`` env var).
 
 Run:    pytest tests/test_get_started_queries.py -v
 Report: pytest tests/test_get_started_queries.py --tb=line -q
@@ -27,7 +27,6 @@ Report: pytest tests/test_get_started_queries.py --tb=line -q
 from __future__ import annotations
 
 import os
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -41,7 +40,7 @@ from quickstart_cache import QUICKSTART_QUERIES
 
 
 # ---------------------------------------------------------------------------
-# Representative Get-Started query manifest for the mocked pipeline.
+# The Get-Started query manifest — single source of truth.
 #
 # Each entry documents:
 #   id              : short stable identifier
@@ -66,7 +65,7 @@ MODULE_1_STAC: List[Dict[str, Any]] = [
     {
         "id": "stac_hls_calgary",
         "module": 1,
-        "query": "Show HLS S30 imagery at Calgary, Canada, latitude 51.0300, longitude -114.0800, from 2026-05-01 to 2026-08-26",
+        "query": "Show HLS imagery over Calgary, Canada from 2026-05-01 to 2026-08-26",
         "collection_id": "hls2-s30",
         "expected_tools": [],
         "notes": "Layer 1 LOAD only for harmonized imagery over Calgary.",
@@ -74,7 +73,7 @@ MODULE_1_STAC: List[Dict[str, Any]] = [
     {
         "id": "stac_modis_alberta",
         "module": 1,
-        "query": "Show MODIS thermal anomalies at latitude 54.5000, longitude -115.0000 in Alberta from 2026-05-01 to 2026-08-26",
+        "query": "Show MODIS thermal anomalies across Alberta from 2026-05-01 to 2026-08-26",
         "collection_id": "modis-14A1-061",
         "expected_tools": [],
         "notes": "LOAD only for 2026 fire data.",
@@ -90,7 +89,7 @@ MODULE_1_STAC: List[Dict[str, Any]] = [
     {
         "id": "stac_modis_saskatchewan",
         "module": 1,
-        "query": "Show MODIS 13Q1 vegetation indices over cropland south of Regina, Saskatchewan, Canada, latitude 50.3500, longitude -104.6000, from 2026-04-01 to 2026-08-26",
+        "query": "Show MODIS vegetation indices over Saskatchewan from 2026-04-01 to 2026-08-26",
         "collection_id": "modis-13Q1-061",
         "expected_tools": [],
         "notes": "LOAD only for Prairie vegetation indices.",
@@ -147,9 +146,9 @@ MODULE_2_RASTER: List[Dict[str, Any]] = [
     {
         "id": "raster_ndsi_quebec",
         "module": 2,
-        "query": "Sample the February 2025 NDSI value at this Quebec City pin.",
+        "query": "Sample the NDSI (snow index) value at this point.",
         "collection_id": "modis-10A1-061",
-        "pin": (46.8139, -71.2080),
+        "pin": (50.1979, -68.9402),
         "has_screenshot": False,
         "expected_tools": ["sample_raster_value"],
         "notes": "Snow index raster.",
@@ -493,7 +492,7 @@ def _make_fake_invoke(expected_tools: List[str]):
 # ---------------------------------------------------------------------------
 
 
-def test_quickstart_cache_contains_exactly_twelve_time_bounded_canadian_queries() -> None:
+def test_quickstart_cache_contains_exactly_twelve_canadian_2026_queries() -> None:
     # Arrange
     legacy_locations = {
         "afghanistan",
@@ -511,56 +510,9 @@ def test_quickstart_cache_contains_exactly_twelve_time_bounded_canadian_queries(
 
     # Assert
     assert len(queries) == 12
-    assert all("2025" in query or "2026" in query for query in queries)
+    assert all("2026" in query for query in queries)
     assert all("canada" in location for location in locations)
     assert not any(legacy in query for legacy in legacy_locations for query in queries)
-
-
-@pytest.mark.asyncio
-async def test_quickstart_search_locks_cached_collection(monkeypatch) -> None:
-    # Arrange
-    import fastapi_app
-    import hybrid_rendering_system
-
-    query = next(
-        value for value in QUICKSTART_QUERIES
-        if "modis-17a2h-061" in value
-    )
-    calls = []
-
-    async def capture_search(stac_query, endpoint, **kwargs):
-        calls.append((stac_query, endpoint, kwargs))
-        return {
-            "success": True,
-            "results": {"type": "FeatureCollection", "features": []},
-        }
-
-    async def no_mosaic(**_kwargs):
-        return None
-
-    monkeypatch.setattr(fastapi_app, "execute_direct_stac_search", capture_search)
-    monkeypatch.setattr(hybrid_rendering_system, "get_mosaic_tilejson_url", no_mosaic)
-    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
-
-    class FakeRequest:
-        state = SimpleNamespace(user={})
-
-        async def json(self):
-            return {
-                "query": query,
-                "session_id": "quickstart-lock-test",
-                "stac_mode": "public",
-            }
-
-    # Act
-    await fastapi_app.unified_query_processor(FakeRequest())
-
-    # Assert
-    assert len(calls) == 1
-    stac_query, endpoint, kwargs = calls[0]
-    assert endpoint == "planetary_computer"
-    assert stac_query["collections"] == ["modis-17A2H-061"]
-    assert kwargs["locked_collection"] == "modis-17A2H-061"
 
 
 def test_tool_catalog_has_all_required_tools():

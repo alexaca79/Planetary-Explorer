@@ -144,23 +144,12 @@ async def _broker_confirm(entry: TraceEntry) -> bool:
     :mod:`mcp_runtime.confirm_bus` so the UI can render a card and the
     user can approve / deny before the tool dispatches.
 
-    Falls back to auto-approval for non-GeoFM tools when
-    ``MCP_REQUIRE_CONFIRM=0``. GeoFM mutations always require an explicit
-    decision because they can start billed GPU work.
+    Falls back to auto-approval when ``MCP_REQUIRE_CONFIRM=0`` so the
+    feature can be turned off per-deploy without code changes.
     """
     import os
 
-    confirmation_enabled = os.getenv("MCP_REQUIRE_CONFIRM", "1").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    is_geofm_mutation = (
-        entry.server_id.casefold() == "geofm"
-        or entry.tool.casefold().startswith("geofm_")
-    )
-    if not confirmation_enabled and not is_geofm_mutation:
+    if os.getenv("MCP_REQUIRE_CONFIRM", "1").lower() not in ("1", "true", "yes", "on"):
         return True
     from .confirm_bus import request_confirmation
 

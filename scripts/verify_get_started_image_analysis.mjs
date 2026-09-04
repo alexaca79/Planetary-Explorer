@@ -186,9 +186,16 @@ function loadScenarios() {
     cwd: ROOT,
     encoding: 'utf8',
   });
-  return JSON.parse(output).filter(
-    (scenario) => scenario.family.startsWith('Vision -') && scenario.image_query,
-  );
+  return JSON.parse(output)
+    .filter((scenario) => (
+      (scenario.family.startsWith('Vision -') && scenario.image_query)
+      || (scenario.family === 'Building Damage' && scenario.question)
+    ))
+    .map((scenario) => (
+      scenario.family === 'Building Damage'
+        ? { ...scenario, image_query: scenario.question }
+        : scenario
+    ));
 }
 
 function slug(value) {
@@ -217,6 +224,14 @@ function isQueryRequest(request, query, apiBaseUrl) {
     && isExpectedApiOrigin(url.href, apiBaseUrl)
     && (url.pathname === '/api/query' || url.pathname === '/api/query/stream')
     && requestQuery(request) === query;
+}
+
+export function isBuildingDamageRequest(requestUrl, method, body, query, apiBaseUrl) {
+  const url = new URL(requestUrl);
+  return method === 'POST'
+    && isExpectedApiOrigin(url.href, apiBaseUrl)
+    && url.pathname === '/api/geoint/building-damage'
+    && body?.user_query === query;
 }
 
 function imageMetadata(bytes) {
@@ -525,11 +540,84 @@ async function waitForQuery(page, query, action, apiBaseUrl, timeout = 150_000) 
   return { request, response };
 }
 
+async function waitForBuildingDamage(
+  page,
+  query,
+  action,
+  apiBaseUrl,
+  timeout = 150_000,
+) {
+  const requestPromise = page.waitForRequest((request) => {
+    let body;
+    try {
+      body = request.postDataJSON();
+    } catch {
+      return false;
+    }
+    return isBuildingDamageRequest(
+      request.url(),
+      request.method(),
+      body,
+      query,
+      apiBaseUrl,
+    );
+  }, { timeout });
+  await action();
+  const request = await requestPromise;
+  const response = await withTimeout(
+    request.response(),
+    30_000,
+    `Response headers for ${query}`,
+  );
+  if (!response) throw new Error(`No HTTP response for query: ${query}`);
+  await withTimeout(response.finished(), timeout, `Response body for ${query}`);
+  if (response.status() !== 200) {
+    throw new Error(`Building Damage returned HTTP ${response.status()}: ${query}`);
+  }
+  return { request, response };
+}
+
 async function openVisionTab(modal) {
   const selector = modal.locator('.vision-selector');
   if (!await selector.evaluate((element) => element.classList.contains('active'))) {
     await selector.click();
   }
+}
+
+async function openScenarioTab(modal, scenario) {
+  if (scenario.family === 'Building Damage') {
+    const selector = modal.locator('.damage-selector');
+    if (await selector.isDisabled()) return false;
+    if (!await selector.evaluate((element) => element.classList.contains('active'))) {
+      await selector.click();
+    }
+    return true;
+  }
+  await openVisionTab(modal);
+  return true;
+}
+
+async function ensureMinimumMapZoom(page, minimumZoom) {
+  let zoom = await page.evaluate(() => {
+    for (const element of document.querySelectorAll('div, span')) {
+      const match = element.textContent?.trim().match(/^Z(\d+)$/);
+      if (match) return Number(match[1]);
+    }
+    return null;
+  });
+  const zoomIn = page.getByTitle('Zoom In');
+  for (let attempts = 0; Number(zoom) < minimumZoom && attempts < 20; attempts += 1) {
+    await zoomIn.click();
+    await page.waitForTimeout(150);
+    zoom = await page.evaluate(() => {
+      for (const element of document.querySelectorAll('div, span')) {
+        const match = element.textContent?.trim().match(/^Z(\d+)$/);
+        if (match) return Number(match[1]);
+      }
+      return null;
+    });
+  }
+  return waitForMapZoom(page, minimumZoom);
 }
 
 function adversarialQueryForScenario(configuredQuery, scenario) {
@@ -565,6 +653,7 @@ async function runScenario(browser, scenario, index, options) {
   const scenarioSlug = `${String(index + 1).padStart(2, '0')}-${slug(scenario.location)}`;
   const started = Date.now();
   const diagnostics = {};
+  const isBuildingDamage = scenario.family === 'Building Damage';
 
   try {
     await page.goto(options.appUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -637,14 +726,31 @@ async function runScenario(browser, scenario, index, options) {
     await page.locator('.get-started-button').click();
     const modal = page.locator('.get-started-modal-content');
     await modal.waitFor({ state: 'visible' });
-    await openVisionTab(modal);
+    if (!await openScenarioTab(modal, scenario)) {
+      return {
+        family: scenario.family,
+        location: scenario.location,
+        setup_query: scenario.setup_query,
+        image_query: scenario.image_query,
+        outcome: 'blocked',
+        elapsed_ms: Date.now() - started,
+        blocked_reason: 'MPC Pro tenant imagery is disabled in this deployment.',
+      };
+    }
 
-    const setupCard = modal.locator('.stac-card').filter({ hasText: scenario.setup_query }).first();
+    const setupCard = modal
+      .locator(isBuildingDamage ? '.building-damage-card' : '.stac-card')
+      .filter({ hasText: scenario.setup_query })
+      .first();
     await setupCard.waitFor({ state: 'visible' });
     const setup = await waitForQuery(
       page,
       scenario.setup_query,
-      () => setupCard.getByRole('button', { name: 'Go', exact: true }).click(),
+      () => (
+        isBuildingDamage
+          ? setupCard.locator('.setup-query').getByRole('button', { name: 'Go', exact: true }).click()
+          : setupCard.getByRole('button', { name: 'Go', exact: true }).click()
+      ),
       options.apiBaseUrl,
       options.requestTimeoutMs,
     );
@@ -737,8 +843,14 @@ async function runScenario(browser, scenario, index, options) {
     }
     await page.waitForTimeout(1_000);
 
+    if (isBuildingDamage) {
+      diagnostics.map_zoom = await ensureMinimumMapZoom(page, 16);
+    }
     await page.locator('[title="Geointelligence Modules"]').click();
-    await page.getByText('Vision Analysis', { exact: true }).click();
+    await page.getByText(
+      isBuildingDamage ? 'Building Damage' : 'Vision Analysis',
+      { exact: true },
+    ).click();
     const mapBox = await map.boundingBox();
     if (!mapBox) throw new Error('Interactive map has no clickable bounding box');
     await map.click({ position: { x: mapBox.width * 0.5, y: mapBox.height * 0.5 } });
@@ -749,20 +861,40 @@ async function runScenario(browser, scenario, index, options) {
 
     await page.locator('.get-started-button').click();
     await modal.waitFor({ state: 'visible' });
-    await openVisionTab(modal);
-    const imageCard = modal.locator('.screenshot-card').filter({ hasText: scenario.image_query }).first();
+    await openScenarioTab(modal, scenario);
+    const imageCard = modal
+      .locator(isBuildingDamage ? '.building-damage-card' : '.screenshot-card')
+      .filter({ hasText: scenario.image_query })
+      .first();
     await imageCard.waitFor({ state: 'visible' });
-    const analysis = await waitForQuery(
-      page,
-      scenario.image_query,
-      () => imageCard.getByRole('button', { name: 'Go', exact: true }).click(),
-      options.apiBaseUrl,
-      options.requestTimeoutMs,
+    const analysisAction = () => (
+      isBuildingDamage
+        ? imageCard.locator('.building-damage-question').getByRole('button', { name: 'Go', exact: true }).click()
+        : imageCard.getByRole('button', { name: 'Go', exact: true }).click()
     );
+    const analysis = isBuildingDamage
+      ? await waitForBuildingDamage(
+        page,
+        scenario.image_query,
+        analysisAction,
+        options.apiBaseUrl,
+        options.requestTimeoutMs,
+      )
+      : await waitForQuery(
+        page,
+        scenario.image_query,
+        analysisAction,
+        options.apiBaseUrl,
+        options.requestTimeoutMs,
+      );
 
     const requestBody = analysis.request.postDataJSON();
-    const imageBase64 = requestBody.imagery_base64;
-    diagnostics.submitted_pin = requestBody.vision_pin || requestBody.pin;
+      const imageBase64 = isBuildingDamage
+        ? requestBody.screenshot
+        : requestBody.imagery_base64;
+    diagnostics.submitted_pin = isBuildingDamage
+      ? { lat: requestBody.latitude, lng: requestBody.longitude }
+      : requestBody.vision_pin || requestBody.pin;
     if (!diagnostics.submitted_pin) {
       throw new Error('Image Analysis request has no submitted pin');
     }
@@ -793,6 +925,87 @@ async function runScenario(browser, scenario, index, options) {
     writeFileSync(imagePath, imageBytes);
 
     const responseBody = (await analysis.response.body()).toString('utf8');
+    if (isBuildingDamage) {
+      if (requestBody.stac_mode !== 'pro') {
+        throw new Error(`Building Damage request used ${requestBody.stac_mode || '(missing)'} mode`);
+      }
+      if (!Array.isArray(requestBody.stac_items) || requestBody.stac_items.length === 0) {
+        throw new Error('Building Damage request has no MPC Pro scene references');
+      }
+      const result = JSON.parse(responseBody);
+      const analysisResult = result?.result || {};
+      const imageryMetadata = analysisResult.imagery_metadata || {};
+      const responseText = String(analysisResult.response || analysisResult.summary || '');
+      const requestedSceneIds = requestBody.stac_items
+        .map((item) => item?.id)
+        .filter(Boolean);
+      const tools = (analysisResult.tool_calls || [])
+        .map((tool) => tool?.tool || tool?.name)
+        .filter(Boolean);
+      diagnostics.tools_used = tools;
+      diagnostics.structured_evidence = imageryMetadata;
+      diagnostics.response_excerpt = responseText.slice(0, 1000);
+      if (result.status !== 'success' || analysisResult.agent !== 'building_damage_vision') {
+        throw new Error(`Building Damage response is incomplete: ${responseBody.slice(0, 1000)}`);
+      }
+      if (imageryMetadata.source !== 'MPC Pro server-rendered tile') {
+        throw new Error(`Building Damage used untrusted imagery: ${imageryMetadata.source || '(missing)'}`);
+      }
+      if (!requestedSceneIds.includes(imageryMetadata.item_id)) {
+        throw new Error(
+          `Building Damage analyzed an unsubmitted scene: ${imageryMetadata.item_id || '(missing)'}`,
+        );
+      }
+      if (!responseText) {
+        throw new Error('Building Damage returned no assessment text');
+      }
+      const contradiction = coordinateContradiction(responseText, diagnostics.submitted_pin);
+      if (contradiction) {
+        throw new Error(`Building Damage response contradicts the submitted coordinates: ${contradiction}`);
+      }
+      await page.locator('.row.assistant').last().waitFor({
+        state: 'visible',
+        timeout: 30_000,
+      });
+      const browserPath = join(options.outputDir, 'browser-screenshots', `${scenarioSlug}.png`);
+      mkdirSync(dirname(browserPath), { recursive: true });
+      await page.screenshot({ path: browserPath, fullPage: false });
+      if (pageErrors.length > 0) {
+        throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
+      }
+      return {
+        family: scenario.family,
+        location: scenario.location,
+        setup_query: scenario.setup_query,
+        image_query: scenario.image_query,
+        outcome: 'pass',
+        elapsed_ms: Date.now() - started,
+        setup_http_status: setup.response.status(),
+        analysis_http_status: analysis.response.status(),
+        setup_bbox: bbox,
+        expected_pin: expectedPin,
+        submitted_pin: diagnostics.submitted_pin,
+        pin_distance_km: diagnostics.pin_distance_km,
+        map_zoom: diagnostics.map_zoom,
+        imagery_layer: diagnostics.imagery_layer,
+        imagery_difference: diagnostics.imagery_difference,
+        screenshot: {
+          format: metadata.format,
+          byte_length: imageBytes.length,
+          width: metadata.width,
+          height: metadata.height,
+          ...pixels,
+          path: imagePath,
+        },
+        tools_used: tools,
+        structured_success: true,
+        evidence_collection: imageryMetadata.collection,
+        evidence_item_id: imageryMetadata.item_id,
+        evidence_source: imageryMetadata.source,
+        response_excerpt: responseText.slice(0, 1000),
+        browser_screenshot: browserPath,
+      };
+    }
     const result = parseSseResult(responseBody);
     const tools = toolNames(result);
     const evidence = result.structured?.describe_map_screenshot;
