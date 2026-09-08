@@ -279,8 +279,8 @@ class AnalystAgent:
         set_session(sess)
 
         analyst_status: Optional[Dict[str, Any]] = None
-        if request.analysis_type == "screenshot":
-            answer, evidence, analyst_status = await self._run_explicit_screenshot(
+        if request.analysis_type in {"screenshot", "raster"}:
+            answer, evidence, analyst_status = await self._run_explicit_analysis(
                 request
             )
         else:
@@ -406,14 +406,20 @@ class AnalystAgent:
             elapsed_ms=elapsed_ms,
         )
 
-    async def _run_explicit_screenshot(self, request):
-        """Execute a Get Started Image Analysis request without an LLM routing round."""
+    async def _run_explicit_analysis(self, request):
+        """Execute the requested source tool without a redundant model-routing round."""
         from .session_context import get_session
-        from .tools import describe_map_screenshot
+        from .tools import describe_map_screenshot, sample_raster_value
+
+        tool_name, tool, error_prefix = (
+            ("sample_raster_value", sample_raster_value, "Raster")
+            if request.analysis_type == "raster"
+            else ("describe_map_screenshot", describe_map_screenshot, "Vision")
+        )
 
         try:
             payload = await asyncio.wait_for(
-                describe_map_screenshot(request.question),
+                tool(request.question),
                 timeout=self._run_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -422,19 +428,19 @@ class AnalystAgent:
                 "error": f"timed out after {self._run_timeout_seconds:.1f}s",
             }
         except Exception as error:
-            logger.exception("[ANALYST] explicit screenshot analysis failed")
+            logger.exception("[ANALYST] explicit %s analysis failed", request.analysis_type)
             payload = {"success": False, "error": str(error)}
 
         evidence = list(get_session().evidence)
         if not evidence:
-            evidence = [{"tool": "describe_map_screenshot", "payload": payload}]
+            evidence = [{"tool": tool_name, "payload": payload}]
         if payload.get("success") and payload.get("answer"):
             return str(payload["answer"]), evidence, None
 
-        error = str(payload.get("error") or "vision analysis failed")
+        error = str(payload.get("error") or f"{request.analysis_type} analysis failed")
         return self._fallback_answer(request, error), evidence, {
             "status": "timeout" if "timed out" in error else "error",
-            "error_type": "VisionTimeout" if "timed out" in error else "VisionError",
+            "error_type": f"{error_prefix}Timeout" if "timed out" in error else f"{error_prefix}Error",
         }
 
     def _track_background_task(self, task: asyncio.Task, label: str) -> None:

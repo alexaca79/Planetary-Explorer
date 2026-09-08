@@ -809,6 +809,7 @@ def _run_vision_raster(
         "stac_mode": "public",
         "geoint_mode": True,
         "geoint_module": "vision",
+        "analysis_type": "raster",
         "include_visualization": True,
         "pin": {"lat": pin[0], "lng": pin[1]},
         "current_collection": expected["collection"],

@@ -180,6 +180,83 @@ async def test_given_explicit_screenshot_when_running_then_provider_router_is_sk
 
 
 @pytest.mark.asyncio
+async def test_given_explicit_raster_when_running_then_measured_evidence_skips_provider_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AnalystAgent()
+    request = AnalysisRequest(
+        question="Sample NDVI and EVI at this Regina cropland pin.",
+        session_id="raster-session",
+        pin=(50.35, -104.6),
+        loaded_collections=["modis-13Q1-061"],
+        analysis_type="raster",
+    )
+    measurement = {
+        "success": True,
+        "answer": "NDVI: 0.52; EVI: 0.39",
+        "structured": {
+            "samples": [{"metric": "NDVI", "value": 0.52}, {"metric": "EVI", "value": 0.39}],
+            "sampled_scenes": [{"item_id": "regina-scene", "date": "2026-08-05"}],
+        },
+    }
+
+    async def fail_provider(*_args, **_kwargs):
+        raise AssertionError("Explicit raster sampling must not invoke a routing model")
+
+    async def sample(question: str):
+        assert question == request.question
+        assert get_session().pin == request.pin
+        return measurement
+
+    monkeypatch.setattr(agent, "_invoke_serialized", fail_provider)
+    monkeypatch.setattr("agents.analyst_agent.tools.sample_raster_value", sample)
+
+    result = await agent.run(request)
+
+    assert result.answer == measurement["answer"]
+    assert result.structured["sample_raster_value"] == measurement
+    assert [step.analyzer for step in result.plan.steps] == ["sample_raster_value"]
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_slow_explicit_raster_when_deadline_expires_then_failure_is_not_reported_as_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.01
+    request = _request().model_copy(update={"analysis_type": "raster"})
+
+    async def never_finishes(_question: str):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("agents.analyst_agent.tools.sample_raster_value", never_finishes)
+
+    result = await asyncio.wait_for(agent.run(request), timeout=0.2)
+
+    assert result.structured["sample_raster_value"]["success"] is False
+    assert result.structured["analyst_status"] == {
+        "status": "timeout", "error_type": "RasterTimeout",
+    }
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_explicit_raster_without_pin_when_running_then_sampling_prerequisite_is_preserved() -> None:
+    agent = AnalystAgent()
+    request = _request().model_copy(
+        update={"analysis_type": "raster", "loaded_collections": ["hls2-s30"]}
+    )
+
+    result = await agent.run(request)
+
+    assert result.structured["sample_raster_value"]["success"] is False
+    assert "pin" in result.structured["sample_raster_value"]["error"]
+    assert result.structured["analyst_status"]["status"] == "error"
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
 async def test_given_slow_gpt_56_responses_when_timeout_expires_then_fallback_is_returned(
     monkeypatch,
 ) -> None:

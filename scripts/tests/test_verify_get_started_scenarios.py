@@ -320,6 +320,7 @@ def test_given_selected_model_when_verifying_raster_then_deployment_reasoning_de
 
     assert captured["model"] == model
     assert "reasoning_effort" not in captured
+    assert captured["analysis_type"] == "raster"
 
 
 @pytest.mark.parametrize(
