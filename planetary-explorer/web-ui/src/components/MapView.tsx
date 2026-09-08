@@ -93,6 +93,7 @@ interface MapViewProps {
 
 interface SatelliteData {
   bbox?: number[];
+  preserveViewport?: boolean;
   items: Array<{
     id: string;
     collection: string;
@@ -3076,6 +3077,7 @@ const MapView: React.FC<MapViewProps> = ({
                     // Build satellite data structure matching initial response format
                     const expandedSatelliteData = {
                       bbox: unionBbox,
+                      preserveViewport: true,
                       tile_url: allTileUrls[0]?.tilejson_url,
                       all_tile_urls: allTileUrls,
                       items: stacFeatures.map((f: { id: string; collection?: string; _planetary_explorer_stac_mode?: 'public' | 'pro'; properties?: { datetime?: string }; bbox?: number[]; assets?: Record<string, any> }) => ({
@@ -3124,6 +3126,7 @@ const MapView: React.FC<MapViewProps> = ({
                       // Build satellite data structure matching initial response format
                       const expandedSatelliteData = {
                         bbox: unionBbox,
+                        preserveViewport: true,
                         tile_url: allTileUrls[0]?.tilejson_url,
                         all_tile_urls: allTileUrls,
                         items: []
@@ -3659,6 +3662,7 @@ const MapView: React.FC<MapViewProps> = ({
     } else {
       // This is genuinely new data - allow rendering
       isRenderingRef.current = false;
+      if (satelliteData.preserveViewport) return;
       setImageryLayerAvailable(false);
       const collection = satelliteData.items?.[0]?.collection || '';
       const configuredOpacity = collection
@@ -4022,7 +4026,7 @@ const MapView: React.FC<MapViewProps> = ({
               setCurrentLayer(tileLayers[0]);
               
               // CRITICAL FIX: Force minimum zoom level for MODIS fire data
-              if (collection.toLowerCase().includes('modis') && satelliteData.bbox) {
+              if (!satelliteData.preserveViewport && collection.toLowerCase().includes('modis') && satelliteData.bbox) {
                 const [mWest, mSouth, mEast, mNorth] = satelliteData.bbox;
                 
                 // Clamp to WebMercator limits before passing to Azure Maps
@@ -4040,7 +4044,7 @@ const MapView: React.FC<MapViewProps> = ({
                   });
                   console.log(`MapView: [MODIS FIX] Fitted bounds with minZoom=8 (item tiles 404 below zoom 8)`);
                 }
-              } else if (satelliteData.bbox) {
+              } else if (!satelliteData.preserveViewport && satelliteData.bbox) {
                 // Normal bbox update for non-MODIS
                 updateMapView(satelliteData.bbox);
               }
@@ -4800,15 +4804,17 @@ const MapView: React.FC<MapViewProps> = ({
                   const safeEast = Math.max(-179.999, Math.min(179.999, east));
                   const safeNorth = Math.max(-84.999, Math.min(84.999, north));
 
-                  map.setCamera({
-                    bounds: [safeWest, safeSouth, safeEast, safeNorth],
-                    zoom: Math.max(0, Math.min(22, targetZoom)), // Clamp zoom level
-                    maxZoom: Math.max(0, Math.min(22, isMODISData ? 16 : 22)),
-                    minZoom: Math.max(0, Math.min(22, isMODISData ? 0 : 2)),
-                    padding: Math.max(0, Math.min(200, 50)), // Clamp padding
-                    type: 'ease',
-                    duration: Math.max(0, Math.min(5000, 2000)) // Clamp duration
-                  });
+                  if (!satelliteData.preserveViewport) {
+                    map.setCamera({
+                      bounds: [safeWest, safeSouth, safeEast, safeNorth],
+                      zoom: Math.max(0, Math.min(22, targetZoom)), // Clamp zoom level
+                      maxZoom: Math.max(0, Math.min(22, isMODISData ? 16 : 22)),
+                      minZoom: Math.max(0, Math.min(22, isMODISData ? 0 : 2)),
+                      padding: Math.max(0, Math.min(200, 50)), // Clamp padding
+                      type: 'ease',
+                      duration: Math.max(0, Math.min(5000, 2000)) // Clamp duration
+                    });
+                  }
                   console.log('? MapView: Successfully zoomed to satellite data area with appropriate zoom level');
 
                   // Enhanced text visibility management after satellite layer is added

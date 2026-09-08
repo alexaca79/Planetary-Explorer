@@ -126,8 +126,23 @@ def test_given_windows_az_shim_when_running_then_cmd_expands_quoted_command(
     )
 
 
+@pytest.mark.parametrize(
+    ("api_state", "weather_state", "expected_error"),
+    [
+        ("Running", "ScaledToZero", None),
+        ("RunningAtMaxScale", "Running", None),
+        ("Running", "RunningAtMaxScale", None),
+        ("Degraded", "Running", "API revision is not running"),
+        ("Failed", "Running", "API revision is not running"),
+        ("ScaledToZero", "Running", "API revision is not running"),
+        ("Running", "Failed", "Weather adapter revision"),
+    ],
+)
 def test_given_live_release_when_verifying_then_control_plane_and_https_are_bound(
     monkeypatch: pytest.MonkeyPatch,
+    api_state: str,
+    weather_state: str,
+    expected_error: str | None,
 ) -> None:
     # Arrange
     bundle = b"console.log('release');"
@@ -207,7 +222,7 @@ def test_given_live_release_when_verifying_then_control_plane_and_https_are_boun
                 "properties": {
                     "healthState": "Healthy",
                     "runningState": (
-                        "ScaledToZero" if app_name == "weather-test" else "Running"
+                        weather_state if app_name == "weather-test" else api_state
                     ),
                     "active": True,
                     "trafficWeight": 100,
@@ -236,6 +251,11 @@ def test_given_live_release_when_verifying_then_control_plane_and_https_are_boun
         ),
     )
 
+    if expected_error:
+        with pytest.raises(ValueError, match=expected_error):
+            verifier._verify_release_metadata(args, "https://api.example")
+        return
+
     # Act
     release = verifier._verify_release_metadata(args, "https://api.example")
 
@@ -244,6 +264,8 @@ def test_given_live_release_when_verifying_then_control_plane_and_https_are_boun
     assert release["verification"]["weather_traffic_weight"] == 100
     assert release["verification"]["frontend_bundle_live_sha256"] == bundle_hash
     assert release["verification"]["geofm_worker_active_replicas"] == 0
+    assert release["verification"]["api_revision_running"] == api_state
+    assert release["verification"]["weather_revision_running"] == weather_state
 
 
 def test_given_release_drift_when_reverifying_then_matrix_is_rejected(
@@ -324,11 +346,18 @@ def test_given_selected_model_when_verifying_raster_then_deployment_reasoning_de
 
 
 @pytest.mark.parametrize(
-    ("initial_state", "current_state"),
-    [("ScaledToZero", "Running"), ("Running", "ScaledToZero")],
+    ("field", "initial_state", "current_state"),
+    [
+        ("weather_revision_running", "ScaledToZero", "Running"),
+        ("weather_revision_running", "Running", "ScaledToZero"),
+        ("weather_revision_running", "Running", "RunningAtMaxScale"),
+        ("api_revision_running", "Running", "RunningAtMaxScale"),
+        ("api_revision_running", "RunningAtMaxScale", "Running"),
+    ],
 )
-def test_given_healthy_weather_autoscaling_when_reverifying_then_release_is_unchanged(
+def test_given_healthy_autoscaling_when_reverifying_then_release_is_unchanged(
     monkeypatch: pytest.MonkeyPatch,
+    field: str,
     initial_state: str,
     current_state: str,
 ) -> None:
@@ -337,22 +366,23 @@ def test_given_healthy_weather_autoscaling_when_reverifying_then_release_is_unch
         "weather_revision": "weather--release-1",
         "weather_image_digest": "sha256:weather",
         "verification": {
+            "api_revision_health": "Healthy",
             "weather_revision_health": "Healthy",
-            "weather_revision_running": initial_state,
+            field: initial_state,
             "weather_traffic_weight": 100,
             "geofm_worker_active_replicas": 0,
         },
     }
     current = {
         **initial,
-        "verification": {**initial["verification"], "weather_revision_running": current_state},
+        "verification": {**initial["verification"], field: current_state},
     }
     monkeypatch.setattr(verifier, "_verify_release_metadata", lambda *_args: current)
 
     result = verifier._reverify_release_metadata(SimpleNamespace(), "https://api.example", initial)
 
-    assert result["verification"]["weather_revision_running"] == current_state
-    assert initial["verification"]["weather_revision_running"] == initial_state
+    assert result["verification"][field] == current_state
+    assert initial["verification"][field] == initial_state
 
 
 def test_given_proven_pre_dispatch_429_when_classifying_then_retry_is_allowed() -> None:

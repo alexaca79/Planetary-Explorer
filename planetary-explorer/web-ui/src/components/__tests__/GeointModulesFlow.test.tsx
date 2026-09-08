@@ -818,6 +818,61 @@ describe('GEOINT module flow', () => {
     expect(screen.getByText('85%')).toBeInTheDocument();
   });
 
+  it.each([1, 2])('refreshes %i expanded scenes without moving the viewport or resetting layer controls', async (sceneCount) => {
+    const expandedBounds = [-91, 49, -88, 52];
+    vi.mocked(authenticatedFetch).mockImplementation(async (url) => {
+      if (String(url).endsWith('/api/stac-search')) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: {
+              features: Array.from({ length: sceneCount }, (_unused, sceneIndex) => ({
+                id: `expanded-hls-scene-${sceneIndex}`,
+                collection: 'hls2-s30',
+                bbox: expandedBounds,
+                properties: { datetime: '2026-07-04T17:09:44Z' },
+                assets: { tilejson: { href: 'https://example.test/expanded/tilejson.json' } },
+              })),
+            },
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ azureMaps: { subscriptionKey: 'test-map-key-'.repeat(6) } }),
+      } as Response;
+    });
+    renderMap({ selectedDataset: null, lastChatResponse: createHlsFireResponse() });
+    const layersButton = await screen.findByRole('button', { name: 'Map layers' });
+    fireEvent.click(layersButton);
+    const visibilityButton = screen.getByRole('button', { name: / visibility$/ });
+    fireEvent.click(visibilityButton);
+    const map = lastMockValue(atlasMock.Map);
+    map.getCamera.mockReturnValue({
+      bounds: [-90.1, 50.1, -89.6, 50.4],
+      center: [-89.85, 50.25],
+      zoom: 8,
+    });
+    map.setCamera.mockClear();
+    const zoomHandlers = map.events.add.mock.calls
+      .filter(([event]: [string]) => event === 'zoomend')
+      .map(([, handler]: [string, () => Promise<void>]) => handler);
+
+    await act(async () => {
+      for (const handler of zoomHandlers) await handler();
+    });
+
+    await waitFor(() => {
+      expect(tileJsonMocks.fetchAndSignTileJSON).toHaveBeenCalledWith(
+        'https://example.test/expanded/tilejson.json',
+        expect.anything(),
+      );
+    });
+    expect(map.setCamera).not.toHaveBeenCalled();
+    expect(layersButton).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: / visibility$/ })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('preserves STAC assets and catalog provenance for follow-up inspection', async () => {
     const onMapContextChange = vi.fn();
     const response = createHlsFireResponse();

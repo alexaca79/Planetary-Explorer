@@ -1647,7 +1647,7 @@ def _verify_release_metadata(
         raise ValueError("API revision image digest does not match")
     if revision_properties.get("healthState") != "Healthy":
         raise ValueError("API revision is not healthy")
-    if revision_properties.get("runningState") != "Running":
+    if revision_properties.get("runningState") not in {"Running", "RunningAtMaxScale"}:
         raise ValueError("API revision is not running")
     if revision_properties.get("active") is not True:
         raise ValueError("API revision is not active")
@@ -1704,6 +1704,7 @@ def _verify_release_metadata(
         raise ValueError("Weather adapter revision is not healthy")
     if weather_revision_properties.get("runningState") not in {
         "Running",
+        "RunningAtMaxScale",
         "ScaledToZero",
     }:
         raise ValueError(
@@ -1821,11 +1822,15 @@ def _verify_release_metadata(
 
 
 def _release_binding_snapshot(release: dict[str, Any]) -> dict[str, Any]:
-    """Compare immutable release evidence independently of valid weather autoscaling."""
+    """Compare immutable release evidence independently of healthy autoscaling."""
     snapshot = dict(release)
     verification = dict(snapshot.get("verification") or {})
     verification.pop("verified_at", None)
-    if verification.get("weather_revision_running") in {"Running", "ScaledToZero"}:
+    if verification.get("api_revision_running") in {"Running", "RunningAtMaxScale"}:
+        verification["api_revision_running"] = "Running"
+    if verification.get("weather_revision_running") in {
+        "Running", "RunningAtMaxScale", "ScaledToZero",
+    }:
         verification["weather_revision_running"] = "Active"
     if verification:
         snapshot["verification"] = verification

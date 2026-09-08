@@ -8,6 +8,7 @@ import {
   deniesRequestedImagery,
   isBuildingDamageRequest,
   isExpectedApiOrigin,
+  uniformImageGroundingSentence,
 } from '../verify_get_started_image_analysis.mjs';
 
 test('allows a broad custom adversarial location without a scenario zoom floor', () => {
@@ -104,6 +105,31 @@ test('accepts an observation that requested features are not visible', () => {
     ),
     false,
   );
+});
+
+test('grounds a uniform image from adjacent colour and hue observations', () => {
+  const pixels = { meanRgb: [24, 15, 62], meanLuminance: 20.31 };
+  const response = 'The visible colour in this 2026 GPP image is dark purple. This hue is uniform across the image without variation.';
+
+  assert.equal(uniformImageGroundingSentence(response, pixels), response);
+  assert.equal(
+    uniformImageGroundingSentence('The current image is uniformly dark purple.', pixels),
+    'The current image is uniformly dark purple.',
+  );
+});
+
+test('does not combine unrelated, incorrect, or contradictory uniform-image claims', () => {
+  const pixels = { meanRgb: [24, 15, 62], meanLuminance: 20.31 };
+
+  for (const response of [
+    'The visible image is green. This hue is uniform across the image.',
+    'The visible image is purple. The legend has a uniform colour.',
+    'The visible image is purple.\n\nThis hue is uniform across the image.',
+    'The visible image is purple. This hue is not uniform across the image.',
+    'The visible image is purple. This hue is typically uniform in GPP products.',
+  ]) {
+    assert.equal(uniformImageGroundingSentence(response, pixels), undefined, response);
+  }
 });
 
 test('rejects explicit requested layer absence', () => {
@@ -212,4 +238,20 @@ test('accepts healthy weather scale-to-zero transitions without changing the rel
   assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
   assert.doesNotThrow(() => assertReleaseUnchanged(current, initial));
   assert.equal(initial.verification.weather_revision_running, 'ScaledToZero');
+});
+
+test('accepts healthy API maximum-scale transitions without hiding unhealthy states', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: { api_revision_health: 'Healthy', api_revision_running: 'Running' },
+  };
+  const current = structuredClone(initial);
+  current.verification.api_revision_running = 'RunningAtMaxScale';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+  assert.doesNotThrow(() => assertReleaseUnchanged(current, initial));
+  for (const state of ['Failed', 'Degraded', 'ScaledToZero']) {
+    current.verification.api_revision_running = state;
+    assert.throws(() => assertReleaseUnchanged(initial, current), /changed during/);
+  }
 });

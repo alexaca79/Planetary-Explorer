@@ -164,7 +164,10 @@ function releaseBindingSnapshot(release) {
   const snapshot = structuredClone(release);
   if (snapshot.verification) {
     delete snapshot.verification.verified_at;
-    if (['Running', 'ScaledToZero'].includes(snapshot.verification.weather_revision_running)) {
+    if (['Running', 'RunningAtMaxScale'].includes(snapshot.verification.api_revision_running)) {
+      snapshot.verification.api_revision_running = 'Running';
+    }
+    if (['Running', 'RunningAtMaxScale', 'ScaledToZero'].includes(snapshot.verification.weather_revision_running)) {
       snapshot.verification.weather_revision_running = 'Active';
     }
     if (Object.keys(snapshot.verification).length === 0) {
@@ -407,16 +410,27 @@ function uniformColorTerms(pixels) {
   return ['red', 'pink', 'magenta', 'brown'];
 }
 
-function uniformImageGroundingSentence(responseText, pixels) {
+export function uniformImageGroundingSentence(responseText, pixels) {
   const colorTerms = uniformColorTerms(pixels);
-  const sentences = responseText.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
-  return sentences.find((sentence) => {
-    const normalized = sentence.toLowerCase();
-    const namesCurrentImage = /\b(image|view|map|screenshot|visible|shown|appears)\b/i.test(sentence);
-    const namesColor = colorTerms.some((term) => normalized.includes(term));
-    const namesUniformity = /\b(uniform(?:ly)?|solid|single[- ]colou?r|only one colou?r|no visible variation|no variation)\b/i.test(sentence);
-    return namesCurrentImage && namesColor && namesUniformity;
-  });
+  const uniformity = /\b(uniform(?:ly)?|solid|single[- ]colou?r|only one colou?r|no visible variation|no variation)\b/i;
+  const qualified = /\b(not|never|usually|typically|generally|often|could|might|would)\b|n't\b/i;
+  for (const paragraph of responseText.split(/\n\s*\n/)) {
+    const sentences = paragraph.split(/(?<=[.!?])\s+|\n+/).map((sentence) => sentence.trim()).filter(Boolean);
+    for (const [index, sentence] of sentences.entries()) {
+      const namesCurrentImage = /\b(image|view|map|screenshot|visible|shown|appears)\b/i.test(sentence);
+      const namesColor = colorTerms.some((term) => new RegExp(`\\b${term}\\b`, 'i').test(sentence));
+      if (!namesCurrentImage || !namesColor || qualified.test(sentence)) continue;
+      if (uniformity.test(sentence)) return sentence;
+      const continuation = sentences[index + 1];
+      if (
+        continuation
+        && /^(?:this|that)\s+(?:colou?r|hue|tone)\b/i.test(continuation)
+        && uniformity.test(continuation)
+        && !qualified.test(continuation)
+      ) return `${sentence} ${continuation}`;
+    }
+  }
+  return undefined;
 }
 
 function coordinateContradiction(text, pin) {
@@ -758,6 +772,11 @@ async function runScenario(browser, scenario, index, options) {
       options.requestTimeoutMs,
     );
     const setupResult = parseSseResult((await setup.response.body()).toString('utf8'));
+    diagnostics.setup_viewport = {
+      query_bbox: setupResult.translation_metadata?.stac_query?.bbox,
+      bounding_box: setupResult.bounding_box,
+      scene_bboxes: setupResult.data?.stac_results?.features?.map((feature) => feature.bbox),
+    };
     if (options.adversarialLocationQuery) {
       const setupRequest = setup.request.postDataJSON();
       const staleFields = [
