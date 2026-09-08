@@ -603,40 +603,17 @@ class LoadAgent:
                     or has_fam_catalog
                     or _has_collection_family_signal(payload.query)
                 )
-                # Time signal: present for explicit dates / years / "latest"
-                # words. We treat time as effectively satisfied for ALL
-                # intents here because there is no downstream temporal-
-                # change / comparison executor in this build — LoadAgent
-                # always renders a single STAC layer. Even when the LLM
-                # labels intent='temporal_change' (e.g. the user said
-                # "changes" or "over time"), asking the user for a year
-                # range is dead-end UX: we'll just render the latest
-                # snapshot regardless. Keep the helper around so the
-                # override still fires when an explicit year IS present
-                # (it logs a cleaner reason), but never gate on it.
                 has_time_explicit = (
                     _has_time_signal(payload.query)
                     or payload.has_time_range
                 )
-                # No temporal-change agent wired in -> never block on time.
-                has_time = True
-                # Family + time is enough to override clarify. The LoadAgent
-                # prompt forbids clarifying on deliverable / styling / scope
-                # whenever the user named a data noun, but the LLM still
-                # occasionally returns clarify with chat_summary like
-                # "How would you like Chloris biomass for the Amazon -- map
-                # layer, point value, or stats?". When has_fam is True we
-                # know the user said a data noun, and we have a perfectly
-                # good downstream geocoder that handles biome names like
-                # "Amazon rainforest" even if ActionRouter / the LLM never
-                # populated a structured location slot. Falling through to
-                # an LLM clarification in that case is the worst outcome.
+                has_time = has_time_explicit or plan.intent == "snapshot"
                 if (
                     plan.action == "clarify"
-                    and has_fam and has_time
+                    and has_loc and has_fam and has_time
                 ):
                     logger.info(
-                        "[LOAD_AGENT] family+time override: forcing "
+                        "[LOAD_AGENT] three-slot override: forcing "
                         "action=execute (loc=%s fam=%s time=%s) "
                         "llm_clarify=%r",
                         has_loc, has_fam, has_time,

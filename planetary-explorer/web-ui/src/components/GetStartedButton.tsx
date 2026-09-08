@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import React, { useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import './GetStartedButton.css';
 import {
   buildingDamageQueries,
@@ -49,6 +49,54 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
   const [showModal, setShowModal] = useState(false);
   const [activeColumn, setActiveColumn] = useState<'stac' | 'vision'>('stac'); // For mobile toggle
   const [activeTab, setActiveTab] = useState<'none' | 'stac' | 'terrain' | 'mobility' | 'extreme-weather' | 'building-damage' | 'site-audit' | 'resilience' | 'forecast'>('none'); // Main tab navigation - 'none' shows only module buttons
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogTitleId = useId();
+
+  useEffect(() => {
+    if (!showModal) return;
+
+    const trigger = triggerRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowModal(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const controls = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+        ) ?? [],
+      ).filter((element) => !element.checkVisibility || element.checkVisibility());
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!controls.includes(document.activeElement as HTMLElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.body.style.overflow = previousOverflow;
+      trigger?.focus();
+    };
+  }, [showModal]);
 
   // Handler for STAC search queries (Step 1) - clears all GEOINT sessions
   const handleStacQueryClick = (query: string, requestedStacMode?: 'public' | 'pro') => {
@@ -217,20 +265,34 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
 
   return (
     <>
-      <div
+      <button
+        type="button"
+        ref={triggerRef}
+        aria-haspopup="dialog"
+        aria-expanded={showModal}
         onClick={() => setShowModal(true)}
         className="get-started-button"
         title="Example queries for all geointelligence modules"
       >
         <span className="get-started-button-label">Get Started</span>
-      </div>
+      </button>
 
       {showModal && (
         <div className="get-started-modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="get-started-modal-content" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={dialogTitleId}
+            className="get-started-modal-content"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="get-started-modal-header">
-              <h2>Get Started</h2>
-              <button 
+              <h2 id={dialogTitleId}>Get Started</h2>
+              <button
+                type="button"
+                ref={closeRef}
+                aria-label="Close"
                 onClick={() => setShowModal(false)} 
                 className="get-started-modal-close"
                 title="Close"

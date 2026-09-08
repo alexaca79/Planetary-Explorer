@@ -1,7 +1,7 @@
 ---
 title: Use Planetary Explorer with the Get Started playbook
 description: Run tested Canadian map, raster, terrain, mobility, climate, forecast, site, resilience, and building-damage workflows
-ms.date: 2026-09-03
+ms.date: 2026-09-07
 ms.topic: how-to
 keywords:
   - Planetary Explorer
@@ -88,6 +88,50 @@ hash, API health, traffic weight, and GeoFM worker replicas before each matrix.
 > session before loading the example. Wait for the new map to finish drawing,
 > then place the new pin or pins requested by that example. An **Analyze**
 > action intentionally uses those newly placed coordinates.
+
+## Use a different Canadian point
+
+The gallery's Setup actions deliberately load their named examples. To analyze
+another place, enter a location-specific Setup prompt in chat, wait for its
+layer to draw, and place a new pin. Use a neutral analysis question such as
+"Sample the red and near-infrared reflectance at this pin" instead of retaining
+an unrelated city name from an example.
+
+For a remote site, use explicit coordinates rather than a nearby town's
+centre. For example:
+
+```text
+Show HLS S30 imagery at latitude 63.7467, longitude -68.5170, from 2026-06-01 to 2026-08-26
+```
+
+The query builder accepts signed decimal degrees, hemisphere suffixes such as
+`63.7467 N, 68.5170 W`, labelled coordinates in either order, and latitude-first
+decimal pairs such as `63.7467, -68.5170`. `lat`, `lon`, `lng`, and `longitude`
+labels are supported. Negative longitude or `W` means west. Convert
+degrees/minutes/seconds to decimal degrees before submitting a query. Invalid,
+contradictory, incomplete, or repeated coordinate axes ask for clarification
+instead of substituting a previous pin or searching globally.
+
+For named places, retain the province or territory: `London, Ontario`,
+`Sydney, Nova Scotia`, or `Iqaluit, NU`. Include `Canada` when practical.
+The location resolver preserves Canadian qualifiers and distinguishes Quebec
+City from Quebec province. Postal abbreviations without commas should be
+uppercase so ordinary words such as "on" are not interpreted as Ontario.
+
+> [!IMPORTANT]
+> Correct coordinates do not guarantee data availability. Coverage depends on
+> the collection, acquisition date, footprint, clouds, quality masks, and
+> source-data access. A no-data result is not a zero-valued measurement. Keep
+> the requested point and dates unchanged when checking availability; choose
+> another collection or date range explicitly when needed. Terrain, climate,
+> forecasts, private imagery, and Fabric analyses have different prerequisites
+> and cannot be treated as interchangeable sources.
+
+The Canada regression fixture includes all ten provinces and three territories,
+plus Alert, Point Pelee, Cape Spear, and Old Crow. It checks coordinate formats,
+named-place qualification, and the nine public imagery collections used by the
+playbook. These finite checks do not establish flawless results at every
+possible Canadian point or date.
 
 ## Use the common map workflow
 
@@ -528,6 +572,52 @@ real-browser gate:
 npm --prefix planetary-explorer/web-ui ci
 npm --prefix planetary-explorer/web-ui exec -- playwright install chromium
 ```
+
+### Run the Canada regression checks
+
+Install the backend Python requirements as described in the local development
+guide. The following tests do not call live model endpoints:
+
+```powershell
+python -m pytest planetary-explorer/container-app/tests/test_canadian_point_queries.py planetary-explorer/container-app/tests/test_location_resolver_country.py
+python -m pytest scripts/tests/test_verify_canadian_coverage.py scripts/tests/test_verify_get_started_scenarios.py
+npm --prefix planetary-explorer/web-ui run test:run
+```
+
+The catalog verifier makes read-only Public PC searches only when `--live` is
+present. It checks returned scene footprints, collection IDs, and dates. It
+does not test source pixel validity, map rendering, or AI answers. Its report
+distinguishes `covered`, `no_data`, and `error`, records scene IDs without asset
+URLs, and discloses any catalog geometry repaired with Shapely `make_valid`.
+
+```powershell
+python scripts/verify_canadian_coverage.py
+python scripts/verify_canadian_coverage.py --live --output .copilot-tracking/canada-coverage.json
+python scripts/verify_canadian_coverage.py --live --collection modis-10A1-061 --start-date 2025-02-01 --end-date 2025-02-28
+```
+
+The summer 2026 matrix returned 136 covering scenes and 17 no-data results:
+MODIS snow cover had no scenes for that period at any of the 17 points. Use the
+explicit February 2025 archival snow dates from the playbook rather than
+silently substituting another observation period. The Alert archival footprint
+required geometry repair; this does not establish that its source pixels are
+valid snow measurements.
+
+With a local frontend running, verify keyboard navigation, focus containment,
+and desktop/mobile gallery layouts:
+
+```powershell
+node scripts/verify_get_started_gallery.mjs --base-url http://127.0.0.1:5173
+```
+
+This gallery-only browser check does not submit analyses. It passed at 1440,
+390, and 320 pixels wide. Full map-image and specialized-analysis verification
+still requires configured Azure Maps, model endpoints, and any relevant private
+data integrations. These refactor checks do not replace or update the
+September 3 production-release evidence above, and no Azure redeployment was
+performed for them.
+
+### Run the release-bound scenarios
 
 The inventory command uses the declared `esbuild` dependency to read the
 canonical TypeScript scenario configuration. It does not make live requests:

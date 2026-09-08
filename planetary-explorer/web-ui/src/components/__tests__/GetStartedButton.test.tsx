@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -42,6 +43,24 @@ const setupExamples = [
 ];
 
 describe('GetStartedButton deployment behavior', () => {
+  it('opens from the keyboard and restores focus when Escape closes the dialog', async () => {
+    const user = userEvent.setup();
+    render(<GetStartedButton features={features} />);
+    const trigger = screen.getByRole('button', { name: 'Get Started' });
+
+    trigger.focus();
+    await user.keyboard('{Enter}');
+
+    const dialog = screen.getByRole('dialog', { name: 'Get Started' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it('locks unavailable integrations from deployment feature flags', () => {
     render(<GetStartedButton features={features} />);
 
@@ -51,6 +70,27 @@ describe('GetStartedButton deployment behavior', () => {
     expect(screen.getByRole('button', { name: /Site Intel/ })).toBeDisabled();
     expect(screen.getByRole('button', { name: /Resilience/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /Forecast/ })).toBeEnabled();
+  });
+
+  it('contains keyboard focus when a focused capability becomes unavailable', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<GetStartedButton features={allFeatures} />);
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    const close = screen.getByRole('button', { name: 'Close' });
+    const damage = screen.getByRole('button', { name: /Building Damage/ });
+
+    await user.tab({ shift: true });
+    expect(damage).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    damage.focus();
+    rerender(<GetStartedButton features={features} />);
+    await user.tab();
+
+    expect(close).toHaveFocus();
+    expect(document.body.style.overflow).toBe('hidden');
+    await user.keyboard('{Escape}');
+    expect(document.body.style.overflow).not.toBe('hidden');
   });
 
   it('allows setup but defers analysis until the map view is open', () => {

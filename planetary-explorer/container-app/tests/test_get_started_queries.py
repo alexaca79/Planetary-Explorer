@@ -492,7 +492,7 @@ def _make_fake_invoke(expected_tools: List[str]):
 # ---------------------------------------------------------------------------
 
 
-def test_quickstart_cache_contains_exactly_twelve_canadian_2026_queries() -> None:
+def test_quickstart_cache_preserves_twelve_canadian_playbook_dates() -> None:
     # Arrange
     legacy_locations = {
         "afghanistan",
@@ -510,9 +510,20 @@ def test_quickstart_cache_contains_exactly_twelve_canadian_2026_queries() -> Non
 
     # Assert
     assert len(queries) == 12
-    assert all("2026" in query for query in queries)
     assert all("canada" in location for location in locations)
     assert not any(legacy in query for legacy in legacy_locations for query in queries)
+    for query, scenario in QUICKSTART_QUERIES.items():
+        temporal = scenario.get("temporal")
+        if temporal:
+            start_date, end_date = temporal.split("/")
+            assert start_date in query and end_date in query
+        else:
+            assert scenario["collections"] == ["cop-dem-glo-30"]
+    snow = next(
+        scenario for scenario in QUICKSTART_QUERIES.values()
+        if scenario["collections"] == ["modis-10A1-061"]
+    )
+    assert snow["temporal"] == "2025-02-01/2025-02-28"
 
 
 def test_tool_catalog_has_all_required_tools():

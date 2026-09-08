@@ -1,4 +1,4 @@
-"""Precomputed Canadian 2026 STAC examples used by the Get Started UI."""
+"""Precomputed Canadian STAC examples with the Get Started playbook's source dates."""
 
 from __future__ import annotations
 

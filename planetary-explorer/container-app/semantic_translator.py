@@ -27,22 +27,26 @@ logger.setLevel(logging.DEBUG)
 
 
 def _qualify_location_for_geocoding(query: str, location_name: str) -> str:
-    """Restore an explicit Canadian qualifier omitted by entity extraction."""
-    if re.search(r"\bcanad(?:a|ian)\b", query or "", re.IGNORECASE):
-        candidates = []
-        for preposition in ("over", "near", "around", "within", "at", "in", "of", "for"):
-            candidates.extend(
-                match.group(1).strip(" ,.")
-                for match in re.finditer(
-                    rf"\b{preposition}\s+([^.;?!]{{1,100}}?\bCanada)\b",
-                    query,
-                    re.IGNORECASE,
-                )
-            )
-        if candidates:
-            return min(candidates, key=len)
-        if not re.search(r"\bcanada\b", location_name or "", re.IGNORECASE):
-            return f"{location_name}, Canada"
+    """Preserve Canadian place, province, and country qualifiers from the query."""
+    candidates = []
+    for preposition in ("over", "near", "around", "within", "at", "in", "of", "for"):
+        for match in re.finditer(
+            rf"\b{preposition}\s+([^;?!]{{1,120}}?)"
+            r"(?=\s+(?:from|between|during)\b|\s+for\s+\d{4}\b|,\s*latitude\b|[;?!]|$)",
+            query or "",
+            re.IGNORECASE,
+        ):
+            candidate = match.group(1).strip(" ,.")
+            if EnhancedLocationResolver._azure_maps_country_context(candidate)[0] == "CA":
+                candidates.append(candidate)
+    if candidates:
+        return min(candidates, key=len)
+    if (
+        location_name
+        and re.search(r"\bcanad(?:a|ian)\b", query or "", re.IGNORECASE)
+        and not re.search(r"\bcanada\b", location_name, re.IGNORECASE)
+    ):
+        return f"{location_name}, Canada"
     return location_name
 
 
@@ -62,20 +66,75 @@ def _extract_explicit_iso_datetime(query: str) -> Optional[str]:
 
 
 def _extract_explicit_coordinates(query: str) -> tuple[float, float] | None:
-    """Return an explicitly labelled latitude and longitude from a query."""
-    match = re.search(
-        r"\blat(?:itude)?\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)"
-        r"\s*(?:degrees?|°)?\s*(?:,|\band\b)?\s*"
-        r"lon(?:gitude)?\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\b",
-        query or "",
-        re.IGNORECASE,
+    """Return explicit decimal coordinates, or raise ValueError for invalid input."""
+    number = r"([+-]?(?:\d+(?:\.\d+)?|\.\d+))"
+    text = query or ''
+    end_of_value = r'''(?!\w|\.(?=\d)|\s*(?:degrees?\b|[\d\u00b0'"\u2032\u2033]|[NSEW]\b))'''
+    suffix = r'\s*(?:degrees?|\u00b0)?\s*([NSEW])?'
+    pair_prefix = r'(?:^|\bat\s+|\bcoordinates\s*[:=]?\s*)\(?\s*'
+    axes = (
+        (r'lat(?:itude)?', 'NS', 90),
+        (r'lon(?:gitude)?|lng|long(?=\s*[:=]?\s*[+-]?(?:\d|\.))', 'EW', 180),
     )
-    if not match:
-        return None
-    latitude, longitude = (float(value) for value in match.groups())
-    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
-        return None
-    return latitude, longitude
+    has_labels = any(re.search(rf'\b(?:{labels})\b', text, re.IGNORECASE) for labels, _, _ in axes)
+
+    def validate_value(raw: str, hemisphere: str | None, allowed: str, limit: int) -> float:
+        value = float(raw)
+        direction = (hemisphere or '').upper()
+        if direction and (direction not in allowed or (direction in 'NE' and value < 0)):
+            raise ValueError('Coordinate hemisphere conflicts with its axis or sign.')
+        if direction in ('S', 'W'):
+            value = -abs(value)
+        if not -limit <= value <= limit:
+            raise ValueError('Coordinate is outside the valid latitude or longitude range.')
+        return value
+
+    if not has_labels:
+        pairs = list(re.finditer(
+            rf'{pair_prefix}{number}{suffix}\s*,\s*{number}{suffix}{end_of_value}',
+            text,
+            re.IGNORECASE,
+        ))
+        if len(pairs) > 1:
+            raise ValueError('Provide one coordinate pair per imagery search.')
+        if pairs:
+            latitude, north_south, longitude, east_west = pairs[0].groups()
+            return (
+                validate_value(latitude, north_south, 'NS', 90),
+                validate_value(longitude, east_west, 'EW', 180),
+            )
+
+    coordinates = []
+    for labels, hemispheres, limit in axes:
+        label_pattern = rf'\b(?:{labels})\b'
+        label_count = len(re.findall(label_pattern, text, re.IGNORECASE))
+        if label_count > 1:
+            raise ValueError('Provide one latitude and one longitude per imagery search.')
+        if label_count:
+            match = re.search(
+                rf'{label_pattern}\s*[:=]?\s*{number}{suffix}{end_of_value}',
+                text,
+                re.IGNORECASE,
+            )
+        else:
+            matches = list(re.finditer(
+                rf'(?<![\w.]){number}\s*(?:degrees?|\u00b0)?\s*([{hemispheres}])\b{end_of_value}',
+                text,
+                re.IGNORECASE,
+            ))
+            match = matches[0] if len(matches) == 1 else None
+        if not match:
+            break
+        coordinates.append(validate_value(match.group(1), match.group(2), hemispheres, limit))
+    if len(coordinates) == 2:
+        return coordinates[0], coordinates[1]
+    if (
+        has_labels
+        or re.search(rf'{pair_prefix}{number}\s*,', text, re.IGNORECASE)
+        or re.search(rf'(?<!\w){number}\s*(?:degrees?|\u00b0)?\s*[NSEW]\b', text, re.IGNORECASE)
+    ):
+        raise ValueError('Provide a complete coordinate pair in decimal degrees.')
+    return None
 
 
 def _bbox_for_coordinates(
@@ -2344,7 +2403,19 @@ ESSENTIAL FIRE:
         Returns:
             Complete STAC query dict ready for API
         """
-        
+        try:
+            explicit_coordinates = _extract_explicit_coordinates(query)
+        except ValueError:
+            return {
+                'error': 'LOCATION_REQUIRED',
+                'message': (
+                    'Enter a valid latitude (-90 to 90) and longitude (-180 to 180). '
+                    'Use signed decimal degrees or N/S and E/W suffixes.'
+                ),
+                'original_query': query,
+                'suggestions': ['Example: latitude 63.7467, longitude -68.5170'],
+            }
+
         await self._ensure_agent_runtime_initialized()
         
         print(f"[ALERT] DEBUG: After runtime initialization - initialized={self._agent_runtime_initialized}, runtime={self.agent_runtime is not None}")
@@ -2454,7 +2525,6 @@ ESSENTIAL FIRE:
             # Without a location, STAC queries would return random global tiles
             # which is not useful for users and wastes API resources
             # ========================================================================
-            explicit_coordinates = _extract_explicit_coordinates(query)
             if explicit_coordinates:
                 latitude, longitude = explicit_coordinates
                 bbox = _bbox_for_coordinates(latitude, longitude)
@@ -3639,6 +3709,9 @@ IMPORTANT:
         - "Display X near/around <location>"
         """
         query_lower = query.lower().strip()
+        qualified_location = _qualify_location_for_geocoding(query, "")
+        if qualified_location:
+            return qualified_location
         
         # Strategy 1: Check against STORED_LOCATIONS keys
         try:
@@ -3647,7 +3720,7 @@ IMPORTANT:
             # Sort by length descending to match longer names first (e.g., "new york city" before "new york")
             stored_locations.sort(key=len, reverse=True)
             for loc in stored_locations:
-                if loc in query_lower:
+                if re.search(r"(?<!\w)" + re.escape(loc) + r"(?!\w)", query_lower):
                     logger.info(f"[PIN] Basic extraction: Found stored location '{loc}' in query")
                     return loc
         except Exception as e:
@@ -5844,6 +5917,8 @@ boundary for cities and the full administrative boundary for regions or countrie
             })
             
             stac_query = await self.build_stac_query_agent(natural_query, collections)
+            if stac_query.get('error'):
+                return stac_query
             elapsed_stac_build = time.perf_counter() - start_stac_build
             elapsed_stac_build_ms = elapsed_stac_build * 1000
             

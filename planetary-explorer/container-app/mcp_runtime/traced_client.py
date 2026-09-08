@@ -145,11 +145,13 @@ async def _broker_confirm(entry: TraceEntry) -> bool:
     user can approve / deny before the tool dispatches.
 
     Falls back to auto-approval when ``MCP_REQUIRE_CONFIRM=0`` so the
-    feature can be turned off per-deploy without code changes.
+    feature can be turned off per-deploy for non-GeoFM tools. GeoFM
+    mutations always require approval because they can start billed work.
     """
     import os
 
-    if os.getenv("MCP_REQUIRE_CONFIRM", "1").lower() not in ("1", "true", "yes", "on"):
+    is_geofm = entry.server_id == "geofm" or entry.tool.startswith("geofm_")
+    if not is_geofm and os.getenv("MCP_REQUIRE_CONFIRM", "1").lower() not in ("1", "true", "yes", "on"):
         return True
     from .confirm_bus import request_confirmation
 
