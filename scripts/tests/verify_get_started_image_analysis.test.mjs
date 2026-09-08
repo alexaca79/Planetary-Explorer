@@ -1,0 +1,257 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  adversarialMinimumZoom,
+  assertReleaseUnchanged,
+  assertProductionAllowed,
+  deniesRequestedImagery,
+  isBuildingDamageRequest,
+  isExpectedApiOrigin,
+  uniformImageGroundingSentence,
+} from '../verify_get_started_image_analysis.mjs';
+
+test('allows a broad custom adversarial location without a scenario zoom floor', () => {
+  const australia = [112, -44, 154, -10];
+
+  assert.equal(adversarialMinimumZoom('Show imagery over Sydney', australia), 0);
+  assert.equal(adversarialMinimumZoom('auto', australia), 7);
+});
+
+test('requires explicit consent for production browser verification', () => {
+  assert.throws(
+    () => assertProductionAllowed({
+      appUrl: 'https://app.example',
+      apiBaseUrl: 'https://api.example',
+      allowProduction: false,
+    }),
+    /--allow-production/,
+  );
+  assert.doesNotThrow(() => assertProductionAllowed({
+    appUrl: 'http://127.0.0.1:5173',
+    apiBaseUrl: 'http://localhost:8000',
+    allowProduction: false,
+  }));
+});
+
+test('requires complete release binding for production browser verification', () => {
+  assert.throws(
+    () => assertProductionAllowed({
+      appUrl: 'https://app.example',
+      apiBaseUrl: 'https://api.example',
+      allowProduction: true,
+    }),
+    /release binding values/,
+  );
+  assert.doesNotThrow(() => assertProductionAllowed({
+    appUrl: 'https://app.example',
+    apiBaseUrl: 'https://api.example',
+    allowProduction: true,
+    apiRevision: 'api--release-1',
+    apiImageDigest: 'sha256:abc',
+    weatherRevision: 'weather--release-1',
+    weatherImageDigest: 'sha256:def',
+    frontendDeploymentId: 'deploy-1',
+    frontendBundle: 'index-release.js',
+    frontendBundleSha256: '1234',
+    azureSubscription: 'subscription-1',
+    azureTenant: 'tenant-1',
+    azureResourceGroup: 'rg-test',
+    azureContainerApp: 'api-test',
+    azureWeatherApp: 'weather-test',
+    azureFrontendApp: 'web-test',
+    azureGeofmResourceGroup: 'rg-geofm',
+    azureGeofmWorker: 'worker-test',
+  }));
+});
+
+test('rejects a response that says the requested MODIS layer is absent', () => {
+  assert.equal(
+    deniesRequestedImagery(
+      'The image does not display any actual snow-cover data or MODIS satellite imagery.',
+    ),
+    true,
+  );
+});
+
+test('accepts an observational description of a visible thematic layer', () => {
+  assert.equal(
+    deniesRequestedImagery(
+      'The current MODIS snow-cover image is predominantly dark blue with lighter blue variation.',
+    ),
+    false,
+  );
+});
+
+test('accepts no-variation observations about a visible raster', () => {
+  assert.equal(
+    deniesRequestedImagery(
+      'There is no visible variation in the blue thematic field within the MODIS image around Quebec City.',
+    ),
+    false,
+  );
+  assert.equal(
+    deniesRequestedImagery(
+      'There is no noticeable variation in the purple tone in this satellite GPP image.',
+    ),
+    false,
+  );
+});
+
+test('accepts an observation that requested features are not visible', () => {
+  assert.equal(
+    deniesRequestedImagery(
+      'The supplied MODIS image contains no visible fire-intensity colours or clusters, only a uniform muted field.',
+    ),
+    false,
+  );
+});
+
+test('grounds a uniform image from adjacent colour and hue observations', () => {
+  const pixels = { meanRgb: [24, 15, 62], meanLuminance: 20.31 };
+  const response = 'The visible colour in this 2026 GPP image is dark purple. This hue is uniform across the image without variation.';
+
+  assert.equal(uniformImageGroundingSentence(response, pixels), response);
+  assert.equal(
+    uniformImageGroundingSentence('The current image is uniformly dark purple.', pixels),
+    'The current image is uniformly dark purple.',
+  );
+});
+
+test('does not combine unrelated, incorrect, or contradictory uniform-image claims', () => {
+  const pixels = { meanRgb: [24, 15, 62], meanLuminance: 20.31 };
+
+  for (const response of [
+    'The visible image is green. This hue is uniform across the image.',
+    'The visible image is purple. The legend has a uniform colour.',
+    'The visible image is purple.\n\nThis hue is uniform across the image.',
+    'The visible image is purple. This hue is not uniform across the image.',
+    'The visible image is purple. This hue is typically uniform in GPP products.',
+  ]) {
+    assert.equal(uniformImageGroundingSentence(response, pixels), undefined, response);
+  }
+});
+
+test('rejects explicit requested layer absence', () => {
+  assert.equal(
+    deniesRequestedImagery('The requested MODIS raster layer is not visible in this screenshot.'),
+    true,
+  );
+  assert.equal(
+    deniesRequestedImagery('The supplied image does not show the requested raster layer.'),
+    true,
+  );
+});
+
+test('binds observed requests to the declared API origin', () => {
+  assert.equal(
+    isExpectedApiOrigin(
+      'https://api.example/api/query/stream',
+      'https://api.example',
+    ),
+    true,
+  );
+  assert.equal(
+    isExpectedApiOrigin(
+      'https://other-api.example/api/query/stream',
+      'https://api.example',
+    ),
+    false,
+  );
+});
+
+test('rejects release drift after browser scenarios complete', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: {
+      verified_at: '2026-09-03T12:00:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+  const changed = {
+    api_revision: 'api--release-2',
+    verification: {
+      verified_at: '2026-09-03T12:30:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+
+  assert.throws(
+    () => assertReleaseUnchanged(initial, changed),
+    /changed during browser scenario execution/,
+  );
+});
+
+test('accepts a stable release with a newer verification timestamp', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: {
+      verified_at: '2026-09-03T12:00:00Z',
+      api_traffic_weight: 100,
+    },
+  };
+  const current = structuredClone(initial);
+  current.verification.verified_at = '2026-09-03T12:30:00Z';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+});
+
+test('matches Building Damage requests only on the declared API origin', () => {
+  const body = { user_query: 'Assess potential building damage.' };
+
+  assert.equal(
+    isBuildingDamageRequest(
+      'https://api.example/api/geoint/building-damage',
+      'POST',
+      body,
+      body.user_query,
+      'https://api.example',
+    ),
+    true,
+  );
+  assert.equal(
+    isBuildingDamageRequest(
+      'https://other.example/api/geoint/building-damage',
+      'POST',
+      body,
+      body.user_query,
+      'https://api.example',
+    ),
+    false,
+  );
+});
+
+test('accepts healthy weather scale-to-zero transitions without changing the release', () => {
+  const initial = {
+    weather_revision: 'weather--release-1',
+    weather_image_digest: 'sha256:weather',
+    verification: {
+      weather_revision_health: 'Healthy',
+      weather_revision_running: 'ScaledToZero',
+      weather_traffic_weight: 100,
+      geofm_worker_active_replicas: 0,
+    },
+  };
+  const current = structuredClone(initial);
+  current.verification.weather_revision_running = 'Running';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+  assert.doesNotThrow(() => assertReleaseUnchanged(current, initial));
+  assert.equal(initial.verification.weather_revision_running, 'ScaledToZero');
+});
+
+test('accepts healthy API maximum-scale transitions without hiding unhealthy states', () => {
+  const initial = {
+    api_revision: 'api--release-1',
+    verification: { api_revision_health: 'Healthy', api_revision_running: 'Running' },
+  };
+  const current = structuredClone(initial);
+  current.verification.api_revision_running = 'RunningAtMaxScale';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+  assert.doesNotThrow(() => assertReleaseUnchanged(current, initial));
+  for (const state of ['Failed', 'Degraded', 'ScaledToZero']) {
+    current.verification.api_revision_running = state;
+    assert.throws(() => assertReleaseUnchanged(initial, current), /changed during/);
+  }
+});

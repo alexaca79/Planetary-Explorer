@@ -138,6 +138,125 @@ async def test_given_slow_analyst_when_timeout_expires_then_fallback_is_returned
 
 
 @pytest.mark.asyncio
+async def test_given_explicit_screenshot_when_running_then_provider_router_is_skipped(
+    monkeypatch,
+) -> None:
+    # Arrange
+    agent = AnalystAgent()
+    request = AnalysisRequest(
+        question="Describe the visible vegetation colours.",
+        session_id="screenshot-session",
+        loaded_collections=["modis-13Q1-061"],
+        has_screenshot=True,
+        screenshot_b64="image-data",
+        analysis_type="screenshot",
+    )
+
+    async def fail_provider(*_args, **_kwargs):
+        raise AssertionError("explicit screenshot must not invoke the provider router")
+
+    async def describe(_question):
+        return {
+            "success": True,
+            "answer": "Visible vegetation ranges from low to high vigour.",
+            "structured": {"type": "screenshot_analysis"},
+        }
+
+    monkeypatch.setattr(agent, "_invoke_serialized", fail_provider)
+    monkeypatch.setattr(
+        "agents.analyst_agent.tools.describe_map_screenshot",
+        describe,
+    )
+
+    # Act
+    result = await agent.run(request)
+
+    # Assert
+    assert result.answer == "Visible vegetation ranges from low to high vigour."
+    assert [step.analyzer for step in result.plan.steps] == [
+        "describe_map_screenshot"
+    ]
+    assert result.structured["describe_map_screenshot"]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_given_explicit_raster_when_running_then_measured_evidence_skips_provider_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AnalystAgent()
+    request = AnalysisRequest(
+        question="Sample NDVI and EVI at this Regina cropland pin.",
+        session_id="raster-session",
+        pin=(50.35, -104.6),
+        loaded_collections=["modis-13Q1-061"],
+        analysis_type="raster",
+    )
+    measurement = {
+        "success": True,
+        "answer": "NDVI: 0.52; EVI: 0.39",
+        "structured": {
+            "samples": [{"metric": "NDVI", "value": 0.52}, {"metric": "EVI", "value": 0.39}],
+            "sampled_scenes": [{"item_id": "regina-scene", "date": "2026-08-05"}],
+        },
+    }
+
+    async def fail_provider(*_args, **_kwargs):
+        raise AssertionError("Explicit raster sampling must not invoke a routing model")
+
+    async def sample(question: str):
+        assert question == request.question
+        assert get_session().pin == request.pin
+        return measurement
+
+    monkeypatch.setattr(agent, "_invoke_serialized", fail_provider)
+    monkeypatch.setattr("agents.analyst_agent.tools.sample_raster_value", sample)
+
+    result = await agent.run(request)
+
+    assert result.answer == measurement["answer"]
+    assert result.structured["sample_raster_value"] == measurement
+    assert [step.analyzer for step in result.plan.steps] == ["sample_raster_value"]
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_slow_explicit_raster_when_deadline_expires_then_failure_is_not_reported_as_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.01
+    request = _request().model_copy(update={"analysis_type": "raster"})
+
+    async def never_finishes(_question: str):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("agents.analyst_agent.tools.sample_raster_value", never_finishes)
+
+    result = await asyncio.wait_for(agent.run(request), timeout=0.2)
+
+    assert result.structured["sample_raster_value"]["success"] is False
+    assert result.structured["analyst_status"] == {
+        "status": "timeout", "error_type": "RasterTimeout",
+    }
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_explicit_raster_without_pin_when_running_then_sampling_prerequisite_is_preserved() -> None:
+    agent = AnalystAgent()
+    request = _request().model_copy(
+        update={"analysis_type": "raster", "loaded_collections": ["hls2-s30"]}
+    )
+
+    result = await agent.run(request)
+
+    assert result.structured["sample_raster_value"]["success"] is False
+    assert "pin" in result.structured["sample_raster_value"]["error"]
+    assert result.structured["analyst_status"]["status"] == "error"
+    assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
 async def test_given_slow_gpt_56_responses_when_timeout_expires_then_fallback_is_returned(
     monkeypatch,
 ) -> None:
@@ -162,6 +281,84 @@ async def test_given_slow_gpt_56_responses_when_timeout_expires_then_fallback_is
         "timeout_seconds": 0.01,
     }
     assert get_session().session_id == "default"
+
+
+@pytest.mark.asyncio
+async def test_given_transient_failure_after_tool_dispatch_when_invoking_then_not_retried(
+    monkeypatch,
+) -> None:
+    # Arrange
+    agent = AnalystAgent()
+    agent._initialized = True
+    agent._agent_id = "analyst-agent"
+    agent._threads["session-1"] = AnalystThread(
+        session_id="session-1",
+        thread_id="thread-1",
+    )
+    run_calls = 0
+
+    async def create_message(**_kwargs):
+        return None
+
+    async def create_run(**_kwargs):
+        nonlocal run_calls
+        run_calls += 1
+        return SimpleNamespace(
+            id="run-with-tool",
+            status="failed",
+            last_error={"code": "rate_limit_exceeded"},
+        )
+
+    async def run_steps():
+        yield SimpleNamespace(
+            step_details=SimpleNamespace(tool_calls=[SimpleNamespace()])
+        )
+
+    agent._agents_client = SimpleNamespace(
+        messages=SimpleNamespace(create=create_message),
+        runs=SimpleNamespace(create_and_process=create_run),
+        run_steps=SimpleNamespace(list=lambda **_kwargs: run_steps()),
+    )
+    invocation = AnalystInvocation(session_id="session-1")
+
+    # Act and Assert
+    with pytest.raises(RuntimeError, match="rate_limit_exceeded"):
+        await agent._invoke_agent_service(_request(), invocation)
+    assert run_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_given_transport_failure_after_run_dispatch_when_invoking_then_not_retried(
+    monkeypatch,
+) -> None:
+    # Arrange
+    agent = AnalystAgent()
+    agent._initialized = True
+    agent._agent_id = "analyst-agent"
+    agent._threads["session-1"] = AnalystThread(
+        session_id="session-1",
+        thread_id="thread-1",
+    )
+    run_calls = 0
+
+    async def create_message(**_kwargs):
+        return None
+
+    async def create_run(**_kwargs):
+        nonlocal run_calls
+        run_calls += 1
+        raise ConnectionError("polling connection reset")
+
+    agent._agents_client = SimpleNamespace(
+        messages=SimpleNamespace(create=create_message),
+        runs=SimpleNamespace(create_and_process=create_run),
+    )
+    invocation = AnalystInvocation(session_id="session-1")
+
+    # Act and Assert
+    with pytest.raises(RuntimeError, match="after run dispatch"):
+        await agent._invoke_agent_service(_request(), invocation)
+    assert run_calls == 1
 
 
 @pytest.mark.asyncio

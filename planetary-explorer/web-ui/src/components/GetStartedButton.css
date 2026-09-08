@@ -1241,21 +1241,29 @@
 }
 
 @media (max-width: 768px) {
+  .get-started-modal-body {
+    padding: 16px;
+  }
+
   .module-selector-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
   
   .module-selector-btn {
-    padding: 28px 18px;
-    min-height: 130px;
+    padding: 12px;
+    height: 72px;
+    min-height: 72px;
   }
   
   .module-selector-label {
-    font-size: 18px;
+    font-size: 16px;
+    line-height: 1.25;
+    letter-spacing: 0;
   }
   
   .module-selector-desc {
-    font-size: 13px;
+    display: none;
   }
 }
 

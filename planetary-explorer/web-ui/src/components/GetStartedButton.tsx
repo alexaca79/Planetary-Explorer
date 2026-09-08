@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import React, { useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import './GetStartedButton.css';
 import {
   buildingDamageQueries,
@@ -14,10 +14,11 @@ import {
   terrainQueries,
 } from '../config/canadianExamples';
 
-interface DeploymentFeatureFlags {
+export interface DeploymentFeatureFlags {
   mpcPublic: boolean;
   mpcPro: boolean;
   fabric: boolean;
+  resilience: boolean;
   // True when at least one weather provider endpoint (Aurora / Earth-2
   // FCN / MAI Weather, or the CPU weather stub) is configured. Drives
   // whether the Forecast tile is interactive.
@@ -25,7 +26,7 @@ interface DeploymentFeatureFlags {
 }
 
 interface GetStartedButtonProps {
-  onQuerySelect?: (query: string) => void;
+  onQuerySelect?: (query: string, stacMode?: 'public' | 'pro') => void;
   /** Deployment feature flags from /api/config. When omitted (e.g.
    *  Storybook) every tile is enabled. Agent tiles whose underlying
    *  integrations are disabled in this deployment render as locked so
@@ -38,16 +39,67 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
   // component usable in tests / storybook). The App.tsx fetch fills
   // these in once /api/config responds.
   const siteIntelEnabled = features?.fabric ?? true;
-  const resilienceEnabled = features?.fabric ?? true;
+  const resilienceEnabled = features?.resilience ?? true;
   const forecastEnabled = features?.weather ?? true;
+  const buildingDamageEnabled = features?.mpcPro ?? true;
+  const mapWorkflowReady = !onQuerySelect;
+  const mapRequiredTitle = 'Run the Setup query first, then reopen Get Started in the map view.';
   const lockedTitle = (label: string, reason: string) =>
     `${label} is disabled in this deployment. ${reason}`;
   const [showModal, setShowModal] = useState(false);
   const [activeColumn, setActiveColumn] = useState<'stac' | 'vision'>('stac'); // For mobile toggle
   const [activeTab, setActiveTab] = useState<'none' | 'stac' | 'terrain' | 'mobility' | 'extreme-weather' | 'building-damage' | 'site-audit' | 'resilience' | 'forecast'>('none'); // Main tab navigation - 'none' shows only module buttons
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogTitleId = useId();
+
+  useEffect(() => {
+    if (!showModal) return;
+
+    const trigger = triggerRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setShowModal(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const controls = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+        ) ?? [],
+      ).filter((element) => !element.checkVisibility || element.checkVisibility());
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!controls.includes(document.activeElement as HTMLElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.body.style.overflow = previousOverflow;
+      trigger?.focus();
+    };
+  }, [showModal]);
 
   // Handler for STAC search queries (Step 1) - clears all GEOINT sessions
-  const handleStacQueryClick = (query: string) => {
+  const handleStacQueryClick = (query: string, requestedStacMode?: 'public' | 'pro') => {
     console.log('GetStartedButton: STAC query clicked:', query);
     
     // Close the modal
@@ -56,7 +108,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
     // If onQuerySelect callback provided (from Landing Page), use it
     if (onQuerySelect) {
       console.log('GetStartedButton: Using onQuerySelect callback');
-      onQuerySelect(query);
+      onQuerySelect(query, requestedStacMode);
       return;
     }
     
@@ -64,7 +116,12 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
     setTimeout(() => {
       console.log('[OUTBOX] GetStartedButton: Dispatching planetaryexplorer-stac-query event (clears sessions)');
       const event = new CustomEvent('planetaryexplorer-stac-query', { 
-        detail: { query, clearSessions: true },
+        detail: {
+          query,
+          clearSessions: true,
+          resetContext: true,
+          ...(requestedStacMode ? { stacMode: requestedStacMode } : {}),
+        },
         bubbles: true,
         composed: true
       });
@@ -208,20 +265,34 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
 
   return (
     <>
-      <div
+      <button
+        type="button"
+        ref={triggerRef}
+        aria-haspopup="dialog"
+        aria-expanded={showModal}
         onClick={() => setShowModal(true)}
         className="get-started-button"
         title="Example queries for all geointelligence modules"
       >
         <span className="get-started-button-label">Get Started</span>
-      </div>
+      </button>
 
       {showModal && (
         <div className="get-started-modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="get-started-modal-content" onClick={(e) => e.stopPropagation()}>
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={dialogTitleId}
+            className="get-started-modal-content"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="get-started-modal-header">
-              <h2>Get Started</h2>
-              <button 
+              <h2 id={dialogTitleId}>Get Started</h2>
+              <button
+                type="button"
+                ref={closeRef}
+                aria-label="Close"
                 onClick={() => setShowModal(false)} 
                 className="get-started-modal-close"
                 title="Close"
@@ -266,7 +337,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                     title={forecastEnabled ? undefined : lockedTitle('Forecast', 'Requires at least one AI weather model endpoint. Set deployWeatherStub=true (CPU mock) or supply auroraEndpointUrl / earth2FcnEndpointUrl / maiWeatherEndpointUrl in main.parameters.json.')}
                   >
                     <span className="module-selector-label">Forecast</span>
-                    <span className="module-selector-desc">Short-range AI weather forecasts (Aurora, Earth-2 FCN, MAI Weather) for any point on the map</span>
+                    <span className="module-selector-desc">Short-range forecasts from every configured AI weather provider for any point on the map</span>
                   </button>
                   <button 
                     className={`module-selector-btn weather-selector ${activeTab === 'extreme-weather' ? 'active' : ''}`}
@@ -290,8 +361,10 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                     <span className="module-selector-desc">Traversability across two points based on terrain and context</span>
                   </button>
                   <button
-                    className={`module-selector-btn damage-selector ${activeTab === 'building-damage' ? 'active' : ''}`}
-                    onClick={() => setActiveTab(activeTab === 'building-damage' ? 'none' : 'building-damage')}
+                    className={`module-selector-btn damage-selector ${activeTab === 'building-damage' ? 'active' : ''}${buildingDamageEnabled ? '' : ' disabled'}`}
+                    onClick={() => buildingDamageEnabled && setActiveTab(activeTab === 'building-damage' ? 'none' : 'building-damage')}
+                    disabled={!buildingDamageEnabled}
+                    title={buildingDamageEnabled ? undefined : lockedTitle('Building Damage', 'Requires MPC Pro tenant imagery. Enable MPC Pro and configure a private GeoCatalog before running this workflow.')}
                   >
                     <span className="module-selector-label">Building Damage</span>
                     <span className="module-selector-desc">Structural damage assessment from MPC Pro tenant aerial imagery</span>
@@ -404,8 +477,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                                     <button
                                       className="copy-query-btn"
                                       onClick={() => handleRasterQueryClick(example.rasterQuery || '')}
-                                      title="Run this Raster query"
-                                      disabled={!example.rasterQuery}
+                                      title={mapWorkflowReady ? 'Run this Raster query' : mapRequiredTitle}
+                                      disabled={!example.rasterQuery || !mapWorkflowReady}
                                     >
                                       Go
                                     </button>
@@ -423,8 +496,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                                     <button
                                       className="copy-query-btn"
                                       onClick={() => handleScreenshotQueryClick(example.screenshotQuery || '')}
-                                      title="Run this Image Analysis query"
-                                      disabled={!example.screenshotQuery}
+                                      title={mapWorkflowReady ? 'Run this Image Analysis query' : mapRequiredTitle}
+                                      disabled={!example.screenshotQuery || !mapWorkflowReady}
                                     >
                                       Go
                                     </button>
@@ -474,7 +547,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Run terrain analysis"
+                              title={mapWorkflowReady ? 'Run terrain analysis' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -531,7 +605,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Ask mobility question"
+                              title={mapWorkflowReady ? 'Ask mobility question' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -582,7 +657,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Run climate analysis"
+                              title={mapWorkflowReady ? 'Run climate analysis' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -598,7 +674,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                   <div className="building-damage-queries-section">
                     <div className="instructions-box" style={{ marginBottom: '20px' }}>
                       <p className="instruction-step">
-                        <strong>About:</strong> Structural damage assessment from high-resolution NAIP aerial imagery (0.6m). Best for post-event review of wildfires, floods, and storms.
+                        <strong>About:</strong> Structural damage assessment from authorized high-resolution MPC Pro tenant imagery. Best for post-event review of wildfires, floods, and storms.
                       </p>
                       <p className="instruction-step">
                         <strong>Step 1:</strong> Click <button className="copy-query-btn" style={{cursor: 'default', pointerEvents: 'none'}}>Go</button> on the <strong>Setup</strong> query to load aerial imagery on the map.
@@ -621,7 +697,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <strong>{query.setupQuery}</strong>
                             <button
                               className="copy-query-btn"
-                              onClick={() => handleStacQueryClick(query.setupQuery)}
+                              onClick={() => handleStacQueryClick(query.setupQuery, 'pro')}
                               title="Load aerial imagery"
                             >
                               Go
@@ -633,7 +709,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Run damage assessment"
+                              title={mapWorkflowReady ? 'Run damage assessment' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -684,7 +761,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Run site audit (requires Site Intel module + pin)"
+                              title={mapWorkflowReady ? 'Run site audit (requires Site Intel module + pin)' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -735,7 +813,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleResilienceQueryClick(query.question)}
-                              title="Activate Resilience module and send to chat"
+                              title={mapWorkflowReady ? 'Activate Resilience module and send to chat' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -751,7 +830,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                   <div className="site-audit-queries-section">
                     <div className="instructions-box" style={{ marginBottom: '20px' }}>
                       <p className="instruction-step">
-                        <strong>About:</strong> Short-range AI weather forecasts for any point on the map — temperature, wind, precipitation, and cyclone tracks for the next few days. Runs <strong>Microsoft Aurora</strong>, <strong>NVIDIA Earth-2 FCN</strong>, and <strong>Microsoft MAI Weather</strong> together and shows where they agree.
+                        <strong>About:</strong> Short-range AI weather forecasts for any point on the map — temperature, wind, precipitation, and cyclone tracks for the next few days. Runs every provider configured in this deployment and shows where they agree.
                       </p>
                       <p className="instruction-step">
                         <strong>Step 1:</strong> Click <button className="copy-query-btn" style={{cursor: 'default', pointerEvents: 'none'}}>Go</button> on a location below to recenter the map.
@@ -789,7 +868,8 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                             <button
                               className="copy-query-btn"
                               onClick={() => handleVisionQueryClick(query.question)}
-                              title="Send to chat (requires Forecast module + pin)"
+                              title={mapWorkflowReady ? 'Send to chat (requires Forecast module + pin)' : mapRequiredTitle}
+                              disabled={!mapWorkflowReady}
                             >
                               Go
                             </button>
@@ -806,7 +886,7 @@ const GetStartedButton: React.FC<GetStartedButtonProps> = ({ onQuerySelect, feat
                     <span className="zoom-tip-icon"></span>
                     <div className="zoom-tip-content">
                       <strong>Pro Tip:</strong> Some satellite collections (especially MODIS fire data) only display tiles at deeper zoom levels. 
-                      Try zooming to <strong>level 10+</strong> and panning around the map to see all available tiles. Gray tiles represent clouds.
+                      Try zooming to <strong>level 10+</strong> and panning around the map to see all available tiles. Gray areas may be clouds, no-data pixels, or tiling artifacts; check the layer legend and scene metadata.
                     </div>
                   </div>
                 )}

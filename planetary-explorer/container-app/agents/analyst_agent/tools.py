@@ -844,18 +844,18 @@ def _normalize_geofm_date(value: str, field_name: str) -> str:
     raw = str(value or "").strip()
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"GeoFM {field_name} must be an ISO date (YYYY-MM-DD).") from exc
+    except ValueError as error:
+        raise ValueError(f"GeoFM {field_name} must be an ISO date (YYYY-MM-DD).") from error
     return parsed.date().isoformat()
 
 
-def _hls_tile_id(item: Dict[str, Any]) -> str:
+def _hls_tile_id(item: dict[str, Any]) -> str:
     """Extract the shared HLS tile token from a STAC item identifier."""
     parts = str(item.get("id") or "").split(".")
     return parts[2] if len(parts) > 3 and parts[2].startswith("T") else ""
 
 
-def _cloud_cover(item: Dict[str, Any]) -> float:
+def _cloud_cover(item: dict[str, Any]) -> float:
     value = (item.get("properties") or {}).get("eo:cloud_cover")
     try:
         return float(value)
@@ -864,10 +864,10 @@ def _cloud_cover(item: Dict[str, Any]) -> float:
 
 
 def _geofm_context_quality(
-    item: Dict[str, Any],
-    aoi: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Build the exact valid-pixel mask for PlanAura's fixed context grid."""
+    item: dict[str, Any],
+    aoi: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the valid-pixel mask for PlanAura's fixed context grid."""
     import numpy as np
     import planetary_computer
     import rasterio
@@ -887,16 +887,14 @@ def _geofm_context_quality(
     if band_assets is None:
         raise ValueError(f"HLS item '{item.get('id')}' has an unsupported collection.")
 
-    quality_asset = assets.get("Fmask") or {}
-    href = quality_asset.get("href")
+    href = (assets.get("Fmask") or {}).get("href")
     if not href:
         raise ValueError(f"HLS item '{item.get('id')}' has no Fmask asset.")
 
-    signed_href = planetary_computer.sign_url(str(href))
     size = 512
     resolution_m = 30.0
     side_m = size * resolution_m
-    with rasterio.open(signed_href) as source:
+    with rasterio.open(planetary_computer.sign_url(str(href))) as source:
         if source.crs is None:
             raise ValueError(f"HLS item '{item.get('id')}' has no raster CRS.")
         target_crs = source.crs
@@ -905,16 +903,12 @@ def _geofm_context_quality(
         center_x = (min_x + max_x) / 2
         center_y = (min_y + max_y) / 2
         target_transform = Affine(
-            resolution_m,
-            0,
-            center_x - side_m / 2,
-            0,
-            -resolution_m,
-            center_y + side_m / 2,
+            resolution_m, 0, center_x - side_m / 2,
+            0, -resolution_m, center_y + side_m / 2,
         )
         with WarpedVRT(
             source,
-            crs=source.crs,
+            crs=target_crs,
             transform=target_transform,
             width=size,
             height=size,
@@ -929,9 +923,7 @@ def _geofm_context_quality(
     for asset_key in band_assets:
         band_href = (assets.get(asset_key) or {}).get("href")
         if not band_href:
-            raise ValueError(
-                f"HLS item '{item.get('id')}' has no {asset_key} asset."
-            )
+            raise ValueError(f"HLS item '{item.get('id')}' has no {asset_key} asset.")
         with (
             rasterio.open(planetary_computer.sign_url(str(band_href))) as source,
             WarpedVRT(
@@ -947,9 +939,8 @@ def _geofm_context_quality(
         valid &= ~np.ma.getmaskarray(band)
         valid &= np.asarray(band) != -9999
 
-    projected_aoi = transform_geom("EPSG:4326", target_crs, aoi)
     aoi_mask = geometry_mask(
-        [projected_aoi],
+        [transform_geom("EPSG:4326", target_crs, aoi)],
         out_shape=(size, size),
         transform=target_transform,
         invert=True,
@@ -963,8 +954,8 @@ def _geofm_context_quality(
 
 
 def _geofm_pair_output_valid_fraction(
-    before_quality: Dict[str, Any],
-    after_quality: Dict[str, Any],
+    before_quality: dict[str, Any],
+    after_quality: dict[str, Any],
 ) -> float:
     """Predict valid PlanAura output pixels inside the AOI after token masking."""
     import numpy as np
@@ -999,7 +990,7 @@ def _geofm_pair_output_valid_fraction(
 
 
 async def _resolve_geofm_pair_from_catalog(
-    collection_id: Optional[str],
+    collection_id: str | None,
     before_date: str,
     after_date: str,
 ) -> tuple[str, str]:
@@ -1009,15 +1000,12 @@ async def _resolve_geofm_pair_from_catalog(
     session = get_session()
     supported = {"hls2-s30", "hls2-l30"}
     loaded_supported = [
-        collection
-        for collection in session.loaded_collections
+        collection for collection in session.loaded_collections
         if collection in supported
     ]
     collection = collection_id or (loaded_supported[0] if loaded_supported else "")
     if collection not in supported:
-        raise ValueError(
-            "Foundation Change needs a loaded HLS S30 or L30 collection."
-        )
+        raise ValueError("Foundation Change needs a loaded HLS S30 or L30 collection.")
 
     before_day = _normalize_geofm_date(before_date, "before_date")
     after_day = _normalize_geofm_date(after_date, "after_date")
@@ -1027,13 +1015,11 @@ async def _resolve_geofm_pair_from_catalog(
     after_year_day = datetime.fromisoformat(after_day).timetuple().tm_yday
     year_day_difference = abs(before_year_day - after_year_day)
     if min(year_day_difference, 366 - year_day_difference) > 45:
-        raise ValueError(
-            "PlanAura comparison dates must be seasonally aligned within 45 days."
-        )
+        raise ValueError("PlanAura comparison dates must be seasonally aligned within 45 days.")
 
     aoi = _geofm_aoi()
 
-    def search(day: str) -> List[Dict[str, Any]]:
+    def search(day: str) -> list[dict[str, Any]]:
         return _search_stac_items_sync(
             {
                 "collections": [collection],
@@ -1054,25 +1040,16 @@ async def _resolve_geofm_pair_from_catalog(
         for after in after_items
         if _hls_tile_id(before)
         and _hls_tile_id(before) == _hls_tile_id(after)
-        and before.get("id")
-        and after.get("id")
+        and before.get("id") and after.get("id")
     ]
     if not pairs:
         raise ValueError(
-            "No same-tile HLS scenes were found for both requested dates in "
-            "the current map area."
+            "No same-tile HLS scenes were found for both requested dates in the current map area."
         )
 
-    unique_items = {
-        str(item["id"]): item
-        for pair in pairs
-        for item in pair
-    }
+    unique_items = {str(item["id"]): item for pair in pairs for item in pair}
     quality_values = await asyncio.gather(
-        *(
-            asyncio.to_thread(_geofm_context_quality, item, aoi)
-            for item in unique_items.values()
-        )
+        *(asyncio.to_thread(_geofm_context_quality, item, aoi) for item in unique_items.values())
     )
     quality_by_id = dict(zip(unique_items, quality_values))
     context_eligible_pairs = [
@@ -1091,18 +1068,14 @@ async def _resolve_geofm_pair_from_catalog(
     scored_pairs = [
         (
             _geofm_pair_output_valid_fraction(
-                quality_by_id[str(before["id"])],
-                quality_by_id[str(after["id"])],
+                quality_by_id[str(before["id"])], quality_by_id[str(after["id"])],
             ),
             min(
                 quality_by_id[str(before["id"])]["context_valid_fraction"],
                 quality_by_id[str(after["id"])]["context_valid_fraction"],
             ),
             _cloud_cover(before) + _cloud_cover(after),
-            str(before["id"]),
-            str(after["id"]),
-            before,
-            after,
+            str(before["id"]), str(after["id"]), before, after,
         )
         for before, after in context_eligible_pairs
     ]
@@ -1110,10 +1083,9 @@ async def _resolve_geofm_pair_from_catalog(
     if not eligible_pairs:
         raise ValueError(
             "No same-tile HLS pair for the requested dates contains valid "
-            "PlanAura output pixels inside the pinned area. Choose clearer "
-            "dates or another pin."
+            "PlanAura output pixels inside the pinned area. Choose clearer dates or another pin."
         )
-    _, _, _, _, _, before_item, after_item = min(
+    *_, before_item, after_item = min(
         eligible_pairs,
         key=lambda pair: (-pair[0], -pair[1], pair[2], pair[3], pair[4]),
     )
@@ -1187,19 +1159,19 @@ async def list_geofm_models() -> Dict[str, Any]:
 async def compare_with_geofm(
     before_item_id: Optional[str] = None,
     after_item_id: Optional[str] = None,
-    collection_id: Optional[str] = None,
-    before_date: Optional[str] = None,
-    after_date: Optional[str] = None,
     threshold: float = 0.35,
     max_features: int = 10,
+    *,
+    collection_id: str | None = None,
+    before_date: str | None = None,
+    after_date: str | None = None,
 ) -> Dict[str, Any]:
     """Submit a durable PlanAura comparison for two HLS scenes.
 
     Leave both item ids empty to use the earliest and latest loaded scenes
-    from one HLS collection. If only one HLS scene is loaded, provide its
-    collection id plus before_date and after_date to resolve a trusted same-tile
-    pair in the current map area. The operation requires user approval because
-    it starts billed GPU work.
+    from one HLS collection. With one loaded scene, provide collection_id,
+    before_date, and after_date to resolve a same-tile pair with valid output.
+    The operation requires user approval because it starts billed GPU work.
     """
     from mcp_runtime.traced_client import TracedMcpClient
 
@@ -1233,19 +1205,12 @@ async def compare_with_geofm(
             and after_item_id in loaded_item_ids
         )
         if explicit_pair_is_loaded:
-            epoch_a, epoch_b = _select_geofm_pair(
-                before_item_id,
-                after_item_id,
-            )
+            epoch_a, epoch_b = _select_geofm_pair(before_item_id, after_item_id)
         elif before_date or after_date:
             if not before_date or not after_date:
-                raise ValueError(
-                    "Provide both before_date and after_date, or neither."
-                )
+                raise ValueError("Provide both before_date and after_date, or neither.")
             epoch_a, epoch_b = await _resolve_geofm_pair_from_catalog(
-                collection_id,
-                before_date,
-                after_date,
+                collection_id, before_date, after_date,
             )
         else:
             epoch_a, epoch_b = _select_geofm_pair(None, None)

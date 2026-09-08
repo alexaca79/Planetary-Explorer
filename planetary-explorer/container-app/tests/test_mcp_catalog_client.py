@@ -211,6 +211,10 @@ def _fake_tool_result(*, payload_json: str = "", is_error: bool = False) -> Any:
 
 
 class TestToolDispatch:
+    @pytest.fixture(autouse=True)
+    def configure_geocatalog(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MPC_PRO_STAC_URL", "https://catalog.example.invalid/stac")
+
     @pytest.mark.asyncio
     async def test_list_personal_collections_happy_path(self) -> None:
         client = mod.MpcMcpClient(url="https://example.invalid")
@@ -229,7 +233,11 @@ class TestToolDispatch:
             {"id": "sentinel2-fire", "title": "Fire", "description": ""}
         ]
         fake_session.call_tool.assert_awaited_once_with(
-            "list_personal_stac_collections", {}
+            "list_personal_stac_collections",
+            {
+                "geocatalog_url": "https://catalog.example.invalid",
+                "geocatalog_uri": "https://catalog.example.invalid",
+            },
         )
 
     @pytest.mark.asyncio

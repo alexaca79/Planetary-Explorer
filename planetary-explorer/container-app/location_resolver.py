@@ -14,6 +14,7 @@ import aiohttp
 import logging
 import os
 import re
+import unicodedata
 
 from cloud_config import cloud_cfg  # [CLOUD] Cloud environment configuration
 
@@ -84,6 +85,45 @@ class EnhancedLocationResolver:
     
     NO MORE FALLBACK COORDINATES - All resolution via proper geocoding
     """
+
+    _CANADIAN_PROVINCES = {
+        'alberta': ('ab',),
+        'british columbia': ('bc',),
+        'manitoba': ('mb',),
+        'new brunswick': ('nb',),
+        'newfoundland and labrador': ('nl', 'newfoundland', 'labrador'),
+        'northwest territories': ('nt', 'nwt'),
+        'nova scotia': ('ns',),
+        'nunavut': ('nu',),
+        'ontario': ('on',),
+        'prince edward island': ('pe', 'pei'),
+        'quebec': ('qc',),
+        'saskatchewan': ('sk',),
+        'yukon': ('yt',),
+    }
+
+    _CANADIAN_STORED_PROVINCES = {
+        'canada': (),
+        'quebec': ('quebec',),
+        'toronto': ('ontario',),
+        'vancouver': ('british columbia',),
+        'montreal': ('quebec',),
+        'calgary': ('alberta',),
+        'edmonton': ('alberta',),
+        'halifax': ('nova scotia',),
+        'whitehorse': ('yukon',),
+        'north vancouver': ('british columbia',),
+        'lytton': ('british columbia',),
+        'norman wells': ('northwest territories',),
+        'western canada': ('british columbia', 'alberta', 'saskatchewan', 'manitoba'),
+        'saskatchewan': ('saskatchewan',),
+        'nova scotia': ('nova scotia',),
+        'lake ontario': ('ontario',),
+        'kananaskis': ('alberta',),
+        'canadian rockies': ('alberta', 'british columbia'),
+        'banff': ('alberta',),
+        'jasper': ('alberta',),
+    }
     
     # [MAP] HARDCODED GLOBAL LOCATIONS - Ultimate fallback for reliable resolution
     # Format: [west, south, east, north] bounding boxes
@@ -455,6 +495,13 @@ class EnhancedLocationResolver:
         'toronto': [-79.64, 43.58, -79.12, 43.86],
         'vancouver': [-123.27, 49.20, -123.02, 49.32],
         'montreal': [-73.98, 45.41, -73.48, 45.70],
+        'calgary': [-114.32, 50.84, -113.83, 51.21],
+        'edmonton': [-113.75, 53.39, -113.27, 53.72],
+        'halifax': [-63.85, 44.48, -63.35, 44.82],
+        'whitehorse': [-135.20, 60.65, -134.90, 60.85],
+        'north vancouver': [-123.25, 49.28, -122.85, 49.42],
+        'lytton': [-121.65, 50.18, -121.50, 50.28],
+        'norman wells': [-127.20, 65.10, -126.50, 65.50],
         'rome': [12.37, 41.80, 12.62, 42.00],
         'madrid': [-3.83, 40.31, -3.56, 40.56],
         'barcelona': [2.05, 41.32, 2.23, 41.47],
@@ -585,6 +632,11 @@ class EnhancedLocationResolver:
         'scandinavia': [4.50, 54.50, 31.10, 71.20],
         'western europe': [-10.50, 36.00, 17.00, 60.90],
         'eastern europe': [14.00, 35.80, 40.30, 56.20],
+        'western canada': [-139.06, 48.30, -101.36, 60.00],
+        'saskatchewan': [-110.00, 49.00, -101.36, 60.00],
+        'nova scotia': [-66.50, 43.40, -59.70, 47.10],
+        'lake ontario': [-79.80, 43.10, -76.00, 44.30],
+        'kananaskis': [-115.50, 50.50, -114.50, 51.50],
         'oceania': [110.00, -47.30, 180.00, 0.00],
         'polynesia': [-180.00, -23.00, -134.00, -8.00],
         'melanesia': [140.00, -23.00, 180.00, 0.00],
@@ -964,6 +1016,20 @@ class EnhancedLocationResolver:
         
         # Step 0: Check hardcoded US locations first (instant, guaranteed accuracy)
         location_lower = location_name.lower().strip()
+        normalized_location_type = self._normalize_location_type(location_name, location_type)
+        stored_locations = self.STORED_LOCATIONS
+        if self._azure_maps_country_context(location_name)[0] == 'CA':
+            province = self._canadian_province(location_name)
+            stored_locations = {
+                name: bbox
+                for name, bbox in stored_locations.items()
+                if name in self._CANADIAN_STORED_PROVINCES
+                and (province is None or province in self._CANADIAN_STORED_PROVINCES[name])
+                and (
+                    normalized_location_type != 'city'
+                    or (name not in self._CANADIAN_PROVINCES and name != 'canada')
+                )
+            }
         
         # Strip leading articles ("the", "a", "an") for matching
         # E.g., "the Amazon rainforest" -> "amazon rainforest"
@@ -989,8 +1055,8 @@ class EnhancedLocationResolver:
             loc_comma_collapsed,
             loc_norm_comma_collapsed,
         ]:
-            if loc_variant in self.STORED_LOCATIONS:
-                bbox = self.STORED_LOCATIONS[loc_variant]
+            if loc_variant in stored_locations:
+                bbox = stored_locations[loc_variant]
                 self.logger.info(f"[OK] Resolved from hardcoded US locations: '{location_name}' -> {bbox}")
                 self.cache.set(location_name, location_type, bbox)
                 return bbox
@@ -1010,8 +1076,8 @@ class EnhancedLocationResolver:
             for descriptor in descriptors_to_strip:
                 if loc_variant.endswith(descriptor):
                     stripped_name = loc_variant[:-len(descriptor)].strip()
-                    if stripped_name in self.STORED_LOCATIONS:
-                        bbox = self.STORED_LOCATIONS[stripped_name]
+                    if stripped_name in stored_locations:
+                        bbox = stored_locations[stripped_name]
                         self.logger.info(f"[OK] Resolved from hardcoded locations (stripped '{descriptor}'): '{location_name}' -> '{stripped_name}' -> {bbox}")
                         self.cache.set(location_name, location_type, bbox)
                         return bbox
@@ -1020,8 +1086,8 @@ class EnhancedLocationResolver:
         for loc_variant in [location_lower, location_normalized]:
             if ',' in loc_variant:
                 city_part = loc_variant.split(',')[0].strip()
-                if city_part in self.STORED_LOCATIONS:
-                    bbox = self.STORED_LOCATIONS[city_part]
+                if city_part in stored_locations:
+                    bbox = stored_locations[city_part]
                     self.logger.info(f"[OK] Resolved from hardcoded locations (comma split): '{location_name}' -> '{city_part}' -> {bbox}")
                     self.cache.set(location_name, location_type, bbox)
                     return bbox
@@ -1036,15 +1102,15 @@ class EnhancedLocationResolver:
                 # Try dropping words from the end (most specific first)
                 for n in range(len(words) - 1, 0, -1):
                     prefix = ' '.join(words[:n])
-                    if prefix in self.STORED_LOCATIONS:
-                        bbox = self.STORED_LOCATIONS[prefix]
+                    if prefix in stored_locations:
+                        bbox = stored_locations[prefix]
                         self.logger.info(f"[OK] Resolved from hardcoded locations (space split): '{location_name}' -> '{prefix}' -> {bbox}")
                         self.cache.set(location_name, location_type, bbox)
                         return bbox
         
         # Preserve the type inferred from the original place across generated
         # query variants such as "Regina, Saskatchewan, Canada city".
-        location_type = self._normalize_location_type(location_name, location_type)
+        location_type = normalized_location_type
 
         # Step 1: Semantic preprocessing to improve API query accuracy
         processed_queries = self._preprocess_location_query(location_name, location_type)
@@ -1058,7 +1124,7 @@ class EnhancedLocationResolver:
                 return cached_bbox
         
         # Try resolution with preprocessed queries (most specific first)
-        all_queries = processed_queries + [location_name]  # Try processed queries first, then original
+        all_queries = list(dict.fromkeys(processed_queries + [location_name]))
         
         for query in all_queries:
             # Strategy 1: Try Azure Maps with proper administrative division handling
@@ -1174,11 +1240,12 @@ class EnhancedLocationResolver:
             return None
         headers, params = self._get_azure_maps_auth()
         url = f"{cloud_cfg.azure_maps_base_url}/search/fuzzy/json"
+        country_code, _ = self._azure_maps_country_context(location_name)
         params.update({
             "query": location_name,
             "limit": 10,
             "entityType": "POI",  # Land entityType is rejected by Azure Maps; rely on POI + scoring
-            "countrySet": "US,CA,MX",  # default to North America; relaxes to global below if no hit
+            "countrySet": "CA" if country_code == "CA" else "US,CA,MX",
         })
         try:
             async with aiohttp.ClientSession() as session:
@@ -1189,7 +1256,7 @@ class EnhancedLocationResolver:
                     data = await resp.json()
                     results = data.get("results", [])
             # Retry without country bias if North-America-only returned nothing
-            if not results:
+            if not results and country_code != 'CA':
                 headers2, params2 = self._get_azure_maps_auth()
                 params2.update({
                     "query": location_name,
@@ -1272,25 +1339,38 @@ class EnhancedLocationResolver:
             'idaho', 'hawaii', 'new hampshire', 'maine', 'montana', 'rhode island',
             'delaware', 'south dakota', 'north dakota', 'alaska', 'vermont', 'wyoming'
         }
-        canadian_provinces = {
-            'alberta', 'british columbia', 'manitoba', 'new brunswick',
-            'newfoundland and labrador', 'northwest territories', 'nova scotia',
-            'nunavut', 'ontario', 'prince edward island', 'quebec',
-            'saskatchewan', 'yukon',
-        }
         first_component = name_lower.split(',', 1)[0].strip()
         
         return (
             name_lower in us_states
-            or first_component in canadian_provinces
+            or first_component in self._CANADIAN_PROVINCES
             or 'state' in name_lower
             or 'province' in name_lower
         )
 
-    @staticmethod
-    def _azure_maps_country_context(location_name: str) -> tuple[str, str]:
+    @classmethod
+    def _canadian_province(cls, location_name: str) -> str | None:
+        """Recognize province qualifiers without treating ordinary words as postal codes."""
+        normalized = unicodedata.normalize('NFKD', location_name or '')
+        normalized = ''.join(char for char in normalized if not unicodedata.combining(char))
+        normalized = re.sub(r'\s+', ' ', normalized).strip(' ,')
+        normalized = re.sub(r'\s*,?\s*\bcanada\s*$', '', normalized, flags=re.IGNORECASE)
+        last_component = normalized.rsplit(',', 1)[-1].strip()
+        for province, aliases in cls._CANADIAN_PROVINCES.items():
+            for alias in (province, *aliases):
+                if len(alias) <= 3:
+                    if ',' in normalized and last_component.casefold() == alias:
+                        return province
+                    if normalized == alias.upper() or normalized.endswith(' ' + alias.upper()):
+                        return province
+                elif re.search(r'(?:^|[ ,])' + re.escape(alias) + r'$', normalized, re.IGNORECASE):
+                    return province
+        return None
+
+    @classmethod
+    def _azure_maps_country_context(cls, location_name: str) -> tuple[str, str]:
         """Return the Azure Maps country filter implied by a qualified name."""
-        if re.search(r"\bcanada\b", location_name or "", re.IGNORECASE):
+        if re.search(r"\bcanada\b", location_name or "", re.IGNORECASE) or cls._canadian_province(location_name):
             return "CA", "Canada"
         return "US", "United States"
     
@@ -1349,6 +1429,8 @@ class EnhancedLocationResolver:
         'country', 'region', or whatever non-default hint the caller gave.
         """
         declared = (declared_type or 'region').lower().strip()
+        if location_name.strip().casefold() == 'canada':
+            return 'country'
         # Strong signal: name contains natural-feature keyword
         if self._looks_like_natural_feature(location_name):
             return 'natural_feature'
@@ -1360,8 +1442,8 @@ class EnhancedLocationResolver:
         # that coarse hint while retaining "Saskatchewan, Canada" as a region.
         components = [part.strip() for part in location_name.split(',') if part.strip()]
         if (
-            len(components) >= 2
-            and components[-1].casefold() == 'canada'
+            components
+            and self._azure_maps_country_context(location_name)[0] == 'CA'
             and self._looks_like_city(components[0])
         ):
             return 'city'
@@ -1879,6 +1961,8 @@ Location: {location_name}"""
         location_type = self._normalize_location_type(location_name, location_type)
         processed_queries = []
         name_lower = location_name.lower().strip()
+        if self._azure_maps_country_context(location_name)[0] == 'CA':
+            return [location_name if re.search(r'\bcanada\b', name_lower) else f'{location_name}, Canada']
         
         # Geographic region enhancements
         region_mappings = {
@@ -2103,7 +2187,7 @@ Location: {location_name}"""
         """Detect if a location is likely international (non-US) to avoid USA bias in preprocessing"""
         name_lower = location_name.lower().strip()
 
-        if re.search(r"\bcanada\b", name_lower):
+        if self._azure_maps_country_context(location_name)[0] == 'CA':
             return True
         
         # Famous international cities

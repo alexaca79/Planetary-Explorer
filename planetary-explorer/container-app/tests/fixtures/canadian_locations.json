@@ -1,0 +1,19 @@
+[
+  {"name": "Vancouver", "region": "British Columbia", "code": "BC", "latitude": 49.2827, "longitude": -123.1207},
+  {"name": "Calgary", "region": "Alberta", "code": "AB", "latitude": 51.0447, "longitude": -114.0719},
+  {"name": "Regina", "region": "Saskatchewan", "code": "SK", "latitude": 50.4452, "longitude": -104.6189},
+  {"name": "Winnipeg", "region": "Manitoba", "code": "MB", "latitude": 49.8951, "longitude": -97.1384},
+  {"name": "Toronto", "region": "Ontario", "code": "ON", "latitude": 43.6532, "longitude": -79.3832},
+  {"name": "Quebec City", "region": "Quebec", "code": "QC", "latitude": 46.8139, "longitude": -71.2080},
+  {"name": "Fredericton", "region": "New Brunswick", "code": "NB", "latitude": 45.9636, "longitude": -66.6431},
+  {"name": "Halifax", "region": "Nova Scotia", "code": "NS", "latitude": 44.6488, "longitude": -63.5752},
+  {"name": "Charlottetown", "region": "Prince Edward Island", "code": "PE", "latitude": 46.2382, "longitude": -63.1311},
+  {"name": "St. John's", "region": "Newfoundland and Labrador", "code": "NL", "latitude": 47.5615, "longitude": -52.7126},
+  {"name": "Whitehorse", "region": "Yukon", "code": "YT", "latitude": 60.7212, "longitude": -135.0568},
+  {"name": "Yellowknife", "region": "Northwest Territories", "code": "NT", "latitude": 62.4540, "longitude": -114.3718},
+  {"name": "Iqaluit", "region": "Nunavut", "code": "NU", "latitude": 63.7467, "longitude": -68.5170},
+  {"name": "Alert", "region": "Nunavut", "code": "NU", "latitude": 82.5018, "longitude": -62.3481},
+  {"name": "Point Pelee", "region": "Ontario", "code": "ON", "latitude": 41.9090, "longitude": -82.5090},
+  {"name": "Cape Spear", "region": "Newfoundland and Labrador", "code": "NL", "latitude": 47.5233, "longitude": -52.6197},
+  {"name": "Old Crow", "region": "Yukon", "code": "YT", "latitude": 67.5690, "longitude": -139.8108}
+]
