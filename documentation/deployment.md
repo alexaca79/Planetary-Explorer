@@ -158,6 +158,12 @@ for a smaller baseline and supply an existing provider URL if Forecast is
 required. Chat history defaults on; `azd env set DEPLOY_CHAT_HISTORY false`
 omits its Cosmos deployment and disables history wiring.
 
+For private endpoints, also set `ACR_AGENT_POOL_COUNT 1` before provisioning,
+unless you have verified another private build path. This creates a billed,
+always-on VNet build pool. Direct ARM and GitHub workflow deployments default
+to one pool VM only when private endpoints are explicitly enabled; the public
+CPU baseline remains at zero. Do not open the registry firewall to build.
+
 Run local gates before provisioning:
 
 ```powershell

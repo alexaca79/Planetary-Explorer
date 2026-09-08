@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -86,3 +89,95 @@ def test_given_direct_arm_script_when_validating_then_azd_substitutions_are_not_
     source = (ROOT / "deploy-infrastructure.ps1").read_text(encoding="utf-8")
 
     assert '--parameters "planetary-explorer/infra/main.parameters.json"' not in source
+
+
+@pytest.mark.parametrize(
+    ("setting", "parameter"),
+    [
+        ("AURORA_ENDPOINT_URL", "auroraEndpointUrl"),
+        ("EARTH2_FCN_ENDPOINT_URL", "earth2FcnEndpointUrl"),
+        ("MAI_WEATHER_ENDPOINT_URL", "maiWeatherEndpointUrl"),
+    ],
+)
+def test_given_workflow_weather_provider_when_deploying_then_postdeploy_receives_it(
+    setting: str, parameter: str,
+) -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8"))
+    step = next(
+        step for step in workflow["jobs"]["deploy-backend"]["steps"]
+        if step.get("id") == "deploy"
+    )
+
+    assert step["env"][setting] == "${{ env.INPUT_" + setting + " }}"
+    assert f'export {setting}="${{{setting}:-$(jq' in step["run"]
+    assert f'.parameters.{parameter}.value // ""' in step["run"]
+    assert 'select(startswith("${") | not)' in step["run"]
+    assert step["run"].rstrip().endswith('bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"')
+
+
+def test_given_private_arm_deployment_when_count_is_omitted_then_build_pool_is_available() -> None:
+    source = (ROOT / "planetary-explorer/infra/main.bicep").read_text(encoding="utf-8")
+
+    assert "param acrAgentPoolCount int = enablePrivateEndpoints ? 1 : 0" in source
+
+
+@pytest.mark.parametrize(
+    ("setting", "parameter"),
+    [
+        ("AURORA_ENDPOINT_URL", "auroraEndpointUrl"),
+        ("EARTH2_FCN_ENDPOINT_URL", "earth2FcnEndpointUrl"),
+        ("MAI_WEATHER_ENDPOINT_URL", "maiWeatherEndpointUrl"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("workflow_input", "parameter_value", "expected"),
+    [
+        ("https://input.example", "https://literal.example", "https://input.example"),
+        ("", "https://literal.example", "https://literal.example"),
+        ("", "${PROVIDER_ENDPOINT=}", ""),
+    ],
+)
+def test_given_weather_sources_when_running_workflow_handoff_then_precedence_is_preserved(
+    tmp_path: Path,
+    setting: str,
+    parameter: str,
+    workflow_input: str,
+    parameter_value: str,
+    expected: str,
+) -> None:
+    bash_executable = os.environ.get("BASH_EXECUTABLE") or shutil.which("bash")
+    if not bash_executable or not shutil.which("jq"):
+        pytest.skip("Workflow shell execution requires Bash and jq")
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8"))
+    step = next(
+        step for step in workflow["jobs"]["deploy-backend"]["steps"]
+        if step.get("id") == "deploy"
+    )
+    parameters_path = tmp_path / "planetary-explorer/infra/main.parameters.json"
+    parameters_path.parent.mkdir(parents=True)
+    parameters_path.write_text(
+        json.dumps({"parameters": {parameter: {"value": parameter_value}}}),
+        encoding="utf-8",
+    )
+    backend_script = tmp_path / "scripts/deploy-backend.sh"
+    backend_script.parent.mkdir()
+    settings = ("AURORA_ENDPOINT_URL", "EARTH2_FCN_ENDPOINT_URL", "MAI_WEATHER_ENDPOINT_URL")
+    backend_script.write_text(
+        "printf '%s\\n' " + " ".join(f'"${name}"' for name in settings) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    environment = {**os.environ, **dict.fromkeys(settings, "")}
+    environment.update({setting: workflow_input, "GITHUB_WORKSPACE": tmp_path.as_posix()})
+
+    result = subprocess.run(
+        [bash_executable, "-c", step["run"]],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+
+    assert result.stdout.splitlines() == [expected if name == setting else "" for name in settings]

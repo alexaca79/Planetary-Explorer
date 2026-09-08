@@ -940,7 +940,14 @@ jobs:
           CORS_ORIGINS: ${{ steps.discover.outputs.web_app_url }},http://localhost:5173
           ENABLE_PRIVATE_ENDPOINTS: ${{ steps.discover.outputs.private_endpoints_enabled }}
           PUBLIC_DEMO_MODE: ${{ github.event.inputs.disable_auth || 'false' }}
-        run: bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"
+          AURORA_ENDPOINT_URL: ${{ env.INPUT_AURORA_ENDPOINT_URL }}
+          EARTH2_FCN_ENDPOINT_URL: ${{ env.INPUT_EARTH2_FCN_ENDPOINT_URL }}
+          MAI_WEATHER_ENDPOINT_URL: ${{ env.INPUT_MAI_WEATHER_ENDPOINT_URL }}
+        run: |
+          export AURORA_ENDPOINT_URL="${AURORA_ENDPOINT_URL:-$(jq -r '.parameters.auroraEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          export EARTH2_FCN_ENDPOINT_URL="${EARTH2_FCN_ENDPOINT_URL:-$(jq -r '.parameters.earth2FcnEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          export MAI_WEATHER_ENDPOINT_URL="${MAI_WEATHER_ENDPOINT_URL:-$(jq -r '.parameters.maiWeatherEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"
 
   deploy-web-search:
     name: Deploy Azure Web Search MCP

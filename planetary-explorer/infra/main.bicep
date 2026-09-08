@@ -162,8 +162,8 @@ param restoreSoftDeletedAccount bool = false
 @description('Name of the ACR agent pool for VNet-integrated builds. Override to use an existing pool.')
 param acrAgentPoolName string = 'buildpool'
 
-@description('Number of always-on ACR agent pool VMs. Set 0 to omit the optional pool.')
-param acrAgentPoolCount int = 0
+@description('Number of always-on ACR agent pool VMs. Defaults to 1 only with private endpoints; set 0 when using another verified build path.')
+param acrAgentPoolCount int = enablePrivateEndpoints ? 1 : 0
 
 // MCP Server (in-repo Planetary Explorer MCP server, exposes /api/query as MCP tools)
 @description('Deploy the in-repo Planetary Explorer MCP server alongside the API. One MCP container per environment, pointed at this environment\'s backend. Off by default — opt in for environments that need to be reachable from VS Code Copilot Agent / Claude Desktop / Cursor over MCP.')
