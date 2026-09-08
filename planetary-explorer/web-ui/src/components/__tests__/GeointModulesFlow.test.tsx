@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MapView from '../MapView';
+import { authenticatedFetch } from '../../services/authHelper';
 
 const analysisResult = {
   result: {
@@ -83,8 +84,7 @@ vi.mock('../../services/authHelper', async (importOriginal) => {
       ok: true,
       json: async () => ({
         azureMaps: {
-          subscriptionKey: 'DEVELOPMENT_MODE_NO_KEY',
-          developmentMode: true,
+          subscriptionKey: 'test-map-key-'.repeat(6),
         },
       }),
     }),
@@ -187,6 +187,10 @@ const openModulePicker = async () => {
 describe('GEOINT module flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(authenticatedFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ azureMaps: { subscriptionKey: 'test-map-key-'.repeat(6) } }),
+    } as Response);
     apiMocks.triggerGeointAnalysis.mockResolvedValue(analysisResult);
     tileJsonMocks.fetchAndSignTileJSON.mockResolvedValue({
       success: true,
@@ -196,6 +200,57 @@ describe('GEOINT module flow', () => {
     });
     (globalThis as any).atlas = atlasMock;
     (globalThis as any).L = leafletMock;
+  });
+
+  it.each([
+    { azureMaps: {} },
+    { azureMaps: { subscriptionKey: 'DEVELOPMENT_MODE_NO_KEY', developmentMode: true } },
+    null,
+  ])('loads an interactive fallback when Azure Maps has no credentials: %j', async (config) => {
+    if (config === null) {
+      vi.mocked(authenticatedFetch).mockRejectedValue(new TypeError('Network unavailable'));
+    } else {
+      vi.mocked(authenticatedFetch).mockResolvedValue({
+        ok: true,
+        json: async () => config,
+      } as Response);
+    }
+    const leafletMap = {
+      on: vi.fn(),
+      off: vi.fn(),
+      remove: vi.fn(),
+      getZoom: vi.fn().mockReturnValue(3),
+      getCenter: vi.fn().mockReturnValue({ lat: 56.1304, lng: -106.3468 }),
+      getBounds: vi.fn().mockReturnValue({
+        getWest: () => -141, getSouth: () => 41.7,
+        getEast: () => -52.6, getNorth: () => 83.1,
+      }),
+    };
+    leafletMock.map.mockReturnValueOnce(leafletMap);
+    leafletMock.tileLayer.mockReturnValueOnce({ addTo: vi.fn().mockReturnThis() });
+
+    renderMap();
+    await openModulePicker();
+
+    expect(screen.queryByText('Loading map...')).not.toBeInTheDocument();
+    expect(screen.getByText('Terrain Analysis')).toBeInTheDocument();
+    expect(leafletMock.map).toHaveBeenCalled();
+    expect(atlasMock.Map).not.toHaveBeenCalled();
+  });
+
+  it('shows a recoverable error when no usable map library is available', async () => {
+    vi.mocked(authenticatedFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ azureMaps: {} }),
+    } as Response);
+    (globalThis as any).L = undefined;
+
+    renderMap();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Map library');
+    expect(screen.queryByText('Loading map...')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reload map' })).toBeEnabled();
+    expect(screen.queryByTitle('Geointelligence Modules')).not.toBeInTheDocument();
   });
 
   it('opens the current module picker after the map is ready', async () => {

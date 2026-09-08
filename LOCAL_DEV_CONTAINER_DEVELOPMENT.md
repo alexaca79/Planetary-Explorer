@@ -108,6 +108,12 @@ valid existing-service settings are supplied.
 Maps is not configured. That is expected for the no-Azure local setup; the
 backend is running if `/api/config` returns `200`.
 
+Without Azure Maps credentials, **Open map view** loads the public Leaflet/Esri
+satellite basemap for navigation, zoom, and pin placement. Mobile layouts stack
+chat below the map. This fallback does not configure model services or private
+data access. Image Analysis still requires the Azure Maps screenshot path.
+If a map library cannot load, the map shows an error and a reload control.
+
 Stop both processes with `Ctrl+C`.
 
 ## Validate without provisioning Azure
@@ -127,6 +133,17 @@ It verifies:
 - Bicep compilation for `planetary-explorer/infra/main.bicep`
 - Live backend configuration and health responses
 - A live response from the Vite web UI
+
+For a local instance without Azure Maps credentials, verify actual decoded
+basemap tiles, zoom, and pins in desktop and mobile Chromium viewports:
+
+```bash
+node scripts/verify_map_loading.mjs --base-url http://127.0.0.1:5173
+```
+
+This check needs the frontend's Playwright Chromium installation and public
+basemap network access. It writes screenshots and a JSON report under
+`.copilot-tracking/map-loading/`; it does not submit AI analysis.
 
 It does not sign in to Azure, create an `azd` environment, submit an Azure
 deployment, or provision services. `azd show` can safely confirm that the

@@ -187,6 +187,7 @@ export const GlobalStyles = () => (
 
       .top-header {
         height: 176px;
+        flex-shrink: 0;
       }
 
       .header-controls {
@@ -201,13 +202,34 @@ export const GlobalStyles = () => (
 
       .app {
         height: calc(100vh - 176px);
+        min-height: 0;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(520px, 1fr) minmax(260px, 0.7fr);
+        overflow-y: auto;
       }
 
       .center {
-        min-height: calc(100vh - 176px);
+        grid-column: 1;
+        grid-row: 1;
+        min-width: 0;
+        min-height: 520px;
       }
 
-      .landing-top-right .get-started-button span {
+      .app > .chat-panel {
+        grid-column: 1;
+        grid-row: 2;
+        width: 100% !important;
+        min-width: 0;
+        border-left: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .app > .chat-panel > .resize-handle {
+        display: none;
+      }
+
+      .landing-top-right .get-started-button span,
+      .header-controls .get-started-button span {
         display: inline;
       }
 
@@ -243,7 +265,7 @@ export const GlobalStyles = () => (
       }
 
       .center {
-        min-height: calc(100vh - 216px);
+        min-height: 520px;
       }
 
       .welcome-popup-container {

@@ -4,6 +4,7 @@
 // Trigger frontend-only deploy to rg-planetaryexplorer-dev (no infra change)
 
 import React, { useEffect, useState, useRef } from 'react';
+import { RotateCw } from 'lucide-react';
 import { Dataset, API_BASE_URL } from '../services/api';
 import type { ChatHistoryMapRestore } from '../utils/mapHistory';
 import { buildExpansionSearchBody, resolveLeafletTileSources, restoredLayerFromContext, restoredSearchDatetime, restorableHistoryModule } from '../utils/mapHistory';
@@ -499,31 +500,7 @@ const MapView: React.FC<MapViewProps> = ({
         setMapError('Failed to initialize any map system');
       }
     } else {
-      // Create basic HTML/CSS map as last resort
-      console.log('??? MapView: Creating basic HTML map as last resort');
-      if (mapRef.current) {
-        mapRef.current.innerHTML = `
-          <div style="
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(45deg, #4a90e2, #7fb3d3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-family: Arial, sans-serif;
-            text-align: center;
-            flex-direction: column;
-          ">
-            <h3>?? Map View</h3>
-            <p>Map services temporarily unavailable</p>
-            <p>Satellite data will be displayed here when map loads</p>
-          </div>
-        `;
-        setMapProvider('leaflet'); // Set to indicate fallback is active
-        setMapLoaded(true);
-        setMapError(null);
-      }
+      setMapError('Map library failed to load. Check your connection and reload.');
     }
   };
 
@@ -2402,7 +2379,9 @@ const MapView: React.FC<MapViewProps> = ({
         // First try to get the subscription key from environment variables (for local development)
         const azureMapsKey = import.meta.env.VITE_AZURE_MAPS_SUBSCRIPTION_KEY;
 
-        if (azureMapsKey && azureMapsKey.length > 20) {
+        if (azureMapsKey && azureMapsKey.length > 20
+          && azureMapsKey !== 'DEVELOPMENT_MODE_NO_KEY'
+          && azureMapsKey !== 'your-azure-maps-subscription-key-here') {
           console.log('??? MapView: ? Using Azure Maps key from environment');
           setMapsConfig({
             subscriptionKey: azureMapsKey,
@@ -2430,10 +2409,12 @@ const MapView: React.FC<MapViewProps> = ({
           azureMapsConfig: !!config.azureMaps,
           keyExists: !!apiAzureMapsKey,
           keyLength: apiAzureMapsKey?.length || 0,
-          keyPreview: apiAzureMapsKey ? `${apiAzureMapsKey.substring(0, 12)}...${apiAzureMapsKey.slice(-8)}` : 'not found'
         });
 
-        if (apiAzureMapsKey && apiAzureMapsKey.length > 20 && apiAzureMapsKey !== "DEVELOPMENT_MODE_NO_KEY") {
+        if (apiAzureMapsKey && apiAzureMapsKey.length > 20
+            && apiAzureMapsKey !== 'DEVELOPMENT_MODE_NO_KEY'
+            && apiAzureMapsKey !== 'your-azure-maps-subscription-key-here'
+            && !config.azureMaps?.developmentMode) {
           console.log('??? MapView: ? Using Azure Maps key from API config');
           setMapsConfig({
             subscriptionKey: apiAzureMapsKey,
@@ -2442,9 +2423,8 @@ const MapView: React.FC<MapViewProps> = ({
             center: [-106.3468, 56.1304] // Center on Canada
           });
           return;
-        } else if (apiAzureMapsKey === "DEVELOPMENT_MODE_NO_KEY" || config.azureMaps?.developmentMode) {
-          console.log('??? MapView: ?? Development mode - Azure Maps key not configured');
-          console.log('??? MapView: Map functionality will be limited. Configure AZURE_MAPS_SUBSCRIPTION_KEY to enable full features.');
+        } else {
+          console.info('MapView: Azure Maps credentials unavailable; using the public basemap.');
           setMapsConfig({
             subscriptionKey: null,
             style: 'satellite_road_labels',
@@ -2453,13 +2433,11 @@ const MapView: React.FC<MapViewProps> = ({
             developmentMode: true
           });
           return;
-        } else {
-          throw new Error('Azure Maps subscription key not found in API config');
         }
 
       } catch (error) {
-        console.error('??? MapView: ? Error fetching Azure Maps configuration:', error);
-        setMapError('Azure Maps subscription key not properly configured - check server configuration');
+        console.warn('MapView: Map configuration unavailable; using the public basemap.');
+        setMapsConfig({ developmentMode: true });
         return;
       }
     };
@@ -2470,6 +2448,11 @@ const MapView: React.FC<MapViewProps> = ({
     // Only log during actual initialization, not every render
     if (!mapRef.current || !mapsConfig) {
       return; // Skip silently
+    }
+
+    if (mapsConfig.developmentMode || !mapsConfig.subscriptionKey) {
+      initializeFallbackMap();
+      return;
     }
 
     // If we already have a map, check if it's Azure Maps
@@ -2558,8 +2541,6 @@ const MapView: React.FC<MapViewProps> = ({
             };
             console.log('??? MapView: ? Using Azure Maps subscription key authentication');
             console.log('??? MapView: Key length:', mapsConfig.subscriptionKey.length);
-            console.log('??? MapView: Key starts with:', mapsConfig.subscriptionKey.substring(0, 8) + '...');
-            console.log('??? MapView: Key ends with:', '...' + mapsConfig.subscriptionKey.substring(-8));
             console.log('??? MapView: AuthType:', mapConfig.authOptions.authType);
           } else {
             console.error('??? MapView: ?? Unusual subscription key length - will try anyway:', mapsConfig.subscriptionKey.length);
@@ -2573,11 +2554,11 @@ const MapView: React.FC<MapViewProps> = ({
           console.log('??? MapView: Note: Some Azure Maps features may not work without a subscription key');
         } else {
           console.warn('??? MapView: ?? Azure Maps subscription key not available or placeholder');
-          console.log('??? MapView: Available key:', mapsConfig?.subscriptionKey ? `present (${mapsConfig.subscriptionKey.substring(0, 8)}...)` : 'not present');
+          console.log('??? MapView: Available key:', mapsConfig?.subscriptionKey ? 'present' : 'not present');
           console.log('??? MapView: Will attempt anonymous access (limited functionality)');
         }
 
-        console.log('??? MapView: Creating Azure Maps instance with config:', mapConfig);
+        console.log('MapView: Creating authenticated Azure Maps instance.');
         const newMap = new window.atlas.Map(mapRef.current, mapConfig);
         console.log('??? MapView: ? Azure Maps instance created successfully');
 
@@ -6686,7 +6667,6 @@ const MapView: React.FC<MapViewProps> = ({
       role="region"
       aria-label="Interactive map"
       tabIndex={-1}
-      style={{ position: 'relative' }}
     >
       {/* Always render map container so mapRef.current is available */}
       <div
@@ -6716,7 +6696,14 @@ const MapView: React.FC<MapViewProps> = ({
           fontSize: '16px',
           padding: '20px'
         }}>
-          <div style={{ marginBottom: '10px' }}>Loading map...</div>
+          <div role={mapError ? 'alert' : 'status'} style={{ marginBottom: '10px' }}>
+            {mapError || 'Loading map...'}
+          </div>
+          {mapError && (
+            <button type="button" title="Reload map" onClick={() => window.location.reload()}>
+              <RotateCw size={16} aria-hidden="true" /> Reload map
+            </button>
+          )}
         </div>
       )}
 
