@@ -1,139 +1,73 @@
-# Planetary Explorer Web UI
+---
+title: Planetary Explorer Web UI
+description: Develop and deploy the React/Vite frontend with the correct API origin and map prerequisites.
+ms.date: 2026-09-08
+---
 
-This directory contains the React frontend for Planetary Explorer, designed to be deployed to Azure App Service.
+## Local Development
 
-##  Project Structure
+The React 18/TypeScript UI uses Vite and a FastAPI Container App backend. It
+does not require a GPU. From this directory, with Node.js 20.19+ or 22.12+:
 
-```
-web-ui/
-├── src/
-│   ├── components/        # React components
-│   │   ├── Chat.tsx       # Main chat interface
-│   │   ├── MapView.tsx    # Azure Maps integration
-│   │   ├── Header.tsx     # Navigation header
-│   │   └── ...
-│   ├── services/          # API integration services
-│   ├── styles/            # Global styles
-│   ├── App.tsx            # Main application component
-│   └── main.tsx           # Entry point
-├── public/                # Static assets
-├── package.json           # Node.js dependencies
-├── vite.config.ts         # Vite build configuration
-├── tsconfig.json          # TypeScript configuration
-└── index.html             # HTML template
+```powershell
+npm ci
+$env:LOCAL_BACKEND_URL = 'http://localhost:8000'
+npm run dev
 ```
 
-##  Deployment
+Start the backend separately on the same port. Open
+<http://localhost:5173>. Change `LOCAL_BACKEND_URL` whenever the backend port
+changes. Use [local development](../../LOCAL_DEV_CONTAINER_DEVELOPMENT.md)
+for the no-provisioning setup and its intentionally unavailable integrations.
 
-### Azure App Service Details
-- **Service Name:** `planetaryexplorer-web-ui`
-- **Region:** Canada Central
-- **Type:** App Service (Node.js/Static Web App)
+Map credentials and capability flags are read from the backend's
+`/api/config`. Without Maps credentials, Leaflet/Esri supports navigation,
+zoom and pins, but not the Azure-canvas Image Analysis path. Model, Fabric and
+private catalog credentials do not belong in browser source or Vite variables.
 
-### Local Development
+## Production Build
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-2. **Configure environment variables:**
-   - Copy `.env.example` to `.env`
-   - Fill in required values (Azure Maps keys, API endpoints, etc.)
-
-3. **Run development server:**
-   ```bash
-   npm run dev
-   ```
-   The app will be available at `http://localhost:5173`
-
-### Build for Production
-
-```bash
+```powershell
+$env:VITE_API_BASE_URL = 'https://<actual-api-host>'
 npm run build
 ```
 
-This creates optimized production files in the `dist/` directory.
+Alternatively, azd supplies `AZURE_CONTAINER_APP_URL`. An explicit
+`VITE_API_BASE_URL` takes precedence. The selected origin is compiled into the
+JavaScript bundle: changing App Service settings after publishing does not
+rewrite it. Inspect the bundle and rebuild if it points to the wrong origin.
 
-### Deploy to Azure App Service
+The build creates `dist` and adds the dependency-free Node static host.
+App Service runs `node server.js`. This project uses an App Service Web App,
+not Azure Static Web Apps or a Router Function App.
 
-#### Option 1: Using Azure CLI
+## Deploy or Reuse
 
-```bash
-# Build the application
+Use the [deployment guide](../../documentation/deployment.md) for a new
+environment or a named existing Web App/API. Resource name, plan and region
+come from the selected environment; there is no universal pre-existing
+`planetaryexplorer-web-ui` resource.
+
+For app-only updates, verify exact names and publish `azd deploy web` from the
+selected root environment, or deploy a verified `dist` ZIP to the existing
+Web App. Keep authentication, runtime and plan settings unchanged unless
+their modification is explicitly approved. Do not use a create-or-update
+command with guessed resource names.
+
+## Validation
+
+```powershell
+npm run test:run
+npm run test:deployment
 npm run build
-
-# Deploy to App Service
-az webapp up --name planetaryexplorer-web-ui --resource-group <resource-group> --location canadacentral
 ```
 
-#### Option 2: Using VS Code Azure Extension
+For real local map and gallery checks, run the repository's
+[map verifier](../../scripts/verify_map_loading.mjs) and
+[gallery verifier](../../scripts/verify_get_started_gallery.mjs).
+Use the release-bound [Image Analysis verifier](../../scripts/verify_get_started_image_analysis.mjs)
+for deployed image workflows. Test desktop and mobile rendering, decoded
+tiles, pins, correct API requests and evidence, not only successful page load.
 
-1. Install the Azure App Service extension
-2. Right-click on the `dist` folder
-3. Select "Deploy to Web App"
-4. Choose `planetaryexplorer-web-ui`
-
-#### Option 3: Using GitHub Actions (CI/CD)
-
-See `.github/workflows/deploy-web-ui.yml` for automated deployment pipeline.
-
-##  Configuration
-
-### Environment Variables
-
-Create a `.env` file in this directory with:
-
-```bash
-VITE_API_BASE_URL=https://<your-function-app>.azurewebsites.net
-VITE_AZURE_MAPS_SUBSCRIPTION_KEY=<your-azure-maps-key>
-VITE_AZURE_MAPS_CLIENT_ID=<your-azure-maps-client-id>
-```
-
-### Azure App Service Configuration
-
-After deployment, configure these application settings in Azure Portal:
-
-1. Go to Azure Portal → App Service → `planetaryexplorer-web-ui`
-2. Navigate to Configuration → Application settings
-3. Add the following:
-   - `VITE_API_BASE_URL`
-   - `VITE_AZURE_MAPS_SUBSCRIPTION_KEY`
-   - `VITE_AZURE_MAPS_CLIENT_ID`
-
-##  Technology Stack
-
-- **React 18** - UI framework
-- **TypeScript** - Type safety
-- **Vite** - Build tool and dev server
-- **Azure Maps** - Map visualization
-- **Axios** - HTTP client
-- **React Query** - Server state management
-
-##  Integration
-
-The web UI communicates with:
-- **Router Function App:** Query routing and processing
-- **Container App (FastAPI):** Backend API for data processing
-- **Microsoft Planetary Computer:** STAC catalog search
-- **Azure Maps:** Map tiles and geocoding
-
-##  Testing
-
-```bash
-# Run tests (if configured)
-npm test
-
-# Type checking
-npm run type-check
-
-# Linting
-npm run lint
-```
-
-##  Documentation
-
-For more information, see:
-- [Main Project README](../../README.md)
-- [System Requirements](../../SYSTEM_REQUIREMENTS.md)
-- [Deployment Guide](../../documentation/deployment.md)
+See [Get Started](../../documentation/get-started-playbook.md) for data/date
+prerequisites and interpretation limits.

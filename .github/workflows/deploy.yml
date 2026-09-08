@@ -451,7 +451,7 @@ jobs:
           PARAMETERS_FILE=$(mktemp)
           trap 'rm -f "$PARAMETERS_FILE"' EXIT
           jq --arg webSearchKey "$WEB_SEARCH_MCP_API_KEY" \
-            '.parameters.webSearchMcpApiKey.value = $webSearchKey' \
+            '.parameters |= with_entries(select(if (.value.value | type) == "string" then (.value.value | startswith("${") | not) else true end)) | .parameters.webSearchMcpApiKey.value = $webSearchKey' \
             infra/main.parameters.json > "$PARAMETERS_FILE"
           
           DEPLOYMENT_NAME="${{ env.PROJECT_NAME }}-$(date +%Y%m%d-%H%M%S)"
@@ -700,11 +700,9 @@ jobs:
             EXTRA_PARAMS+=(--parameters frontendAppServicePlanName="$RESOLVED_PLAN_NAME")
             EXTRA_PARAMS+=(--parameters agentProjectName="$AGENT_PROJECT_NAME")
 
-            # Use main.parameters.json as the baseline so values like
-            # mpcProStacUrl and enableMpcPro persist across deploys. Without
-            # this every run would reset opt-in parameters to their bicep
-            # defaults (e.g. mpcProStacUrl='') because individual --parameters
-            # flags only override the keys they name.
+            # Only literal parameter values are retained in the baseline.
+            # azd substitutions are not ARM syntax; workflow inputs below
+            # override the Bicep defaults explicitly.
             if az deployment sub create \
               --location "${{ env.LOCATION }}" \
               --template-file infra/main.bicep \

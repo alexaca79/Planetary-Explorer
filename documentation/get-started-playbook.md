@@ -14,6 +14,12 @@ estimated_reading_time: 16
 
 ## What this playbook covers
 
+For a new environment or existing-resource connection, complete the
+[deployment/resource guide](deployment.md) first. The normal web/API,
+imagery, raster, terrain, mobility and climate paths do not require a local
+GPU. Forecast can use the CPU adapter; PlanAura is a separate GPU opt-in.
+An enabled gallery control is not proof of authorized data or model access.
+
 This playbook turns the **Get Started** gallery into repeatable workflows. It
 uses one recommended example from each of the 11 scenario families and records
 what a successful result looked like in the deployed application on September

@@ -20,6 +20,14 @@ Microsoft Foundry project. It does not create or store a Bing API key.
 
 ## Deploy
 
+This CPU-only service is optional. Follow the [deployment guide](../../documentation/deployment.md)
+to choose a new or existing Foundry project and an exact resource target.
+When `DEPLOY_AI_FOUNDRY=false`, configure `AZURE_OPENAI_ENDPOINT` and
+`EXISTING_AI_PROJECT_ENDPOINT` for the API, plus
+`WEB_SEARCH_FOUNDRY_ACCOUNT_NAME` and `WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT`
+for this service. Existing projects need compatible model deployments and
+identity permissions; an endpoint string does not grant access.
+
 Enable the optional service in the selected Azure Developer CLI environment:
 
 ```powershell
@@ -38,6 +46,12 @@ real image after Bicep creates the bootstrap Container App. The API receives:
 
 The deployment exports `AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME` and
 `AZURE_WEB_SEARCH_MCP_URL` for validation and operations.
+
+To connect an existing protected service without publishing it, set
+`DEPLOY_WEB_SEARCH_MCP=false`, `WEB_SEARCH_ENABLED=true`,
+`WEB_SEARCH_MCP_URL` and the matching shared key. Ensure network reachability
+from the API. `/ready` checks configuration; verify an actual authorized
+`web_search` call and citations before declaring grounding operational.
 
 ## Local Validation
 

@@ -1,4 +1,9 @@
-# MAF patterns — gotchas and the canonical fixes
+---
+title: Microsoft Agent Framework Patterns
+description: Implementation notes for concurrency, provider configuration, connector authorization and tool confirmation.
+---
+
+## Scope
 
 Hard-won lessons from building the Planetary Explorer agents on the
 Microsoft Agent Framework. These used to live in commit messages, PR
@@ -65,23 +70,17 @@ should never reach for `AsyncAzureOpenAI()` directly.
 
 ---
 
-## 4. OBO scope mistakes
+## 4. User Sign-In Is Not Fabric Authorization
 
-**Symptom.** Fabric query returns `AADSTS65001: The user or
-administrator has not consented to use the application` even though the
-user just signed in.
+The current Fabric connector uses the backend identity, including when the
+caller invokes `_framework.OBOContextMixin.fabric_token`. The compatibility
+function accepts a user assertion but does not exchange it for a delegated
+Fabric token. Do not infer user-level RLS/OLS from the mixin name.
 
-**Cause.** Two distinct issues are usually conflated:
-
-1. The Container App needs the user assertion forwarded
-   (`X-MS-TOKEN-AAD-ACCESS-TOKEN` or `Authorization: Bearer`).
-2. The OBO exchange must request the right downstream scope, e.g.
-   `https://api.fabric.microsoft.com/.default` for Fabric.
-
-**Fix.** `_framework.OBOContextMixin.fabric_token(scope=...)` does the
-extraction and the exchange. If the user assertion is missing it falls
-back to the app-only token via `acquire_app_token`. Use the mixin —
-don't roll your own.
+Grant the actual backend identity access to the selected workspace/item and
+verify denied as well as successful reads. Keep app-scoped reference data
+separate from per-user private data. See the [Fabric contract](../container-app/FABRIC.md)
+for the configuration and query limitations.
 
 ---
 
@@ -140,13 +139,13 @@ emissions, but only if the source actually yields incrementally.
 
 **Status.** The TracedMcpClient classifies every tool into
 `read` / `write` / `destructive`. Non-`read` calls go through a
-`confirm` hook before invocation. The default hook auto-approves so
-nothing breaks.
+confirmation broker before invocation. The UI approval card resolves that
+request for the current owner/session. Do not assume default auto-approval.
 
-**When the UI lands.** The `confirm` hook will resolve only after the
-user clicks the confirmation card. Until then, treat destructive tools
-as feature-flagged: gate them with an env var on the call site so a
-demo can't accidentally `delete_personal_collection`.
+GeoFM mutation tools require confirmation even when generic MCP confirmation
+is disabled. Preserve per-tool authorization, explicit capability flags and
+dispatch-aware retry rules. A model's tool choice is not user authorization
+to submit billed work or mutate a catalog.
 
 ---
 

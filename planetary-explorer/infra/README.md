@@ -1,232 +1,93 @@
 ---
-title: Planetary Explorer Infrastructure Deployment
-description: Azure infrastructure deployment reference for Planetary Explorer
+title: Planetary Explorer Infrastructure Reference
+description: Explain template scope, CPU defaults, supported resource adoption and the distinction between provisioning and application publishing.
+ms.date: 2026-09-08
 ---
 
-This directory contains Bicep templates for deploying the complete Planetary Explorer infrastructure to Azure.
+## Canonical Deployment Instructions
 
-## 🏗️ What Gets Deployed
+Use the [deployment guide](../../documentation/deployment.md) for a new
+environment or an existing-resource update. Both azd manifests load
+[main.bicep](main.bicep) and [main.parameters.json](main.parameters.json).
 
-### Core Services
-- **Azure AI Foundry** - GPT-4o, GPT-5, and GPT-5.6 Sol, Terra, and Luna models for AI queries
-- **Azure Maps** - Geocoding and location services
-- **Azure Container Registry** - Docker image storage
-- **ACR Agent Pool** (`buildpool`) - VNet-integrated build agents for private image builds (when private endpoints enabled)
-- **Container Apps Environment** - Managed Kubernetes with VNet integration
-- **Backend Container App** - FastAPI backend service
-- **App Service + Plan** - React frontend hosting
+The parameter file contains azd substitutions such as
+`${DEPLOY_GEOFM=false}`. It is **not** a ready-to-submit ARM parameter file:
+azd resolves those expressions first. For direct ARM deployments, supply
+concrete Bicep parameters and an explicit subscription/region.
 
-### Storage & Security
-- **Storage Account** - Blob storage for data and logs
-- **Key Vault** - Secure secrets management
-- **Log Analytics** - Container Apps diagnostics
+## Default Resource Contract
 
-### Optional Services
-- **Azure AI Search** - Semantic search over STAC metadata (optional)
+- CPU Container Apps environment and API, App Service frontend, registry,
+  Azure Maps and monitoring
+- Foundry account/projects, GPT-4o and GPT-4o-mini, storage and Key Vault
+- Chat history Cosmos DB and artifact storage unless `DEPLOY_CHAT_HISTORY=false`
+- GPU, premium chat models, Fabric, private catalog integration, CPU weather,
+  Web Search and private endpoints are opt-in
+- Dedicated ACR build pool defaults to zero; private builds need an explicitly
+  configured network-reachable build path
 
-## 📋 Prerequisites
+See the [complete create-or-reference matrix](../../documentation/deployment.md#resources-and-responsibilities).
+AI Search indexes, Fabric workspaces/lakehouses and private GeoCatalog data
+are not created by the root template. Existing endpoint references require
+separate permissions and data validation.
 
-1. **Azure CLI** - Install from https://aka.ms/installazurecliwindows
-2. **Azure Subscription** - With contributor/owner access
-3. **Login to Azure** - Run `az login`
+## Existing Resources
 
-## 🚀 Quick Start
+The resolver adopts exact API/Web App names and the API's Container Apps
+environment in `rg-<AZURE_ENV_NAME>`. It rejects ambiguous candidates and
+moving an existing Web App to a different plan. It does not import an
+arbitrary deployment wholesale.
 
-The deploy script defaults to **public stack, all opt-ins off, auto-picked region**.
-A fresh fork should need exactly one command:
+Other template modules are still reconciled by `azd provision`. Preserve the
+original environment name and region to retain stable names. For updates
+that must not reconcile infrastructure, deploy only selected applications
+and compare protected settings before and after.
 
-```powershell
-# From the repo root
-.\deploy-infrastructure.ps1
-```
+## Infrastructure-Only Script
 
-The script will:
-
-1. Verify you're signed in to Azure (`az login` if not).
-2. Run `planetary-explorer/scripts/select-region.ps1` to pick a region where
-   Azure OpenAI (`gpt-4o`), Container Apps, ACR, Key Vault, and any opt-in
-   services you enabled are all available.
-3. Run `az deployment sub validate` (catches region/SKU/quota errors before
-   any resource is created).
-4. Provision the stack into `rg-planetaryexplorer`.
-5. When GeoFM is enabled, build and publish both GeoFM images and verify the
-  MCP revision plus worker scale-to-zero configuration.
-
-### Override via environment variables (CI / one-click deploy friendly)
+[deploy-infrastructure.ps1](../../deploy-infrastructure.ps1) validates region
+and model availability and provisions infrastructure. A fresh API requires
+an explicit auth choice, for example from the repository root:
 
 ```powershell
-$env:MPC_PRO = 'true'      # surface MPC Pro toggle in the UI
-$env:PRIVATE = 'true'      # private endpoints + VNet
-$env:FABRIC  = 'true'      # provision Microsoft Fabric capacity
-$env:DEPLOY_GEOFM = 'true' # PlanAura control plane + serverless T4 worker
-$env:LOCATION = 'eastus2'  # pin a region; required services and quota are still validated
-.\deploy-infrastructure.ps1
+.\deploy-infrastructure.ps1 -EnvironmentName '<environment>' -Location '<approved-region>' -EnableAuthentication -MicrosoftEntraClientId '<client-id>' -MicrosoftEntraTenantId '<tenant-id>'
 ```
 
-### Override via flags
+Authenticate to the exact tenant/subscription first. This is not a substitute
+for building and publishing the API/frontend. A bootstrap image is only an
+initialization step. Use the root azd workflow for an integrated application
+deployment instead of combining unrelated scripts.
+
+The PowerShell switches/environment aliases differ from azd's uppercase
+bindings. In particular, `-EnableFabric` does not create populated tenant
+tables. Do not assume an option supported by one path is automatically an
+input to another path.
+
+## Validation
 
 ```powershell
-.\deploy-infrastructure.ps1 -EnableMpcPro -EnableFabric -EnablePrivateEndpoints
-.\deploy-infrastructure.ps1 -Location canadacentral
-.\deploy-infrastructure.ps1 -EnvironmentName planetaryexplorer-test
+python -m pytest scripts/tests -q
+az bicep build --file planetary-explorer/infra/main.bicep --stdout > $null
 ```
 
-### Feature flag defaults
+Run these from the repository root. Before provisioning, review ARM
+validation/what-if against the exact selected subscription, region and
+concrete parameters. Local compilation cannot reserve quota or approve
+policy exceptions. After publishing, check real revisions, non-placeholder
+images, port 8080, health probes, identity grants and workflow evidence.
 
-| Flag (switch / env)                        | Default | What it does |
-|--------------------------------------------|---------|--------------|
-| `-EnableMpcPro` / `MPC_PRO`                | off     | Surfaces the MPC Pro toggle in the UI. Requires `mpcProStacUrl` to point at your GeoCatalog. |
-| `-EnablePrivateEndpoints` / `PRIVATE`      | off     | VNet + private endpoints + private DNS zones. Public access disabled. |
-| `-EnableFabric` / `FABRIC`                 | off     | Provisions a Fabric F2 capacity (~$262/mo). When off, Fabric-backed UI is hidden and backend uses seed data. |
-| `-EnableWeatherModels` / `WEATHER_MODELS`  | off     | Deploys a CPU-only weather stub Container App (mocks Aurora + Earth-2 FCN) and wires the Forecast Agent to it. Avoids the `Standard_NC24ads_A100_v4` GPU quota requirement. Override with real Foundry endpoints via the `auroraEndpointUrl` / `earth2FcnEndpointUrl` / `maiWeatherEndpointUrl` Bicep params (MAI has no stub). The stub image must be built and pushed to ACR first (see [`planetary-explorer/weather-stub-server/`](../weather-stub-server/)). |
+The CPU weather service uses internal ingress and `/health`. API probes use
+`/api/health`; Web Search and GeoFM additionally use `/ready`. GPU worker
+minimum replicas must remain zero outside explicitly approved work.
 
-## 📁 File Structure
+## Security and Recovery
 
-```
-infra/
-├── main.bicep                 # Main orchestration template
-├── main.parameters.json       # Parameter template
-├── abbreviations.json         # Azure resource naming conventions
-├── shared/                    # Shared infrastructure modules
-│   ├── monitoring.bicep       # Log Analytics workspace
-│   ├── storage.bicep          # Storage Account
-│   ├── keyvault.bicep         # Key Vault
-│   ├── ai-foundry.bicep       # Azure OpenAI / AI Foundry
-│   ├── maps.bicep             # Azure Maps
-│   ├── ai-search.bicep        # Azure AI Search (optional)
-│   ├── registry.bicep         # Container Registry
-│   └── apps-env.bicep         # Container Apps Environment + VNet
-└── app/                       # Application modules
-    ├── web.bicep              # Backend Container App
-    └── frontend.bicep         # Frontend App Service
-```
+Use managed identity for Azure data access and registry pulls. Do not enable
+registry admin credentials or print keys to diagnose deployment. Do not dump
+all deployment outputs: the template currently includes a Maps key output.
 
-## ⚙️ Configuration
-
-### Parameters
-
-Edit `main.parameters.json` or pass as command-line arguments:
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `environmentName` | Name prefix for all resources | `planetaryexplorer` |
-| `location` | Azure region | `eastus` |
-| `deployAISearch` | Include Azure AI Search | `false` |
-| `deployGpt5` | Deploy the GPT-5 model | `false` |
-| `deployGpt56` | Deploy GPT-5.6 Sol, Terra, and Luna models | `false` |
-| `enableAuthentication` | Enable Entra ID auth | `false` |
-
-### Resource Naming
-
-Resources follow Azure naming conventions:
-- Resource Group: `rg-{environmentName}`
-- Storage: `st{uniqueString}`
-- Key Vault: `kv-{uniqueString}`
-- AI Foundry: `cog-foundry-{uniqueString}`
-- Container App: `ca-api-{uniqueString}`
-- Web App: `app-{uniqueString}`
-
-## 🔑 Post-Deployment Steps
-
-### 1. Get API Keys
-
-```powershell
-# Get AI Foundry key
-az cognitiveservices account keys list \
-  --name {AZURE_AI_FOUNDRY_NAME} \
-  --resource-group {AZURE_RESOURCE_GROUP}
-
-# Get Azure Maps key
-az maps account keys list \
-  --name {AZURE_MAPS_ACCOUNT_NAME} \
-  --resource-group {AZURE_RESOURCE_GROUP}
-```
-
-### 2. Store Secrets in Key Vault
-
-```powershell
-# Store AI Foundry key
-az keyvault secret set \
-  --vault-name {AZURE_KEY_VAULT_NAME} \
-  --name "azure-openai-api-key" \
-  --value "{YOUR_AI_FOUNDRY_KEY}"
-
-# Store Maps key
-az keyvault secret set \
-  --vault-name {AZURE_KEY_VAULT_NAME} \
-  --name "azure-maps-subscription-key" \
-  --value "{YOUR_MAPS_KEY}"
-```
-
-### 3. Deploy Applications
-
-```powershell
-# Deploy backend
-cd planetary-explorer/container-app
-.\deploy-backend.ps1 -ResourceGroup {AZURE_RESOURCE_GROUP}
-
-# Deploy frontend
-cd planetary-explorer/web-ui
-.\deploy-frontend.ps1
-```
-
-## 🔄 Updates and Redeployment
-
-The deployment is idempotent - running it again will update existing resources:
-
-```powershell
-# Update infrastructure (adds new resources, updates existing)
-.\deploy-infrastructure.ps1
-```
-
-## 🧹 Cleanup
-
-### Delete Test Environment
-
-```powershell
-az group delete --name rg-planetaryexplorer-test --yes --no-wait
-```
-
-### Delete Production Environment
-
-```powershell
-az group delete --name rg-planetaryexplorer --yes
-```
-
-## 📊 Monitoring
-
-View deployment outputs:
-
-```powershell
-az deployment sub show \
-  --name planetary-explorer-{timestamp} \
-  --query properties.outputs
-```
-
-## 🐛 Troubleshooting
-
-### Deployment Fails
-
-1. **Check quotas**: Ensure your subscription has quota for the resources
-2. **Check permissions**: Verify you have Contributor or Owner role
-3. **Check region**: Some resources may not be available in all regions
-4. **View detailed errors**: Add `--debug` flag to az deployment commands
-
-### Resource Already Exists
-
-If deploying to an existing resource group:
-- Resources with matching names will be updated
-- Use a different `environmentName` for a fresh deployment
-
-### Model Deployment Fails
-
-GPT-5 model may not be available in all regions. Try:
-- Use a different region with `location` parameter
-- Skip model deployment with `-SkipModels` and deploy manually later
-
-## 📚 Additional Resources
-
-- [Azure Bicep Documentation](https://learn.microsoft.com/azure/azure-resource-manager/bicep/)
-- [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/)
-- [Azure AI Foundry](https://learn.microsoft.com/azure/ai-services/)
-- [Azure Maps](https://learn.microsoft.com/azure/azure-maps/)
+Private endpoints require DNS, operator/build-agent connectivity, and runtime
+identity grants. Reprovisioning is not inherently non-disruptive; inspect the
+plan before changing network or authentication flags. Preserve prior image
+digests and frontend artifacts for rollback. Delete a resource group only
+after confirming ownership and explicit cleanup authorization.

@@ -7173,7 +7173,7 @@ async def unified_query_processor(request: Request):
                 # block (collection_name_mapper.find_collections) with a
                 # live inventory lookup, so lookalike tokens (e.g.
                 # ``sentinel-2`` when only ``sentinel-2-l2a`` exists in
-                # the catalog) cannot clobber a correct SK pick.
+                # the catalog) cannot clobber a correct collection choice.
                 _post_load_inspection = req_body.get("_v2_post_load_inspection")
                 try:
                     from collection_index import get_collection_index as _get_idx
@@ -7189,8 +7189,8 @@ async def unified_query_processor(request: Request):
                     # ---- Stage A: literal-id passthrough (always-on) ----
                     try:
                         _idx = await _get_idx()
-                        _sk_collections = list(stac_query.get("collections") or [])
-                        _sk_lower = {c.lower() for c in _sk_collections}
+                        _selected_collections = list(stac_query.get("collections") or [])
+                        _selected_collections_lower = {c.lower() for c in _selected_collections}
                         # Token-split on whitespace + common punctuation. We rely on
                         # ``lookup_exact`` to be authoritative — only tokens that ARE
                         # real ids in the live inventory will resolve.
@@ -7200,18 +7200,18 @@ async def unified_query_processor(request: Request):
                         _tokens = [t for t in _raw.split() if t and len(t) >= 3]
                         _literal_hit: Optional[str] = None
                         for _tok in _tokens:
-                            if _tok in _sk_lower:
+                            if _tok in _selected_collections_lower:
                                 continue
                             _hit = await _idx.lookup_exact(_tok, _v2_mode)
-                            if _hit and _hit.lower() not in _sk_lower:
+                            if _hit and _hit.lower() not in _selected_collections_lower:
                                 _literal_hit = _hit
                                 break
                         if _literal_hit:
                             logger.info(
                                 "[COLLECTION-PASSTHROUGH] Literal STAC id resolved via "
-                                "CollectionIndex (mode=%s); overriding SK collections=%s "
+                                "CollectionIndex (mode=%s); overriding selected collections=%s "
                                 "with [%s] (query=%r)",
-                                _v2_mode, _sk_collections, _literal_hit, natural_query,
+                                _v2_mode, _selected_collections, _literal_hit, natural_query,
                             )
                             stac_query["collections"] = [_literal_hit]
                             if isinstance(stac_params, dict):
@@ -8126,12 +8126,8 @@ async def unified_query_processor(request: Request):
 
         # ----------------------------------------------------------------
         # FINAL SAFETY NET: response_message must NEVER be empty / blank.
-        # The legacy SemanticTranslator + SK shim path silently returns ""
-        # in some failure modes (gpt-5 reasoning models exhausting their
-        # max_completion_tokens on hidden reasoning, SK credential errors,
-        # etc.) which propagates to the frontend as the user-visible
-        # "No response received" string. Synthesize a deterministic
-        # description of what was rendered so the chat is never blank.
+        # Synthesize a deterministic description of what was rendered so
+        # the frontend never displays "No response received".
         # ----------------------------------------------------------------
         if not response_message or not str(response_message).strip():
             _cols = stac_query.get("collections", []) if stac_query else []
@@ -9477,7 +9473,6 @@ async def geoint_vision_analysis(request: Request):
         import time
         agent_start = time.time()
         
-        # Get Vision Agent (SK Agent with memory and vision tools)
         from agents import get_vision_agent
         vision_agent = get_vision_agent()
         

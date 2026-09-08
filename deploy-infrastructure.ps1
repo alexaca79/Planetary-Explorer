@@ -315,8 +315,8 @@ Write-Host "Location       : $Location"        -ForegroundColor White
 Write-Host "Deployment Name: $deploymentName"  -ForegroundColor White
 Write-Host "Note: main.bicep is subscription-scoped and will create resource group 'rg-$EnvironmentName' automatically." -ForegroundColor Gray
 
-# Build inline parameter overrides. These take precedence over main.parameters.json
-# so the same parameters file can serve prod + dev + any future env.
+# Direct ARM uses concrete overrides and Bicep defaults; main.parameters.json
+# contains substitutions that only azd resolves.
 $inlineParams = @(
     "environmentName=$EnvironmentName",
     "location=$Location",
@@ -361,7 +361,6 @@ Write-Host "`nValidating template..." -ForegroundColor Cyan
 az deployment sub validate `
     --location $Location `
     --template-file "planetary-explorer/infra/main.bicep" `
-    --parameters "planetary-explorer/infra/main.parameters.json" `
     --parameters $inlineParams `
     --only-show-errors | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -377,9 +376,9 @@ Write-Host "This may take several minutes..." -ForegroundColor Yellow
 az deployment sub create `
     --location $Location `
     --template-file "planetary-explorer/infra/main.bicep" `
-    --parameters "planetary-explorer/infra/main.parameters.json" `
     --parameters $inlineParams `
-    --name $deploymentName
+    --name $deploymentName `
+    --output none
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Infrastructure deployment completed successfully!" -ForegroundColor Green
@@ -401,8 +400,12 @@ if ($LASTEXITCODE -eq 0) {
         $env:AZURE_CHAT_ARTIFACT_CONTAINER = $deploymentOutputs.AZURE_CHAT_ARTIFACT_CONTAINER.value
         $env:AZURE_WEB_SEARCH_MCP_URL = $deploymentOutputs.AZURE_WEB_SEARCH_MCP_URL.value
         $env:WEB_SEARCH_MCP_API_KEY = $WebSearchMcpApiKey
+        $env:DEPLOY_WEB_SEARCH_MCP = $deployWebSearchResolved.ToString().ToLower()
         $env:AZURE_WEATHER_STUB_URL = $deploymentOutputs.AZURE_WEATHER_STUB_URL.value
+        $env:DEPLOY_WEATHER_STUB = $weather.ToString().ToLower()
         $env:AZURE_GEOFM_MCP_URL = $deploymentOutputs.AZURE_GEOFM_MCP_URL.value
+        $env:DEPLOY_GEOFM = $deployGeoFmResolved.ToString().ToLower()
+        $env:DEPLOY_GEOFM_SERVICES = $deployGeoFmResolved.ToString().ToLower()
         $env:GEOFM_MCP_API_KEY = $GeoFmMcpApiKey
         $env:GEOFM_OWNER_SIGNING_KEY = $GeoFmOwnerSigningKey
         $env:PUBLIC_DEMO_MODE = $publicDemo.ToString().ToLower()

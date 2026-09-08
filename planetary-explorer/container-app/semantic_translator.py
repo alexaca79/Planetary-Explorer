@@ -7090,10 +7090,7 @@ boundary for cities and the full administrative boundary for regions or countrie
         except Exception as e:
             logger.error(f"Direct LLM call failed: {e}")
             # Last-resort: hand off to v2's ContextualAgent (managed-identity
-            # safe via pipeline._aoai). Avoids returning the user-visible
-            # "LLM call failed" sentinel when only the legacy SK path is
-            # broken (e.g. AOAI key not wired). This keeps the user reply
-            # coherent while we retire the legacy pipeline.
+            # safe via pipeline._aoai) if the primary contextual call fails.
             try:
                 from agents.contextual_agent import (
                     get_contextual_agent, ContextualInput,

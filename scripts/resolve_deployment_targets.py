@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from urllib.parse import urlsplit
 
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
@@ -46,6 +47,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plan-name", default="")
     parser.add_argument("--frontend-url", default="")
     parser.add_argument("--write-azd-env", action="store_true")
+    parser.add_argument("--validate-only", action="store_true")
     return parser
 
 
@@ -342,10 +344,98 @@ def validate_fresh_authentication(
         )
 
 
+def validate_feature_configuration(environment: dict[str, str]) -> None:
+    """Reject incomplete create-or-reference settings before Azure writes."""
+    boolean_settings = (
+        "DEPLOY_AI_FOUNDRY", "DEPLOY_GPT5", "DEPLOY_GPT56", "DEPLOY_EMBEDDING_MODEL",
+        "DEPLOY_CHAT_HISTORY", "ENABLE_FABRIC", "DEPLOY_FABRIC_CAPACITY",
+        "ENABLE_MPC_PRO", "ENABLE_PRIVATE_ENDPOINTS", "DEPLOY_WEATHER_STUB",
+        "FORECAST_AGENT_ENABLED", "DEPLOY_GEOFM", "DEPLOY_GEOFM_SERVICES",
+        "DEPLOY_WEB_SEARCH_MCP", "GEOFM_ENABLED", "WEB_SEARCH_ENABLED",
+        "ENABLE_AUTHENTICATION", "PUBLIC_DEMO_MODE",
+    )
+    for name in boolean_settings:
+        if name in environment and environment[name].strip().lower() not in {"true", "false"}:
+            raise ValueError(f"{name} must be true or false.")
+
+    def enabled(name: str, default: str = "false") -> bool:
+        return environment.get(name, default).strip().lower() == "true"
+
+    def require(name: str) -> str:
+        value = environment.get(name, "").strip()
+        if not value:
+            raise ValueError(f"{name} is required for the selected deployment option.")
+        return value
+
+    if not enabled("DEPLOY_AI_FOUNDRY", "true"):
+        require("AZURE_OPENAI_ENDPOINT")
+        require("EXISTING_AI_PROJECT_ENDPOINT")
+    if enabled("DEPLOY_FABRIC_CAPACITY") and not enabled("ENABLE_FABRIC"):
+        raise ValueError("DEPLOY_FABRIC_CAPACITY requires ENABLE_FABRIC=true.")
+    if enabled("ENABLE_FABRIC"):
+        require("FABRIC_WORKSPACE_ID")
+        require("FABRIC_LAKEHOUSE_ID")
+    if enabled("DEPLOY_FABRIC_CAPACITY"):
+        administrators = json.loads(require("FABRIC_ADMINISTRATORS"))
+        if not isinstance(administrators, list) or not administrators or not all(
+            isinstance(value, str) and value.strip() for value in administrators
+        ):
+            raise ValueError("FABRIC_ADMINISTRATORS must be a nonempty JSON array of identities.")
+    if enabled("ENABLE_MPC_PRO"):
+        require("MPC_PRO_STAC_URL")
+    if enabled("GEOFM_ENABLED") and not enabled("DEPLOY_GEOFM"):
+        require("GEOFM_MCP_URL")
+    if enabled("WEB_SEARCH_ENABLED") and not enabled("DEPLOY_WEB_SEARCH_MCP"):
+        require("WEB_SEARCH_MCP_URL")
+    if enabled("DEPLOY_GEOFM") or enabled("GEOFM_ENABLED"):
+        api_key = require("GEOFM_MCP_API_KEY")
+        owner_key = require("GEOFM_OWNER_SIGNING_KEY")
+        if len(api_key) < 32 or len(owner_key) < 32:
+            raise ValueError("GEOFM_MCP_API_KEY and GEOFM_OWNER_SIGNING_KEY require at least 32 characters.")
+        if api_key == owner_key:
+            raise ValueError("GeoFM API and owner-signing keys must be distinct.")
+    if enabled("DEPLOY_WEB_SEARCH_MCP") or enabled("WEB_SEARCH_ENABLED"):
+        if len(require("WEB_SEARCH_MCP_API_KEY")) < 32:
+            raise ValueError("WEB_SEARCH_MCP_API_KEY requires at least 32 characters.")
+        if enabled("DEPLOY_WEB_SEARCH_MCP") and not enabled("DEPLOY_AI_FOUNDRY", "true"):
+            require("WEB_SEARCH_FOUNDRY_ACCOUNT_NAME")
+            require("WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT")
+
+    for name in (
+        "AZURE_OPENAI_ENDPOINT", "EXISTING_AI_PROJECT_ENDPOINT", "MPC_PRO_STAC_URL",
+        "AURORA_ENDPOINT_URL", "EARTH2_FCN_ENDPOINT_URL", "MAI_WEATHER_ENDPOINT_URL",
+        "WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT", "FRONTEND_URL", "GEOFM_MCP_URL",
+        "WEB_SEARCH_MCP_URL",
+    ):
+        value = environment.get(name, "").strip()
+        if not value:
+            continue
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError(f"{name} must be an absolute HTTPS URL.")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError(f"{name} must not contain credentials, a query, or a fragment.")
+    try:
+        pool_count = int(environment.get("ACR_AGENT_POOL_COUNT", "0"))
+    except ValueError as error:
+        raise ValueError("ACR_AGENT_POOL_COUNT must be a nonnegative integer.") from error
+    if pool_count < 0:
+        raise ValueError("ACR_AGENT_POOL_COUNT must be a nonnegative integer.")
+
+
 def main(arguments: list[str] | None = None) -> int:
     """Resolve targets for a root script or azd preprovision hook."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parsed_arguments = create_parser().parse_args(arguments)
+    if parsed_arguments.write_azd_env or parsed_arguments.validate_only:
+        try:
+            validate_feature_configuration(dict(os.environ))
+        except ValueError as exc:
+            logger.error("Deployment configuration is incomplete: %s", exc)
+            return EXIT_FAILURE
+    if parsed_arguments.validate_only:
+        print(json.dumps({"configuration": "valid", "azure_resources_verified": False}))
+        return EXIT_SUCCESS
     environment_name = (
         parsed_arguments.environment_name or os.getenv("AZURE_ENV_NAME", "")
     ).strip()
@@ -356,6 +446,9 @@ def main(arguments: list[str] | None = None) -> int:
     ).strip()
     if not environment_name or not resource_group:
         logger.error("Environment name and resource group are required.")
+        return EXIT_FAILURE
+    if parsed_arguments.write_azd_env and resource_group != f"rg-{environment_name}":
+        logger.error("This azd template targets rg-<AZURE_ENV_NAME>; the supplied resource group differs.")
         return EXIT_FAILURE
 
     try:

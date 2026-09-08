@@ -18,7 +18,7 @@ Planetary Explorer, built on AI Foundry, demonstrates how organizations can use 
 
 Planetary Explorer turns natural-language questions into grounded geospatial answers. Its multi-agent system picks the right data, renders it on the map, and reasons over the result.
 
-It fuses mutliple surfaces behind one chat:
+It connects these surfaces when their prerequisites are configured:
 - **Microsoft Planetary Computer** — 130+ public STAC collections & MPC Pro / GeoCatalog in your tenant for private collections
 - **Microsoft Fabric Lakehouse** — delta tables and compute feed workflows
 - **Azure AI Search** — documentation for grounding responses
@@ -26,15 +26,26 @@ It fuses mutliple surfaces behind one chat:
 
 Meet users where they already work:
 - **React web app** — purpose-built map + chat experience
-- **Microsoft Teams** — chat with Planetary Explorer agents in any channel
-- **M365 Copilot** — declarative agent surfaces the same answers inside Word, Outlook, and Copilot Chat
-- **VS Code / Claude Desktop** — every agent exposed as MCP tools for developers
+- **Microsoft Teams / M365 Copilot**: optional tenant-specific manifests and connectors, not part of the baseline deployment
+- **MCP clients**: separate service-specific integrations; the general MCP server folder contains experimental mock tools
 
 Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
 
 **Watch Satya Nadella introduce NASA Earth Copilot, the inspiration behind Planetary Explorer, at Microsoft Ignite 2024**: [View Here](https://www.linkedin.com/posts/microsoft_msignite-activity-7265061510635241472-CAYx/?utm_source=share&utm_medium=member_desktop)
 
-**Auto-Deploy Ready:** This repository includes fully automated deployment via **Bicep** and **GitHub Actions**. Follow the [Quick Start Guide](QUICK_DEPLOY.md) to deploy the complete architecture: infrastructure, backend, and frontend within one hour. Its modular architecture is designed for extensibility.
+Start with the [deployment guide](documentation/deployment.md). It separates
+resource provisioning, application publishing, existing-service references,
+and live readiness checks. Deployment time depends on region, quota, identity
+propagation and builds.
+
+### Non-GPU Option
+
+The API and web UI run on CPU hosts. Public imagery, raster sampling, image,
+terrain, mobility and climate workflows use hosted model APIs and data
+services, not a local GPU. Forecast can use the optional CPU weather adapter
+or existing scoring endpoints. Keep `DEPLOY_GEOFM=false` and
+`GEOFM_ENABLED=false`; PlanAura Foundation Change is the separate GPU-only
+capability. Hosted model calls and other Azure resources still incur charges.
 
 > **Planetary Explorer is a reusable geospatial AI pattern that can be adapted across different use cases. It is not a supported Microsoft product.**
 
@@ -45,10 +56,10 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model 
 - **Multi-Agent Architecture** — Microsoft Agent Framework prompt agents and `WorkflowBuilder` graphs plus Azure AI Agent Service tool agents.
 - **Dual MPC Surface** — Chat over **MPC Public** *or* **MPC Pro / GeoCatalog** in your own tenant
 - **Pluggable Connection Surfaces** — Bring your own **Microsoft Fabric** Lakehouse, **Azure AI Search** indexes, and **Foundry geospatial + weather models**.
-- **MCP Server** — Expose every agent as Model Context Protocol tools for VS Code GitHub Copilot, Claude Desktop, and other MCP clients.
+- **MCP integrations**: protected Web Search, GeoFM and private catalog sidecars; check each service's readiness and authentication requirements.
 - **Multiple Client Surfaces** — One backend, your choice of UI: a purpose-built React web app, a **Microsoft Teams bot**, or an **M365 Copilot** declarative agent.
 - **Copilot Studio & ArcGIS** — Custom connectors for Copilot Studio, plus optional Esri ArcGIS integration for enterprise GIS workflows.
-- **Fully Private Deployment** — Optional VNet integration with private endpoints, private DNS zones, and Entra ID authentication for an enterprise-ready deployment out of the box.
+- **Private networking option**: VNet integration, private endpoints and DNS require policy review, reachable build agents, identity grants and live verification.
 
 ![Planetary Explorer Platform](documentation/images/platform.png)
 
@@ -73,17 +84,13 @@ selected location, pin, module, loaded collection, and conversation routing
 state before it runs the example. Place the example's new analysis pin only
 after its Setup response and map layer finish loading.
 
-The September 3, 2026 (UTC) reference release uses API revision
-`ca-earthcopilot-api--getstarted-hardened-0903-0316` and frontend bundle
-`index-jUC2ydNZ.js`. Its release-bound checks recorded 30 passed setups with
-2 MPC Pro capability blocks, 24 passed analyses with 8 prerequisite gates, and
-12 of 12 passed browser Image Analysis workflows. The Setup and browser
-matrices began from conflicting prior locations and stale pins, proving that
-every runnable example owns its requested location. Local release gates passed
-597 backend tests with one skip, 160 frontend tests, 49 Python verifier tests,
-8 browser-semantic tests, and 1 weather-adapter test. The unfiltered backend
-run also recorded 644 passes, 1 skip, and 6 known baseline mismatches in two
-excluded test files.
+The September 8, 2026 reference deployment used API commit `aaa0c53` and
+frontend commit `6056728`. Release-bound checks passed 30 available setups,
+24 enabled analyses, all 12 Image Analysis browser workflows, and desktop/
+mobile map interactions. Two setups and eight analyses remained blocked by
+MPC Pro, Fabric or sign-in prerequisites. GPU work was not submitted.
+These dated results do not certify later local changes or every Canadian
+point/date; rerun the playbook checks for each release.
 
 ### Query Examples
 
@@ -202,8 +209,7 @@ that each example replaces that state with its own location.
 
 ## 🏗️ Architecture
 
-Planetary Explorer uses Microsoft Agent Framework for orchestration. There is
-no Semantic Kernel runtime or dependency.
+Planetary Explorer uses Microsoft Agent Framework for orchestration.
 
 ```mermaid
 flowchart LR
@@ -320,19 +326,11 @@ You can deploy this application using **Agent mode in Visual Studio Code** or
 
 ## 🚀 Deployment
 
-Full, step-by-step deployment instructions cover GitHub Actions and local
-one-command deployment, what gets provisioned, opt-in flags (`-EnableMpcPro`,
-`-EnableFabric`, `-EnableWeatherModels`, `-EnablePrivateEndpoints`),
-multi-environment setup, and Copilot Studio, MCP, and ArcGIS integrations:
-
-[**QUICK_DEPLOY.md →**](QUICK_DEPLOY.md)
-
-```powershell
-# Quickest path: clone your fork and run the one-command local deploy
-git clone https://github.com/YOUR-USERNAME/Planetary-Explorer.git
-cd Planetary-Explorer
-.\deploy-infrastructure.ps1
-```
+Use [Quick Deploy](QUICK_DEPLOY.md) to choose local development, a new CPU
+environment, or an application-only update. The [resource matrix](documentation/deployment.md#resources-and-responsibilities)
+identifies which components are created, which can be adopted, and which need
+existing endpoints, permissions, indexes or data. Choose authentication and
+verify your fork, tenant, subscription and resource names before any writes.
 
 ## 📄 License
 

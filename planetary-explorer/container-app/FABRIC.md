@@ -1,83 +1,82 @@
-# Microsoft Fabric integration
+---
+title: Microsoft Fabric Integration
+description: Configure app-identity access to existing Fabric data and understand the current connector's limits.
+ms.date: 2026-09-08
+---
 
-The container app exposes a small set of `/api/fabric/*` endpoints that
-broker calls to Microsoft Fabric on behalf of the signed-in user (OAuth2
-On-Behalf-Of flow). RLS / OLS / workspace ACLs are enforced by Fabric — the
-backend never holds elevated privileges.
+## Scope and Authentication
 
-## Endpoints
+Fabric is optional and requires no local GPU. The root deployment can create
+a capacity, but does not create or populate workspaces, lakehouses, semantic
+models or all required tables. See the [deployment resource matrix](../../documentation/deployment.md#resources-and-responsibilities).
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET  | `/api/fabric/status` | Reports whether the env vars are wired up. |
-| GET  | `/api/fabric/workspaces` | Lists workspaces visible to the caller. |
-| GET  | `/api/fabric/workspaces/{ws}/lakehouses` | Lists lakehouses in a workspace. |
-| GET  | `/api/fabric/lakehouses/{ws}/{lh}/schema` | Returns the lakehouse table schema. |
-| POST | `/api/fabric/query` | Executes a read-only SQL statement against a Lakehouse SQL endpoint. |
-| POST | `/api/fabric/search_documents` | Semantic search across the customer's indexed document corpus. |
+[fabric_client.py](fabric_client.py) authenticates as the **backend service**.
+It uses an explicitly configured service principal when all its credentials
+are present; otherwise it uses `DefaultAzureCredential`, including managed
+identity in Azure and the developer identity locally. Its compatibility
+function `exchange_user_token` ignores the supplied user assertion.
 
-## Required environment variables
+Application sign-in is separate from Fabric authorization. Do not claim that
+this connector applies Fabric RLS/OLS as the signed-in user. Data visible to
+the backend identity can be shared among authenticated app users. Use this
+path only for appropriately authorized app-scoped reference data; per-user
+data isolation needs a separate reviewed implementation.
 
-Set these on your backend container app (and any other env
-where Fabric should be available):
+## Create or Reference the Data
 
-| Var | Required | Default | Purpose |
-|---|---|---|---|
-| `FABRIC_TENANT_ID`   | yes (or `AZURE_TENANT_ID`) | — | AAD tenant for OBO token exchange. |
-| `FABRIC_CLIENT_ID`   | yes | — | App registration client id. Needs delegated perms `Workspace.Read.All`, `Item.ReadWrite.All`, `Dataset.Read.All`. |
-| `FABRIC_CLIENT_SECRET` | yes | — | Client secret (rotate via Key Vault). |
-| `FABRIC_API_ENDPOINT` | no | `https://api.fabric.microsoft.com` | Override only for sovereign clouds. |
-| `FABRIC_PBI_API_ENDPOINT` | no | `https://api.powerbi.com` | Override only for sovereign clouds. |
-| `FABRIC_DOC_SEARCH_URL` | optional | — | Azure AI Search endpoint for `/api/fabric/search_documents`. |
-| `FABRIC_DOC_SEARCH_KEY` | optional | — | AI Search admin/query key. |
-| `FABRIC_DOC_SEARCH_INDEX` | optional | `planetary-explorer-docs` | Index name. |
+1. Select an existing Fabric capacity/trial and a workspace, or create them
+   through approved Fabric administration steps.
+2. Create a lakehouse, ingest the required authoritative data and verify its
+   table names/schemas. Bundled Canadian records are explicitly synthetic.
+3. Grant the API managed identity the minimum workspace/item/OneLake access
+   required by the selected APIs. Tenant policy may require enabling service
+   principal use. The root Bicep template does not grant this workspace access.
+4. Set `ENABLE_FABRIC=true`, `FABRIC_WORKSPACE_ID` and `FABRIC_LAKEHOUSE_ID`
+   in azd. Runtime names are `PE_FEATURE_FABRIC`,
+   `FABRIC_LAKEHOUSE_WORKSPACE_ID` and `FABRIC_LAKEHOUSE_ID`.
+5. Set `FABRIC_TENANT_ID` or `AZURE_TENANT_ID` on the backend and verify a
+   real read using that backend identity, not only an operator's browser.
 
-If `FABRIC_CLIENT_ID` / `FABRIC_CLIENT_SECRET` are unset, all endpoints
-return HTTP 503 with `"Fabric not configured"`. The UI surfaces this as a
-muted card prompting the admin to finish setup — the rest of Planetary Explorer
-keeps working.
+For new capacity provisioning, additionally set `DEPLOY_FABRIC_CAPACITY=true`
+and `FABRIC_ADMINISTRATORS` to a JSON array. Workspace assignment, item
+creation and data ingestion remain separate actions. An existing
+`FABRIC_CAPACITY_RESOURCE_ID` is an informational reference; it does not
+automatically associate a workspace with that capacity.
 
-## Auth model — OBO
+## Runtime Configuration
 
-1. User signs in through EasyAuth on the Container App. EasyAuth places the
-   user's AAD access token in the `X-MS-TOKEN-AAD-ACCESS-TOKEN` request
-   header.
-2. The backend reads that header and exchanges it (via
-   `urn:ietf:params:oauth:grant-type:jwt-bearer`) for a Fabric-scoped token
-   using `FABRIC_CLIENT_ID` + `FABRIC_CLIENT_SECRET`.
-3. The exchanged token (delegated, user-bound) is sent to the Fabric REST
-   API. All authorization is evaluated by Fabric against the user.
+| Setting | Purpose |
+| --- | --- |
+| `FABRIC_TENANT_ID` or `AZURE_TENANT_ID` | Tenant/configuration prerequisite |
+| `FABRIC_CLIENT_ID` and `FABRIC_CLIENT_SECRET` | Optional service-principal credentials; both required to select this path |
+| `FABRIC_API_ENDPOINT` | Defaults to `https://api.fabric.microsoft.com` |
+| `FABRIC_PBI_API_ENDPOINT` | Defaults to `https://api.powerbi.com` |
+| `FABRIC_DOC_SEARCH_URL` | Existing Azure AI Search endpoint for document lookup |
+| `FABRIC_DOC_SEARCH_INDEX` | Existing populated index, default `planetary-explorer-docs` |
+| `FABRIC_DOC_SEARCH_KEY` | Optional protected Search credential for this connector |
 
-The app registration must:
+Do not commit credentials or print them in diagnostics. Prefer managed
+identity. Sovereign endpoints and audiences require explicit validation;
+changing one URL alone does not make the full integration sovereign-ready.
 
-- Have the redirect URIs and EasyAuth configuration already used by the
-  container app (no extra change needed there).
-- Have **delegated** permissions on `Microsoft Fabric API` and `Power BI
-  Service`:
-  - `Workspace.Read.All`
-  - `Item.ReadWrite.All`
-  - `Dataset.Read.All`
-- Have admin consent granted by a tenant admin for those permissions.
+## API Surface and Limits
 
-## Local dev
+| Route | What It Establishes |
+| --- | --- |
+| `/api/fabric/status` | Configuration presence, not successful authorization or populated data |
+| `/api/fabric/workspaces` | Workspaces visible to the backend identity |
+| `/api/fabric/workspaces/{ws}/lakehouses` | Lakehouses visible to that identity |
+| `/api/fabric/lakehouses/{ws}/{lh}/schema` | Best-effort table enumeration |
+| `/api/fabric/query` | Experimental query bridge, not a validated Lakehouse T-SQL implementation |
+| `/api/fabric/search_documents` | Existing Search index lookup; no index provisioning or ingestion |
 
-Without secrets:
+The current `execute_sql` implementation sends the query to Power BI
+`executeQueries`, which expects DAX and a semantic-model ID. A lakehouse ID is
+not generally that ID, and arbitrary T-SQL is not supported by this route.
+Do not use it as proof of a working SQL analytics connection. Use a verified
+Fabric SQL/TDS or semantic-model integration for production query workloads.
 
-```bash
-uvicorn fastapi_app:app --reload
-curl http://localhost:8000/api/fabric/status
-# {"configured": false, "endpoint": "https://api.fabric.microsoft.com"}
-```
-
-With secrets set in `.env` and a signed-in user (the dev frontend should
-forward the EasyAuth token as `Authorization: Bearer <token>` or via the
-`X-MS-TOKEN-AAD-ACCESS-TOKEN` header), the `/api/fabric/workspaces` call
-should return the user's workspaces.
-
-## UI
-
-The Sidebar renders a `FabricConnect` card under the Planetary Computer
-search panel. The user selects a workspace + lakehouse; selection is
-persisted in `localStorage` under `fabric.selection` and broadcast via a
-`fabric:selection` custom event so other components (Chat, MapView) can
-react.
+The UI's stored workspace/lakehouse selection is a convenience, not an
+authorization boundary. Test positive and denied data access before exposing
+an integration to users. Disabled or unauthorized workflows must remain
+explicitly unavailable rather than silently passing against seed data.

@@ -43,6 +43,9 @@ param azureOpenAiApiKey string = ''
 @description('Azure OpenAI Endpoint')
 param azureOpenAiEndpoint string = ''
 
+@description('Existing Microsoft Foundry project endpoint when deployAIFoundry is false. Its permissions and model deployments must already be configured.')
+param existingAiProjectEndpoint string = ''
+
 @description('OpenAI API Key (fallback)')
 @secure()
 param openAiApiKey string = ''
@@ -160,7 +163,7 @@ param restoreSoftDeletedAccount bool = false
 param acrAgentPoolName string = 'buildpool'
 
 @description('Number of always-on ACR agent pool VMs. Set 0 to omit the optional pool.')
-param acrAgentPoolCount int = 1
+param acrAgentPoolCount int = 0
 
 // MCP Server (in-repo Planetary Explorer MCP server, exposes /api/query as MCP tools)
 @description('Deploy the in-repo Planetary Explorer MCP server alongside the API. One MCP container per environment, pointed at this environment\'s backend. Off by default — opt in for environments that need to be reachable from VS Code Copilot Agent / Claude Desktop / Cursor over MCP.')
@@ -720,7 +723,7 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     // Cloud environment
     cloudEnvironment: cloudEnvironment
     // AI Agent Service project endpoint
-    azureAiProjectEndpoint: deployAIFoundry ? (aiFoundry.?outputs.?agentProjectEndpoint ?? '') : ''
+    azureAiProjectEndpoint: deployAIFoundry ? (aiFoundry.?outputs.?agentProjectEndpoint ?? '') : existingAiProjectEndpoint
     // Teams Bot credentials
     microsoftBotAppId: microsoftBotAppId
     microsoftBotAppPassword: microsoftBotAppPassword
@@ -749,15 +752,15 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     fabricLakehouseId: fabricLakehouseId
     collectionSelectorMode: collectionSelectorMode
     collectionSelectorDisambiguate: collectionSelectorDisambiguate
-    // Forecast Agent wiring. URLs are pulled from Key Vault at container
-    // start via secretRef so rotating providers does not require redeploy.
+    // Explicit provider URLs are applied by the API postdeploy hook after
+    // the API identity and provider secrets exist.
     keyVaultName: deployAIFoundry ? (keyVault.?outputs.?name ?? '') : ''
     keyVaultUri: deployAIFoundry ? (keyVault.?outputs.?uri ?? '') : ''
     forecastAgentEnabled: forecastAgentEnabled
     weatherStubUrl: deployWeatherStub ? (weatherStub.?outputs.?uri ?? '') : ''
-    auroraEndpointUrlConfigured: !empty(auroraEndpointUrl)
-    earth2FcnEndpointUrlConfigured: !empty(earth2FcnEndpointUrl)
-    maiWeatherEndpointUrlConfigured: !empty(maiWeatherEndpointUrl)
+    auroraEndpointUrlConfigured: false
+    earth2FcnEndpointUrlConfigured: false
+    maiWeatherEndpointUrlConfigured: false
     maiWeatherScorePath: maiWeatherScorePath
   }
 }
@@ -902,12 +905,12 @@ output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl
 output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName
 // AI Foundry outputs
 output AZURE_AI_FOUNDRY_NAME string = aiFoundry.?outputs.?name ?? ''
-output AZURE_AI_FOUNDRY_ENDPOINT string = aiFoundry.?outputs.?endpoint ?? ''
+output AZURE_AI_FOUNDRY_ENDPOINT string = deployAIFoundry ? (aiFoundry.?outputs.?endpoint ?? '') : azureOpenAiEndpoint
 
 // AI Agent Service outputs
 output AZURE_AI_HUB_NAME string = aiFoundry.?outputs.?hubName ?? ''
 output AZURE_AI_PROJECT_NAME string = aiFoundry.?outputs.?projectName ?? ''
-output AZURE_AI_PROJECT_ENDPOINT string = aiFoundry.?outputs.?agentProjectEndpoint ?? ''
+output AZURE_AI_PROJECT_ENDPOINT string = deployAIFoundry ? (aiFoundry.?outputs.?agentProjectEndpoint ?? '') : existingAiProjectEndpoint
 
 // Azure Maps outputs
 output AZURE_MAPS_NAME string = maps.outputs.name

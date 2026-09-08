@@ -39,19 +39,28 @@
       "value": "${DEPLOY_FRONTEND=true}"
     },
     "deployAIFoundry": {
-      "value": true
+      "value": "${DEPLOY_AI_FOUNDRY=true}"
+    },
+    "azureOpenAiEndpoint": {
+      "value": "${AZURE_OPENAI_ENDPOINT=}"
+    },
+    "existingAiProjectEndpoint": {
+      "value": "${EXISTING_AI_PROJECT_ENDPOINT=}"
+    },
+    "deployChatHistory": {
+      "value": "${DEPLOY_CHAT_HISTORY=true}"
     },
     "agentProjectName": {
       "value": "${AGENT_PROJECT_NAME=planetary-explorer-agents}"
     },
     "deployGpt5": {
-      "value": false
+      "value": "${DEPLOY_GPT5=false}"
     },
     "deployGpt56": {
-      "value": false
+      "value": "${DEPLOY_GPT56=false}"
     },
     "deployEmbeddingModel": {
-      "value": true
+      "value": "${DEPLOY_EMBEDDING_MODEL=true}"
     },
     "deployGeoFm": {
       "value": "${DEPLOY_GEOFM=false}"
@@ -99,55 +108,58 @@
       "value": "buildpool"
     },
     "acrAgentPoolCount": {
-      "value": 1
+      "value": "${ACR_AGENT_POOL_COUNT=0}"
     },
     "enableFabric": {
-      "value": false
+      "value": "${ENABLE_FABRIC=false}"
     },
     "deployFabricCapacity": {
-      "value": false
+      "value": "${DEPLOY_FABRIC_CAPACITY=false}"
     },
     "fabricCapacityResourceId": {
-      "value": ""
+      "value": "${FABRIC_CAPACITY_RESOURCE_ID=}"
+    },
+    "fabricAdministrators": {
+      "value": "${FABRIC_ADMINISTRATORS=[]}"
     },
     "fabricWorkspaceId": {
-      "value": ""
+      "value": "${FABRIC_WORKSPACE_ID=}"
     },
     "fabricLakehouseId": {
-      "value": ""
+      "value": "${FABRIC_LAKEHOUSE_ID=}"
     },
     "enableMpcPro": {
-      "value": false
+      "value": "${ENABLE_MPC_PRO=false}"
     },
     "mpcProStacUrl": {
-      "value": ""
+      "value": "${MPC_PRO_STAC_URL=}"
     },
     "mpcProAssetHosts": {
-      "value": ""
+      "value": "${MPC_PRO_ASSET_HOSTS=}"
     },
     "enablePrivateEndpoints": {
-      "value": false
+      "value": "${ENABLE_PRIVATE_ENDPOINTS=false}"
     },
     "deployWeatherStub": {
-      "value": false
+      "value": "${DEPLOY_WEATHER_STUB=false}"
     },
     "weatherStubImageName": {
-      "value": "planetary-explorer-weather-stub:latest"
+      "value": "${WEATHER_STUB_IMAGE_NAME=mcr.microsoft.com/k8se/quickstart:latest}"
     },
     "auroraEndpointUrl": {
-      "value": ""
+      "value": "${AURORA_ENDPOINT_URL=}"
     },
     "earth2FcnEndpointUrl": {
-      "value": ""
+      "value": "${EARTH2_FCN_ENDPOINT_URL=}"
     },
     "maiWeatherEndpointUrl": {
-      "value": ""
+      "value": "${MAI_WEATHER_ENDPOINT_URL=}"
     },
     "maiWeatherScorePath": {
-      "value": "/mai-weather/score"
+      "value": "${MAI_WEATHER_SCORE_PATH=/mai-weather/score}"
     },
     "forecastAgentEnabled": {
-      "value": true
+      "value": "${FORECAST_AGENT_ENABLED=true}"
     }
   }
 }

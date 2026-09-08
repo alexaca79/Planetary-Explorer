@@ -404,11 +404,7 @@ Be specific and quantitative where possible."""
         screenshot_base64: Optional[str] = None,
         radius_km: float = 5.0
     ) -> Dict[str, Any]:
-        """
-        Process a user message and return agent response.
-        
-        Same interface as the previous SK-based agent for drop-in compatibility.
-        """
+        """Process a user message and return an agent response."""
         await self._ensure_initialized()
         
         # Get or create session (creates Agent Service thread)
