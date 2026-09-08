@@ -164,6 +164,9 @@ function releaseBindingSnapshot(release) {
   const snapshot = structuredClone(release);
   if (snapshot.verification) {
     delete snapshot.verification.verified_at;
+    if (['Running', 'ScaledToZero'].includes(snapshot.verification.weather_revision_running)) {
+      snapshot.verification.weather_revision_running = 'Active';
+    }
     if (Object.keys(snapshot.verification).length === 0) {
       delete snapshot.verification;
     }

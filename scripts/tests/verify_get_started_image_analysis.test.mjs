@@ -194,3 +194,22 @@ test('matches Building Damage requests only on the declared API origin', () => {
     false,
   );
 });
+
+test('accepts healthy weather scale-to-zero transitions without changing the release', () => {
+  const initial = {
+    weather_revision: 'weather--release-1',
+    weather_image_digest: 'sha256:weather',
+    verification: {
+      weather_revision_health: 'Healthy',
+      weather_revision_running: 'ScaledToZero',
+      weather_traffic_weight: 100,
+      geofm_worker_active_replicas: 0,
+    },
+  };
+  const current = structuredClone(initial);
+  current.verification.weather_revision_running = 'Running';
+
+  assert.doesNotThrow(() => assertReleaseUnchanged(initial, current));
+  assert.doesNotThrow(() => assertReleaseUnchanged(current, initial));
+  assert.equal(initial.verification.weather_revision_running, 'ScaledToZero');
+});

@@ -818,7 +818,6 @@ def _run_vision_raster(
     }
     if model:
         request_payload["model"] = model
-        request_payload["reasoning_effort"] = "low"
     status, payload, attempt_count = _post_json_with_retry(
         base_url,
         "/api/query",
@@ -1821,10 +1820,12 @@ def _verify_release_metadata(
 
 
 def _release_binding_snapshot(release: dict[str, Any]) -> dict[str, Any]:
-    """Return release evidence without the expected verification timestamp drift."""
+    """Compare immutable release evidence independently of valid weather autoscaling."""
     snapshot = dict(release)
     verification = dict(snapshot.get("verification") or {})
     verification.pop("verified_at", None)
+    if verification.get("weather_revision_running") in {"Running", "ScaledToZero"}:
+        verification["weather_revision_running"] = "Active"
     if verification:
         snapshot["verification"] = verification
     else:

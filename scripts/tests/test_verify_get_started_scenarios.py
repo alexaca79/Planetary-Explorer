@@ -284,6 +284,76 @@ def test_given_unmarked_429_when_classifying_then_retry_is_suppressed() -> None:
     )
 
 
+@pytest.mark.parametrize("model", ["gpt-4o", "gpt-5.6-terra"])
+def test_given_selected_model_when_verifying_raster_then_deployment_reasoning_default_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    scene = {
+        "id": "toronto-scene",
+        "collection": "sentinel-2-l2a",
+        "bbox": [-79.64, 43.58, -79.12, 43.86],
+        "properties": {"datetime": "2026-07-15T10:00:00Z"},
+    }
+    monkeypatch.setattr(
+        verifier, "_post_json",
+        lambda *_args: (200, {"data": {"stac_results": {"features": [scene]}}}),
+    )
+    captured = {}
+
+    def post_analysis(base_url, path, payload, **kwargs):
+        captured.update(payload)
+        return 200, {}, 1
+
+    monkeypatch.setattr(verifier, "_post_json_with_retry", post_analysis)
+    scenario = verifier.Scenario(
+        family="Vision - Optical Imagery",
+        location="Toronto",
+        setup_query="Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26",
+        raster_query="Sample the red and near-infrared reflectance at this pin.",
+    )
+
+    verifier._run_vision_raster(
+        scenario, base_url="https://api.example", index=1,
+        attempts=1, retry_delay_seconds=0, model=model,
+    )
+
+    assert captured["model"] == model
+    assert "reasoning_effort" not in captured
+
+
+@pytest.mark.parametrize(
+    ("initial_state", "current_state"),
+    [("ScaledToZero", "Running"), ("Running", "ScaledToZero")],
+)
+def test_given_healthy_weather_autoscaling_when_reverifying_then_release_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+    current_state: str,
+) -> None:
+    initial = {
+        "api_revision": "api--release-1",
+        "weather_revision": "weather--release-1",
+        "weather_image_digest": "sha256:weather",
+        "verification": {
+            "weather_revision_health": "Healthy",
+            "weather_revision_running": initial_state,
+            "weather_traffic_weight": 100,
+            "geofm_worker_active_replicas": 0,
+        },
+    }
+    current = {
+        **initial,
+        "verification": {**initial["verification"], "weather_revision_running": current_state},
+    }
+    monkeypatch.setattr(verifier, "_verify_release_metadata", lambda *_args: current)
+
+    result = verifier._reverify_release_metadata(SimpleNamespace(), "https://api.example", initial)
+
+    assert result["verification"]["weather_revision_running"] == current_state
+    assert initial["verification"]["weather_revision_running"] == initial_state
+
+
 def test_given_proven_pre_dispatch_429_when_classifying_then_retry_is_allowed() -> None:
     assert (
         verifier._is_transient_result(
