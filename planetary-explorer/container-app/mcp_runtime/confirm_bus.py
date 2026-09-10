@@ -27,8 +27,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from .trace_bus import emit as emit_trace
 
@@ -44,6 +47,47 @@ def _default_timeout() -> float:
 
 
 DEFAULT_CONFIRM_TIMEOUT_SECONDS = _default_timeout()
+
+
+@dataclass
+class _ConfirmationWaitTime:
+    completed_seconds: float = 0.0
+    active_waits: int = 0
+    started_at: float | None = None
+
+    def start(self) -> None:
+        if self.active_waits == 0:
+            self.started_at = time.monotonic()
+        self.active_waits += 1
+
+    def finish(self) -> None:
+        self.active_waits -= 1
+        if self.active_waits == 0 and self.started_at is not None:
+            self.completed_seconds += time.monotonic() - self.started_at
+            self.started_at = None
+
+    @property
+    def elapsed_seconds(self) -> float:
+        active_seconds = (
+            time.monotonic() - self.started_at if self.started_at is not None else 0.0
+        )
+        return self.completed_seconds + active_seconds
+
+
+_wait_time: ContextVar[_ConfirmationWaitTime | None] = ContextVar(
+    "confirmation_wait_time", default=None,
+)
+
+
+@contextmanager
+def track_confirmation_wait() -> Iterator[_ConfirmationWaitTime]:
+    """Measure approval waits in the current invocation and its child tasks."""
+    wait_time = _ConfirmationWaitTime()
+    token = _wait_time.set(wait_time)
+    try:
+        yield wait_time
+    finally:
+        _wait_time.reset(token)
 
 
 @dataclass
@@ -95,6 +139,9 @@ async def request_confirmation(
     )
 
     wait_timeout = timeout if timeout is not None else DEFAULT_CONFIRM_TIMEOUT_SECONDS
+    wait_time = _wait_time.get()
+    if wait_time is not None:
+        wait_time.start()
     try:
         await asyncio.wait_for(pending.event.wait(), timeout=wait_timeout)
     except asyncio.CancelledError:
@@ -121,6 +168,9 @@ async def request_confirmation(
             }
         )
         return False, "timeout"
+    finally:
+        if wait_time is not None:
+            wait_time.finish()
 
     async with _lock:
         _pending.pop(trace_id, None)

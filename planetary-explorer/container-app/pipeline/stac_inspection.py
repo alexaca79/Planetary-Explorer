@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import math
 import re
 from typing import Any
@@ -46,6 +47,49 @@ def apply_collection_inspection_overrides(
         latitude + latitude_offset,
     ]
     overridden["location_name"] = f"Pinned location ({latitude:.4f}, {longitude:.4f})"
+    return overridden
+
+
+def apply_pin_imagery_overrides(
+    *,
+    stac_params: dict[str, Any],
+    query: str,
+    pin: dict[str, Any] | None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Bind point imagery to its pin and an explicitly requested nearest epoch."""
+    from pipeline.action_router import is_pin_imagery_load, is_point_scoped_query
+    from tile_selector import TileSelector
+
+    collections = stac_params.get("collections") or []
+    if (
+        not isinstance(pin, dict)
+        or not collections
+        or not is_pin_imagery_load(query)
+        or not is_point_scoped_query(query)
+    ):
+        return dict(stac_params)
+    latitude = float(pin["lat"])
+    longitude = float(pin["lng"])
+    if not (math.isfinite(latitude) and math.isfinite(longitude)
+            and -90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("Pin coordinates must be finite WGS84 latitude and longitude.")
+    overridden = apply_collection_inspection_overrides(
+        stac_params=stac_params, collection_id=collections[0], pin=pin, radius_miles=1,
+    )
+    overridden["collections"] = list(collections)
+    nearest_date = TileSelector.nearest_requested_date(query)
+    if nearest_date is not None:
+        from agents.raster_sampling_agent.spectral_indices import normalize_temporal_window
+
+        window = normalize_temporal_window(nearest_date.isoformat(), today=today)
+        overridden["datetime"] = window.stac_datetime
+        overridden["limit"] = 200
+        if not re.search(r"\b(?:clouds?|cloudy|cloudless|clear)\b", query, re.IGNORECASE):
+            filters = dict(overridden.get("query") or {})
+            filters.pop("eo:cloud_cover", None)
+            filters.pop("cloud_cover", None)
+            overridden["query"] = filters
     return overridden
 
 

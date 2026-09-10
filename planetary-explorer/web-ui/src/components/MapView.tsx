@@ -844,8 +844,16 @@ const MapView: React.FC<MapViewProps> = ({
               // where a single date's imagery doesn't cover the entire region.
               // ========================================================================
               const mosaicTilejson = lastChatResponse.translation_metadata?.mosaic_tilejson;
+              const itemTileUrls = lastChatResponse.translation_metadata?.all_tile_urls;
+              const hasSingleItemTile = stacFeatures.length === 1
+                && Array.isArray(itemTileUrls)
+                && itemTileUrls.some((tile: any) => (
+                  tile.item_id === firstFeature.id
+                  && typeof tile.tilejson_url === 'string'
+                  && tile.tilejson_url.trim().length > 0
+                ));
               
-              if (mosaicTilejson && mosaicTilejson.tilejson_url) {
+              if (mosaicTilejson && mosaicTilejson.tilejson_url && !hasSingleItemTile) {
                 console.log('MapView: MOSAIC TILEJSON DETECTED - Using seamless composited tiles!');
                 console.log(`MapView: Mosaic search_id: ${mosaicTilejson.search_id}`);
                 console.log(`MapView: Mosaic collection: ${mosaicTilejson.collection}`);

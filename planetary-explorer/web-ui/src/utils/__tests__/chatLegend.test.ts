@@ -107,6 +107,50 @@ describe('chat legend derivation', () => {
     expect(legend?.title).toBe('HLS fire false colour');
   });
 
+  it.each([
+    { sceneCount: 1, assets: ['B12', 'B8A', 'B04'], title: 'Sentinel-2 fire false colour' },
+    { sceneCount: 2, assets: ['B12', 'B8A', 'B04'], title: 'Natural-colour imagery' },
+    { sceneCount: 1, assets: ['B12A', 'B8AX', 'B04X'], title: 'Natural-colour imagery' },
+    { sceneCount: 1, assets: ['B04', 'B8A', 'B12'], title: 'Natural-colour imagery' },
+  ])('matches the selected Sentinel-2 source: %j', ({ sceneCount, assets, title }) => {
+    const response = {
+      data: {
+        stac_results: {
+          features: Array.from({ length: sceneCount }, (_, index) => ({
+            id: `scene-${index}`, collection: 'sentinel-2-l2a',
+          })),
+        },
+      },
+      translation_metadata: {
+        all_tile_urls: [{
+          item_id: 'scene-0',
+          tilejson_url: `https://example.test/item?${assets.map(asset => `assets=${asset}`).join('&')}`,
+        }],
+        mosaic_tilejson: {
+          tilejson_url: 'https://example.test/mosaic?assets=B04&assets=B03&assets=B02',
+        },
+      },
+    };
+
+    const legend = deriveChatLegend(response);
+
+    expect(legend?.title).toBe(title);
+    if (title === 'Sentinel-2 fire false colour') {
+      expect(legend?.note).toContain('B12/B8A/B04');
+      expect(legend?.note).toContain('not official burn severity');
+      expect(legend?.note).not.toContain('percentile');
+    }
+  });
+
+  it('retains the Sentinel-2 fire legend from actual map context on a text follow-up', () => {
+    const legend = deriveChatLegend({ response: 'Comparison complete.' }, {
+      current_collection: 'sentinel-2-l2a',
+      imagery_url: 'https://example.test/item?assets=B12&assets=B8A&assets=B04',
+    });
+
+    expect(legend?.title).toBe('Sentinel-2 fire false colour');
+  });
+
   it('does not infer the fire profile from partial asset-name matches', () => {
     const legend = deriveChatLegend({
       data: {

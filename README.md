@@ -75,9 +75,10 @@ capability. Hosted model calls and other Azure resources still incur charges.
 
 ![GEOINT Modules](./documentation/images/get_started.png)
 
-Use the [Get Started playbook](documentation/get-started-playbook.md) for the
-tested Setup and Analyze sequence, one recommended example from each of the 11
-families, expected evidence, prerequisites, and interpretation limits.
+Use the [application usage guide](documentation/get-started-playbook.md) for
+controls, Canadian pins, Setup and Analyze workflows, CPU wildfire review,
+GeoFM approval and polling, Web Search with Code Interpreter, prerequisites
+and troubleshooting. It is the main reference for using the application.
 
 Each **Setup** action starts a fresh map context. It replaces any previously
 selected location, pin, module, loaded collection, and conversation routing
@@ -96,95 +97,21 @@ point/date; rerun the playbook checks for each release.
 
 <!-- markdownlint-disable MD013 MD033 MD060 -->
 
-<details>
-<summary><b>STAC Agent: chat-to-map (MPC Public + MPC Pro)</b></summary>
+Choose a worked workflow in the usage guide instead of copying a prompt without
+its required setup:
 
-| Query |
-|-------|
-| Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26 |
-| Show MODIS 10A1 daily snow cover at Quebec City, Canada, latitude 46.8139, longitude -71.2080, from 2025-02-01 to 2025-02-28 |
-| Show Sentinel-1 RTC radar imagery over the Red River, Manitoba from 2026-03-01 to 2026-05-31 |
+| Goal | Workflow |
+| --- | --- |
+| Load imagery at a dropped point | [Canadian pins and nearest dates](documentation/get-started-playbook.md#use-a-different-canadian-point) |
+| Read source pixels or describe the map | [Raster versus Image Analysis](documentation/get-started-playbook.md#use-the-common-map-workflow) |
+| Review wildfire change without GPU inference | [CPU burn-index comparison](documentation/get-started-playbook.md#review-a-burn-scar-with-cpu-tools) |
+| Run PlanAura on HLS imagery | [Foundation Change approval and results](documentation/get-started-playbook.md#run-foundation-change-with-geofm) |
+| Research official guidance and calculate sample quality | [Web Search and Code Interpreter](documentation/get-started-playbook.md#use-web-search-and-code-interpreter) |
+| Use terrain, mobility, climate, forecast or private-data modules | [Module examples and prerequisites](documentation/get-started-playbook.md#recommended-examples) |
 
-When MPC Pro is configured, use the **MPC Pro** toggle to route STAC queries to
-your authorized tenant collections. The control remains disabled when no
-private GeoCatalog is configured.
-
-</details>
-
-<details>
-<summary><b>Raster Sampling + Contextual Agent</b></summary>
-
-| Action | Query |
-|--------|-------|
-| Pin drop to chat | Sample the 2026 raster value at this Canadian location |
-| Chat | How do I interpret the colours in this 2026 collection? |
-| Chat | Explain each class in this Canadian land-cover raster and show its legend |
-
-</details>
-
-<details>
-<summary><b>GEOINT Modules: Vision, Terrain, Mobility, Comparison, Building Damage</b></summary>
-
-| Module | Query |
-|--------|-------|
-| **Vision** | Describe urban growth and vegetation patterns visible around Calgary in 2026. |
-| **Terrain** | For 2026, is this Metro Vancouver location suitable for a construction permit? Analyze slope, flood exposure, and flat areas. |
-| **Comparison** | Compare Alberta wildfire activity on 2026-08-24 and 2026-08-26 and explain the change over 48 hours. |
-| **Foundation Change** | Use PlanAura to compare HLS L30 on 2026-07-17 and 2026-08-18 at a pinned Regina location. |
-| **Foundation Change** | Load scene-stretched HLS S30 fire false colour, then analyze early-event change inside the official 2026 Thunder Bay 36 wildfire perimeter. |
-| **Mobility** | Assess this 2026 emergency-supply route for water crossings, wildfire exposure, steep slopes, and ground-vehicle feasibility. |
-| **Building Damage** | Using the 2026 before-and-after tenant imagery, assess potential building damage and distinguish destroyed, major-damage, and unaffected structures. |
-
-Follow the [screenshot-backed Foundation Change walkthrough](documentation/geofm-foundation-change.md)
-to verify PlanAura, set a Canadian HLS area, approve GPU work, and poll the
-durable result. The [Thunder Bay 36 wildfire case study](documentation/geofm-thunder-bay-fire.md)
-applies that workflow to an official Ontario fire perimeter.
-
-</details>
-
-<details>
-<summary><b>Extreme Weather Agent: NASA NEX-GDDP-CMIP6</b></summary>
-
-| Query |
-|-------|
-| What are the projected annual precipitation and peak daily rainfall values for Vancouver in 2026? |
-| Show monthly projected precipitation for Toronto in 2026 and identify the wettest month. |
-| What are the projected temperature and precipitation trends for Montreal during 2026 under SSP245 and SSP585? |
-
-</details>
-
-<details>
-<summary><b>Forecast Agent: configured AI weather providers</b></summary>
-
-| Query |
-|-------|
-| Give me a 120-hour (five-day) forecast over Lake Ontario using every available model and summarize ensemble spread. |
-| Forecast 2m temperature and 10m wind across southern Saskatchewan for the next 72 hours. |
-| Compare Aurora and Earth-2 FCN precipitation over Nova Scotia for the next 24 hours and explain model disagreement. |
-
-</details>
-
-<details>
-<summary><b>Site Intel Agent: Fabric + MPC siting workflow</b></summary>
-
-| Query |
-|-------|
-| For 2026, score our candidate data-centre sites near Calgary for power, water, competition, wildfire, flood, and heat exposure. |
-| Which 2026 candidate parcels near Montreal clear slope, flood, heat, and grid-proximity thresholds? |
-| Rank the top three 2026 sites near Edmonton with permitting precedent and grid proximity weighted highest. |
-
-</details>
-
-<details>
-<summary><b>Resilience Agent: continuous monitoring on Fabric + MPC</b></summary>
-
-| Query |
-|-------|
-| Over the next seven days, which Canadian facilities are most at risk and what is the supply-chain blast radius? |
-| If our Vancouver distribution centre goes offline for 48 hours in 2026, which downstream Canadian facilities are exposed? |
-| Show 2026 heat and wildfire risk for all Western Canada facilities this week, ranked by severity with a response playbook. |
-
-</details>
+Detailed evidence remains in the [Regina GeoFM walkthrough](documentation/geofm-foundation-change.md),
+[Thunder Bay 36 case study](documentation/geofm-thunder-bay-fire.md), and
+[September wildfire photos and results](documentation/wildfire-burn-scar-results.md).
 
 ### Examples
 

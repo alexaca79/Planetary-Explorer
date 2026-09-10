@@ -23,7 +23,12 @@ from typing import Any
 
 from .bootstrap import build_default_pipeline
 from .contracts import AnalysisRequest
-from .action_router import is_explicit_web_request
+from .action_router import (
+    is_explicit_web_request,
+    is_pin_imagery_load,
+    is_point_scoped_query,
+    resolve_pin_imagery_followup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +170,12 @@ def _extract_collection_meta(stac_items: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _build_request(body: dict[str, Any]) -> AnalysisRequest:
+    history = body.get("conversation_history") or body.get("messages") or []
+    if body.get("pin") and isinstance(history, list):
+        query = str(body.get("query") or body.get("question") or "")
+        resolved_query = resolve_pin_imagery_followup(query, history)
+        if resolved_query != query:
+            body = {**body, "query": resolved_query}
     pin = body.get("pin") or {}
     pin_tuple = None
     if isinstance(pin, dict) and pin.get("lat") is not None and pin.get("lng") is not None:
@@ -186,7 +197,12 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
     if not pins_list and pin_tuple:
         pins_list = [pin_tuple]
 
-    bbox = body.get("bbox") or body.get("map_bounds")
+    point_scoped = (
+        pin_tuple is not None
+        and not body.get("geoint_module")
+        and is_point_scoped_query(str(body.get("query") or body.get("question") or ""))
+    )
+    bbox = body.get("bbox") or (None if point_scoped else body.get("map_bounds"))
     bbox_tuple = None
     if isinstance(bbox, dict):
         try:
@@ -470,6 +486,14 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
             "(overrode clarifier route %r)",
             clarifier_route,
         )
+    elif request.pin and is_pin_imagery_load(request.question):
+        decision = ActionDecision(
+            action="LOAD",
+            use_current_location=True,
+            stac_query=request.question,
+            reasoning="explicit_pin_imagery_load",
+            confidence=1.0,
+        )
     elif clarifier_route in _route_to_action:
         decision = ActionDecision(
             action=_route_to_action[clarifier_route],  # type: ignore[arg-type]
@@ -505,6 +529,8 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
         getattr(specialist, "id", specialist.__class__.__name__),
     )
     result = await specialist.run(decision, request, body)
+    if decision.reasoning == "explicit_pin_imagery_load":
+        result["resolved_query"] = request.question
     if inspection_collection and result.get("action") == "LOAD":
         result["post_load_inspection"] = {
             "collection_id": inspection_collection,

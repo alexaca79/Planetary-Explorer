@@ -1,7 +1,7 @@
 ---
 title: Deployment and Existing Resource Guide
 description: Deploy a non-GPU Planetary Explorer environment or explicitly connect existing services, with readiness checks and optional integrations.
-ms.date: 2026-09-08
+ms.date: 2026-09-10
 ---
 
 ## Choose a Deployment Path
@@ -56,6 +56,7 @@ endpoint can use GPU infrastructure owned elsewhere.
 | Chat history | Cosmos DB, database/container and artifact storage when `DEPLOY_CHAT_HISTORY=true` | Requires authenticated users and data-plane roles; set false when not needed |
 | CPU weather adapter | Off by default | `DEPLOY_WEATHER_STUB=true` publishes the real CPU image; otherwise supply provider URLs |
 | Web Search MCP | Off by default | Publish explicitly or connect an existing protected MCP endpoint; test actual grounding |
+| Code Interpreter | Off by default | Set `CODE_INTERPRETER_ENABLED=true` on a compatible API build; uses the existing provider's managed sandbox, with additional charges |
 | Fabric | Off by default | Existing populated workspace/lakehouse and backend identity grants required; capacity creation alone does not create data |
 | Private GeoCatalog | Not created | Supply an authorized MPC Pro STAC endpoint and exact asset hosts |
 | AI Search | Not created by the root template | Create or reference a service, populated indexes, and runtime identity permissions separately |
@@ -303,10 +304,24 @@ versus adapter provenance in the returned dossier.
   `WEB_SEARCH_FOUNDRY_ACCOUNT_NAME` and `WEB_SEARCH_FOUNDRY_PROJECT_ENDPOINT`.
   To connect without deploying, use `WEB_SEARCH_ENABLED=true` and
   `WEB_SEARCH_MCP_URL` with the matching key. [Web Search](../planetary-explorer/web-search-mcp/README.md)
+- Code Interpreter: publish a compatible API build, then set
+  `CODE_INTERPRETER_ENABLED=true` on the API Container App. This is a runtime
+  setting, not a Vite variable or an instruction to run Python on the API host.
+  The existing Agent Service and Responses paths register a managed sandbox
+  only when enabled. Verify the chosen model supports it and inspect actual
+  `structured.code_interpreter` execution logs. Provider sandbox charges apply
+  in addition to tokens. The reference workflow uses text/JSON, not an implemented
+  upload/download UI. Set the flag false and restart the API to disable it;
+  verify the setting after future provisioning. See the
+  [two-tool usage example](get-started-playbook.md#use-web-search-and-code-interpreter).
 - Existing GeoFM: `DEPLOY_GEOFM=false`, `GEOFM_ENABLED=true`,
   `GEOFM_MCP_URL`, and distinct matching `GEOFM_MCP_API_KEY` and
   `GEOFM_OWNER_SIGNING_KEY`. This avoids provisioning another GPU worker,
   but approved analysis still executes GPU work at the existing service.
+  Private Blob artifacts require an authorized network path in addition to
+  their short-lived download authorization. A valid link does not override
+  storage firewall rules. In the September 9 test, external downloads returned
+  403 while in-network artifact hashes and the in-app polygon were verified.
   [GeoFM operator guide](../planetary-explorer/geofm-sidecar/README.md)
 - Search, Resilience and Site Intel: point their documented runtime settings
   at populated services and verify identity access. A feature flag, capacity

@@ -10,6 +10,76 @@ from pipeline.dispatch import (
 from pipeline.layer1_agents import _has_model_backed_geofm_evidence
 
 
+@pytest.mark.parametrize(
+    "latitude,longitude",
+    [
+        (49.5508, -122.9015),
+        (49.432296, -122.482823),
+        (51.0447, -114.0719),
+        (50.4452, -104.6189),
+        (49.8951, -97.1384),
+        (50.2680, -89.8572),
+        (46.8139, -71.2080),
+        (45.9636, -66.6431),
+        (44.6488, -63.5752),
+        (46.2382, -63.1311),
+        (47.5615, -52.7126),
+        (60.7212, -135.0568),
+        (62.4540, -114.3718),
+        (82.5018, -62.3481),
+    ],
+)
+def test_given_canadian_pin_and_viewport_when_request_is_point_scoped_then_bbox_is_not_viewport(
+    latitude: float, longitude: float
+) -> None:
+    # Arrange
+    body = {
+        "query": "At the pinned location, compare NBR for June 1 and August 28, 2026.",
+        "pin": {"lat": latitude, "lng": longitude},
+        "map_bounds": {
+            "west": longitude - 2,
+            "south": latitude - 0.5,
+            "east": longitude + 2,
+            "north": latitude + 0.5,
+        },
+    }
+
+    # Act
+    request = _build_request(body)
+
+    # Assert
+    assert request.pin == (latitude, longitude)
+    assert request.bbox is None
+
+
+@pytest.mark.parametrize(
+    "query,explicit_bbox",
+    [
+        ("Compare NBR over the entire visible map around this pin.", None),
+        ("Compare NBR within a 5 km radius around the pin.", None),
+        ("At the pinned location, compare NBR.", [-122.6, 49.3, -122.4, 49.5]),
+    ],
+)
+def test_given_explicit_area_when_pin_is_present_then_area_is_preserved(
+    query: str, explicit_bbox: list[float] | None
+) -> None:
+    # Arrange
+    bbox = [-122.6, 49.3, -122.4, 49.5]
+    body = {
+        "query": query,
+        "pin": {"lat": 49.432296, "lng": -122.482823},
+        "map_bounds": bbox,
+    }
+    if explicit_bbox:
+        body["bbox"] = explicit_bbox
+
+    # Act
+    request = _build_request(body)
+
+    # Assert
+    assert request.bbox == tuple(bbox)
+
+
 def test_given_frontend_map_bounds_when_building_request_then_bbox_is_normalized() -> None:
     # Act
     request = _build_request(

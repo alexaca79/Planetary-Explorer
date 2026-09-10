@@ -3,6 +3,63 @@
 from tile_selector import TileSelector
 
 
+def test_given_overlapping_point_scenes_when_loading_imagery_then_selects_one_covering_scene() -> None:
+    # Arrange
+    polygon = [[-90.0, 50.1], [-89.7, 50.1], [-89.7, 50.4], [-90.0, 50.4], [-90.0, 50.1]]
+    clearer = _hls_feature("clearer", cloud_cover=20, polygon=polygon)
+    cloudier = _hls_feature("cloudier", cloud_cover=80, polygon=polygon)
+
+    # Act
+    selected = TileSelector.select_best_tiles(
+        [cloudier, clearer],
+        query_bbox=[-89.9, 50.2, -89.8, 50.3],
+        collections=["hls2-s30"],
+        query="Show fire false-colour imagery at this point on 2026-07-04.",
+    )
+
+    # Assert
+    assert [feature["id"] for feature in selected] == ["clearer"]
+
+
+def test_given_nearest_date_request_when_selecting_then_target_distance_beats_recency() -> None:
+    # Arrange
+    polygon = [[-90.0, 50.1], [-89.7, 50.1], [-89.7, 50.4], [-90.0, 50.4], [-90.0, 50.1]]
+    closest = _hls_feature("closest", cloud_cover=90, polygon=polygon)
+    closest["properties"]["datetime"] = "2026-08-27T17:09:44Z"
+    newest = _hls_feature("newest", cloud_cover=0, polygon=polygon)
+    newest["properties"]["datetime"] = "2026-09-07T17:09:44Z"
+
+    # Act
+    selected = TileSelector.select_best_tiles(
+        [newest, closest],
+        query_bbox=[-89.9, 50.2, -89.8, 50.3],
+        collections=["hls2-s30"],
+        query="Show imagery at the pin on 2026-08-28. Use the nearest available date.",
+    )
+
+    # Assert
+    assert [feature["id"] for feature in selected] == ["closest"]
+
+
+def test_given_only_noncovering_scenes_when_selecting_point_then_returns_no_point_imagery() -> None:
+    # Arrange
+    adjacent = _hls_feature(
+        "adjacent", cloud_cover=0,
+        polygon=[[-90.2, 49.5], [-90.0, 49.5], [-90.0, 50.5], [-90.2, 50.5], [-90.2, 49.5]],
+    )
+
+    # Act
+    selected = TileSelector.select_best_tiles(
+        [adjacent],
+        query_bbox=[-89.9, 50.2, -89.8, 50.3],
+        collections=["hls2-s30"],
+        query="Show imagery at this point.",
+    )
+
+    # Assert
+    assert selected == []
+
+
 def _hls_feature(
     item_id: str,
     *,

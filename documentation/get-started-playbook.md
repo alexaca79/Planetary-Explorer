@@ -1,7 +1,7 @@
 ---
-title: Use Planetary Explorer with the Get Started playbook
-description: Run tested Canadian map, raster, terrain, mobility, climate, forecast, site, resilience, and building-damage workflows
-ms.date: 2026-09-07
+title: Planetary Explorer application usage guide
+description: Use map and chat controls, Canadian pins, imagery and analysis workflows, with prerequisites, worked examples and verification limits
+ms.date: 2026-09-10
 ms.topic: how-to
 keywords:
   - Planetary Explorer
@@ -9,10 +9,24 @@ keywords:
   - Planetary Computer
   - geospatial analysis
   - Canada
-estimated_reading_time: 16
+estimated_reading_time: 22
 ---
-
 ## What this playbook covers
+
+Start with a gallery example or your own Canadian pin, then choose a workflow
+below. Detailed case studies retain their original measurements and screenshots;
+they are evidence, not current values for every location.
+
+| Task | Start here |
+| --- | --- |
+| Learn the interface and run a first example | [Controls](#know-the-controls) and [common map workflow](#use-the-common-map-workflow) |
+| Work at your own location | [Canadian points](#use-a-different-canadian-point) |
+| Choose an analysis | [Recommended examples](#recommended-examples) |
+| Review a wildfire image or NBR comparison | [CPU burn-index comparison](#review-a-burn-scar-with-cpu-tools) |
+| Run an approval-gated foundation model | [Foundation Change](#run-foundation-change-with-geofm) |
+| Combine public research and Python calculations | [Web Search and Code Interpreter](#use-web-search-and-code-interpreter) |
+| Diagnose a missing layer or blocked action | [Troubleshooting](#troubleshoot-a-workflow) |
+| Check an answer before using it | [Result checks](#verify-a-result-before-using-it) and [operational safety](#apply-operational-safety-rules) |
 
 For a new environment or existing-resource connection, complete the
 [deployment/resource guide](deployment.md) first. The normal web/API,
@@ -20,10 +34,67 @@ imagery, raster, terrain, mobility and climate paths do not require a local
 GPU. Forecast can use the CPU adapter; PlanAura is a separate GPU opt-in.
 An enabled gallery control is not proof of authorized data or model access.
 
-This playbook turns the **Get Started** gallery into repeatable workflows. It
-uses one recommended example from each of the 11 scenario families and records
-what a successful result looked like in the deployed application on September
-3, 2026 (UTC).
+The examples turn the **Get Started** gallery into repeatable workflows. Their
+recorded numeric values come from dated test runs, not a promise that a later
+run will select the same scene or return the same value.
+
+### Before your first session
+
+Open the application URL supplied by your operator. Sign in when using private
+or facility data. The public catalog can be available without sign-in, depending
+on the deployment's access policy.
+
+1. Open **Get Started** and choose a workflow family.
+2. Run its Setup card. Setup replaces old location, pin and analysis context;
+  it does not enable missing services or grant access.
+3. Wait for the map and reply. Confirm the place, collection, actual acquisition
+  date and visible layer before placing a pin.
+4. Follow the chosen workflow's pin or module instructions, then run Analyze.
+5. Check source and tool evidence, not only the answer's prose.
+
+| Capability | Required before use |
+| --- | --- |
+| Public imagery and raster samples | Public catalog access, usable source assets and configured model services |
+| Image Analysis | A visible rendered layer and supported screenshot capture; the no-key fallback map does not provide Azure-canvas Image Analysis |
+| Terrain, mobility and climate | Appropriate source coverage and configured analysis services |
+| Forecast | At least one ready provider endpoint; a CPU NWP adapter is not native Aurora or Earth-2 inference |
+| Web Search | Enabled, authenticated Web Search MCP service connected to Foundry |
+| Code Interpreter | Operator-enabled managed sandbox and a supported model; additional service charges apply |
+| Foundation Change | Connected GeoFM service, compatible HLS pair, quality preflight and explicit approval for billed GPU work |
+| Building Damage | Authorized before-and-after private imagery in MPC Pro |
+| Site Intel and Resilience | Populated, authorized operational data and required sign-in/integration settings |
+| Saved chat history | Operator-enabled archive and sign-in; do not assume a browser refresh preserves a conversation |
+
+Disabled controls indicate a missing prerequisite. Ask the operator to configure
+it using the [deployment guide](deployment.md); do not switch to another catalog
+and present its output as private tenant data.
+
+### September 9 workflow checks
+
+The current guide was checked against the deployed application on September 9,
+2026. The Web Search/Code Interpreter case returned cited research and verified
+Python calculations. The Regina GeoFM comparison completed one approved GPU
+attempt, displayed its polygon and produced four checksum-verified artifacts.
+Details and screenshots are in the two workflows below.
+
+The final API source passed 1,434 backend tests with one existing skip; the
+frontend passed 212 tests. The API revision is `guide-approval-0909-233458` and
+the frontend bundle is `index-Bg17pjMx.js`. The final release check at 00:04 UTC
+on September 10 confirmed API health, the live bundle hash and zero active
+GeoFM worker replicas after the completed comparison. These focused checks do not rerun
+the entire historical gallery matrix or establish clear imagery at every point.
+Private-data prerequisites, model rate limits and private artifact access still
+apply. No deployment is a guarantee of scientific interpretation or availability.
+
+<details>
+<summary>Historical gallery validation and release identifiers</summary>
+
+### Historical gallery validation
+
+The following matrix describes the September 3, 2026 (UTC) reference release.
+It is not the current deployment identity or a fresh test of all features.
+The [September 9 Canadian-pin results](wildfire-burn-scar-results.md#canadian-pin-follow-up)
+record subsequent imagery routing, nearest-date and point-extent corrections.
 
 The full validation covered 32 scenarios at two or three Canadian locations
 per family. The API matrix passed 30 setup queries and blocked the two Building
@@ -59,34 +130,39 @@ view at zoom level 4.
 
 ### Validated release
 
-The evidence below is bound to one production release. The verifier checked
+This historical evidence is bound to the September 3 production release. The verifier checked
 the live Azure control plane, active App Service deployment, downloaded bundle
 hash, API health, traffic weight, and GeoFM worker replicas before each matrix.
 
-| Component | Release evidence |
-|-----------|------------------|
-| API | Revision `ca-earthcopilot-api--getstarted-hardened-0903-0316`, image `sha256:4b5288048cd6ab9033284e49cea6ad85129fb30925c82f0fde88dc6ba04dd73e`, healthy and serving 100% traffic |
-| Forecast adapter | Revision `ca-weather-44gnuvaloryac--getstarted-0902-1700`, image `sha256:4f928d2b54e2fb0712703eba111395c9a62e2b0d6901d908fa4ac8a5cff2660b` |
-| Frontend | OneDeploy `72b1ce87-7b21-4793-990b-c9e557fe7d10`, bundle `index-jUC2ydNZ.js`, SHA-256 `6e446d885a45f14e593ea0f88f5edfb30c682eb5e90e9a320584d4106e02d05a` |
-| Local release tests | 597 backend passed with 1 skip; 160 frontend, 49 Python verifier, 8 browser-semantic, and 1 weather-adapter test passed |
-| Unfiltered backend | 644 passed, 1 skipped, and 6 known baseline mismatches remained in two excluded test files |
-| Setup evidence | 32-row release matrix: 30 passed, 2 capability-blocked, 0 failed |
-| Analysis evidence | 32-row release matrix: 24 passed, 8 prerequisite-gated, 0 failed |
-| Browser evidence | 12-row release matrix: 12 passed, 0 failed |
-| GPU posture | GeoFM worker minimum replicas `0`, active replicas `0`; these scenario matrices do not invoke approval-gated GeoFM tools |
+| Component           | Release evidence                                                                                                                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API                 | Revision`ca-earthcopilot-api--getstarted-hardened-0903-0316`, image `sha256:4b5288048cd6ab9033284e49cea6ad85129fb30925c82f0fde88dc6ba04dd73e`, healthy and serving 100% traffic |
+| Forecast adapter    | Revision`ca-weather-44gnuvaloryac--getstarted-0902-1700`, image `sha256:4f928d2b54e2fb0712703eba111395c9a62e2b0d6901d908fa4ac8a5cff2660b`                                       |
+| Frontend            | OneDeploy`72b1ce87-7b21-4793-990b-c9e557fe7d10`, bundle `index-jUC2ydNZ.js`, SHA-256 `6e446d885a45f14e593ea0f88f5edfb30c682eb5e90e9a320584d4106e02d05a`                       |
+| Local release tests | 597 backend passed with 1 skip; 160 frontend, 49 Python verifier, 8 browser-semantic, and 1 weather-adapter test passed                                                             |
+| Unfiltered backend  | 644 passed, 1 skipped, and 6 known baseline mismatches remained in two excluded test files                                                                                          |
+| Setup evidence      | 32-row release matrix: 30 passed, 2 capability-blocked, 0 failed                                                                                                                    |
+| Analysis evidence   | 32-row release matrix: 24 passed, 8 prerequisite-gated, 0 failed                                                                                                                    |
+| Browser evidence    | 12-row release matrix: 12 passed, 0 failed                                                                                                                                          |
+| GPU posture         | GeoFM worker minimum replicas`0`, active replicas `0`; these scenario matrices do not invoke approval-gated GeoFM tools                                                         |
+
+</details>
 
 ## Know the controls
 
-| Control | Use |
-|---------|-----|
-| **Get Started** | Open the tested query gallery and choose a module family |
-| **Go** | Run the exact Setup or Analyze prompt on a gallery card |
-| Four-square map control | Select a geointelligence module before placing its pin or pins |
-| Plus-pin map control | Place a general-purpose pin without selecting a module |
-| **Map layers** | Show or hide available imagery and model overlays and change opacity |
-| **MPC Pro** | Route STAC searches to a configured private GeoCatalog; disabled when unavailable |
-| Source and tool chips | Confirm the catalog and analysis tool used for an answer |
-| **Restart** | Clear the whole conversation when you no longer need its messages; Setup already replaces stale map and analysis state |
+| Control                 | Use                                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Get Started**   | Open the tested query gallery and choose a module family                                                               |
+| **Go**            | Run the exact Setup or Analyze prompt on a gallery card                                                                |
+| Four-square map control | Select a geointelligence module before placing its pin or pins                                                         |
+| Plus-pin map control    | Place a general-purpose pin without selecting a module                                                                 |
+| **Map layers**    | Show or hide available imagery and model overlays and change opacity                                                   |
+| **Foundation Models** | Inspect the GeoFM connection, model revision, supported collections and capabilities |
+| **MPC Pro**       | Route STAC searches to a configured private GeoCatalog; disabled when unavailable                                      |
+| Source and tool chips   | Confirm the catalog and analysis tool used for an answer                                                               |
+| **Stop** | Stop the current chat turn; a previously approved durable GPU job can continue |
+| **Approve** / **Deny** | Resolve the displayed write request after checking its exact arguments; approval can incur cost |
+| **Restart**       | Clear the whole conversation when you no longer need its messages; Setup already replaces stale map and analysis state |
 
 > [!IMPORTANT]
 > You can start a Get Started example from any selected map location. Its
@@ -103,6 +179,32 @@ layer to draw, and place a new pin. Use a neutral analysis question such as
 "Sample the red and near-infrared reflectance at this pin" instead of retaining
 an unrelated city name from an example.
 
+If you already dropped a pin, request imagery without copying another place's
+coordinates:
+
+```text
+Show collection sentinel-2-l2a fire false-colour imagery at point closest to 2026-08-28.
+```
+
+The nearest-date search uses a 14-day window on either side, capped at the
+current date. It reports the actual selected acquisition, which can differ
+from the requested day. `On 2026-08-28` is an exact-day request. If it returns
+no scene, follow that imagery request with:
+
+```text
+Find the date that has it please closest to that date.
+```
+
+The follow-up retains the previous user imagery request but uses the current
+pin, including after moving it. Point imagery uses a one-mile-radius extent
+independent of the viewport. Known off-pin scene footprints are rejected;
+one covering scene is selected for a point display. Nearest does not mean
+cloud-free, and whole-scene cloud percentage does not describe every local pixel.
+
+Ordinary NBR requests at the pin use a 60 m window. Explicit analysis bboxes,
+area requests and specialist modules retain their own extent. Confirm that
+extent in every result; zooming the map is not a request to enlarge a point sample.
+
 For a remote site, use explicit coordinates rather than a nearby town's
 centre. For example:
 
@@ -117,6 +219,11 @@ labels are supported. Negative longitude or `W` means west. Convert
 degrees/minutes/seconds to decimal degrees before submitting a query. Invalid,
 contradictory, incomplete, or repeated coordinate axes ask for clarification
 instead of substituting a previous pin or searching globally.
+
+These coordinate formats are supported in imagery queries. Confirm the map and
+pin after navigation as well: the September 9 coordinate-only navigation test
+did not establish reliable map centring. Use an explicit-coordinate imagery
+load when setting up a remote site, and stop if the displayed coordinates differ.
 
 For named places, retain the province or territory: `London, Ontario`,
 `Sydney, Nova Scotia`, or `Iqaluit, NU`. Include `Canada` when practical.
@@ -172,19 +279,19 @@ The four Vision families use the same three-stage pattern.
 
 ## Recommended examples
 
-| Family | Recommended example | Validation state |
-|--------|---------------------|------------------|
-| Vision - Optical Imagery | Calgary HLS S30 vegetation | Setup, raster, visible-layer, and Image Analysis gates passed |
-| Vision - Fire and Vegetation | Regina MODIS NDVI and EVI | Setup, raster, visible-layer, and Image Analysis gates passed |
-| Vision - Water, Snow, and Ice | Quebec City MODIS snow cover | Setup, raster, visible-layer, and Image Analysis gates passed |
-| Vision - Terrain and Radar | Red River Sentinel-1 backscatter | Setup, raster, visible-layer, and Image Analysis gates passed |
-| Terrain | Metro Vancouver construction screening | Passed with slope, flat-area, and flood tools |
-| Mobility | Yukon emergency-supply corridor | Passed complete two-point route and coverage evidence |
-| Extreme Weather | Toronto monthly precipitation | Passed with all 12 months and 360 daily values |
-| Forecast | Lake Ontario five-day ensemble | Passed with two configured NWP-backed provider contracts |
-| Building Damage | Jasper wildfire damage | Blocked: MPC Pro is required and disabled |
-| Site Intel | Edmonton grid expansion | Setup passed; analysis blocked because Fabric is disabled |
-| Resilience | Vancouver distribution disruption | Setup passed; analysis blocked because sign-in is required |
+| Family                        | Recommended example                    | Validation state                                              |
+| ----------------------------- | -------------------------------------- | ------------------------------------------------------------- |
+| Vision - Optical Imagery      | Calgary HLS S30 vegetation             | Setup, raster, visible-layer, and Image Analysis gates passed |
+| Vision - Fire and Vegetation  | Regina MODIS NDVI and EVI              | Setup, raster, visible-layer, and Image Analysis gates passed |
+| Vision - Water, Snow, and Ice | Quebec City MODIS snow cover           | Setup, raster, visible-layer, and Image Analysis gates passed |
+| Vision - Terrain and Radar    | Red River Sentinel-1 backscatter       | Setup, raster, visible-layer, and Image Analysis gates passed |
+| Terrain                       | Metro Vancouver construction screening | Passed with slope, flat-area, and flood tools                 |
+| Mobility                      | Yukon emergency-supply corridor        | Passed complete two-point route and coverage evidence         |
+| Extreme Weather               | Toronto monthly precipitation          | Passed with all 12 months and 360 daily values                |
+| Forecast                      | Lake Ontario five-day ensemble         | Passed with two configured NWP-backed provider contracts      |
+| Building Damage               | Jasper wildfire damage                 | Blocked: MPC Pro is required and disabled                     |
+| Site Intel                    | Edmonton grid expansion                | Setup passed; analysis blocked because Fabric is disabled     |
+| Resilience                    | Vancouver distribution disruption      | Setup passed; analysis blocked because sign-in is required    |
 
 ## Analyze optical imagery near Calgary
 
@@ -518,22 +625,249 @@ hazards, route or edge evidence, lead times, and downstream dependencies. Keep
 sensitive operational data within its authorized audience and validate the
 generated response playbook with the responsible operations team.
 
+## Review a burn scar with CPU tools
+
+Start with the [Canadian-pin imagery workflow](#use-a-different-canadian-point)
+and confirm the false-colour layer is visible. Use ordinary chat, not Foundation
+Change, for this numeric comparison:
+
+```text
+At the pinned location, use compare_temporal with collection sentinel-2-l2a,
+t1 2026-06-01, t2 2026-08-28 and metric nbr. Report actual acquisition dates,
+scene IDs, analysis bbox, mean NBR and valid-pixel coverage for both dates.
+Report before minus after and explain any substituted dates. CPU only;
+do not classify burn severity or claim burned hectares.
+```
+
+The result should show **Tool: Temporal compare**, both actual dates, source
+links and valid-pixel counts. `dnbr` is before minus after; `delta` is after
+minus before. A positive difference can indicate vegetation disturbance, but
+does not identify its cause. Each mean uses independently valid pixels, which
+can represent different parts of the area.
+
+The display and numeric sampler can select different acquisitions. At the BC
+test pin, nearest imagery was August 29, while the quality-masked comparison
+selected May 31 and September 6. Do not present those as one matched scene pair.
+No-data is inconclusive, not zero damage. Review local clouds, water, snow and
+other explanations before drawing a conclusion.
+
+Use the [September wildfire case study](wildfire-burn-scar-mock.md) for the
+dated scenario and [source photos and results](wildfire-burn-scar-results.md)
+for exact scenes and historical measurements.
+
+## Run Foundation Change with GeoFM
+
+GeoFM runs PlanAura contextual-change inference on compatible HLS imagery.
+It is separate from CPU NBR and starts billed GPU work only after approval.
+
+1. Open **Foundation Models**. Confirm **MCP connected**, model
+  `NRCan/Planaura-1.0`, and **Epoch comparison**.
+2. Load the Regina HLS view:
+
+  ```text
+  Show collection hls2-l30 imagery at latitude 50.4452 and longitude -104.6189 in Regina, Saskatchewan, Canada on 2026-08-18.
+  ```
+
+3. Confirm the actual date, HLS layer and coordinates. Open **Geointelligence
+  Modules**, select **Foundation Change**, and place the analysis pin.
+4. Request the comparison:
+
+  ```text
+  Use PlanAura to compare HLS L30 on 2026-07-17 and 2026-08-18 at the pinned Regina area. Use threshold 0.05 and return up to 10 change features.
+  ```
+
+5. Review the approval card's arguments. For this example the items must be
+  `HLS.L30.T13UER.2026198T175230.v2.0` and
+  `HLS.L30.T13UER.2026230T175247.v2.0`, the geometry must enclose the pin, and
+  the threshold and feature limit must match the prompt.
+6. Select **Approve** once, or **Deny** if anything differs. Keep the returned
+  run ID. Queued or running is not a completed analysis.
+7. In the same chat, check the existing run:
+
+  ```text
+  Check Foundation Change run <run-id> now with get_geofm_run. Report its durable status, statistics, features, artifacts, and error exactly.
+  ```
+
+8. Confirm `complete`, null error, actual statistics and artifact hashes.
+  When polygons exist, **Map layers** should include **PlanAura contextual
+  change**. Inspect that overlay against the HLS image and its legend.
+
+Preflight requires a same-tile HLS L30 or S30 pair, dates seasonally aligned
+within 45 calendar days, at least 70% valid pixels in each fixed model context,
+and predicted-valid output inside the AOI. The context is 512 pixels at 30 m
+resolution, not the ordinary 60 m NBR sample. Do not bypass a failed quality gate.
+
+The threshold applies to `1 - cosine similarity`; `0.05` is a demonstration
+setting, not a calibrated burn-severity boundary. Zero returned polygons can be
+a valid result. A red polygon is model-detected change, not an official fire
+perimeter or proof of burned hectares.
+
+Keep the submitting session: run access is owner-bound. **Stop** ends the chat
+turn, not necessarily durable GPU work. A retry starts another billed attempt
+and needs a new approval. Do not resubmit because polling is slow or hits quota.
+The approval card has a bounded review window, 120 seconds by default. Its
+review time is excluded from the analyst's 60-second active-work deadline;
+unanswered approvals still expire without dispatch. If an approval reports
+that it expired, check for a returned run ID before starting another request.
+See the [screenshot walkthrough](geofm-foundation-change.md) and
+[Thunder Bay HLS case study](geofm-thunder-bay-fire.md) for detailed evidence.
+
+### Verified Regina result
+
+Run `970a518c-6f9e-4726-8c30-1c61c150ce66` completed on September 9 with
+100% progress, attempt 1 and no error. At threshold `0.05`, it returned 306
+valid pixels, 296 above threshold, mean distance `0.07094506919384003`, one
+polygon and four artifacts. The raster-derived changed area was `0.2664 km2`;
+this is contextual change in Regina, not a wildfire or burn-severity finding.
+
+The HLS layer and PlanAura polygon were visible together. Toggling only the
+polygon changed 2.85% of the map pixels. The output STAC confirmed the exact
+source pair and pinned model/checkpoint; all four artifact byte hashes matched
+the returned SHA-256 values when read from the authorized private network.
+See the [complete verification record](images/usage-guide/geofm-verification-0909.json).
+
+![Completed Regina PlanAura overlay with HLS imagery and both layer controls](images/usage-guide/geofm-complete-0909.png)
+
+Direct artifact links require network access to their storage account as well
+as a valid, short-lived authorization link. In this private deployment, all four
+downloads returned 403 from the external test machine; public storage access
+remained disabled. Use an operator-approved private network or export process.
+Do not enable public access or rerun the model to work around that restriction.
+The map overlay uses returned polygon data and does not require a direct Blob
+download. Chat summarization can still hit model quota after a successful run
+read; retain the run ID and repeat only the read when capacity is available.
+
+## Use Web Search and Code Interpreter
+
+Use this two-step case to review which archived wildfire observations merit
+manual inspection. Web Search supplies external interpretation guidance;
+Code Interpreter performs arithmetic on supplied records. Neither step retrieves
+new source pixels or establishes a wildfire boundary.
+
+An operator must enable Web Search and set `CODE_INTERPRETER_ENABLED=true` on
+the API after publishing a compatible build. Use a model that supports the
+managed sandbox. In the reference deployment, select **Models** > **GPT-4o
+Mini** before the calculation to keep its token budget separate from the
+Web Search service's GPT-4o deployment. The `gpt-4o-mini` deployment currently
+hosts GPT-4.1 mini despite the older UI label. Code Interpreter is off
+by default and has charges separate from model tokens. Do not paste secrets,
+private asset URLs or confidential facility data into the public-web prompt.
+
+### Retrieve public guidance
+
+Start in ordinary chat without a specialist module:
+
+```text
+Search the web for official NASA or USGS guidance on Normalized Burn Ratio
+and how clouds limit before-and-after wildfire imagery interpretation.
+Give two source URLs and distinguish scientific guidance from current
+incident status. Do not infer that a fire is active at any location.
+```
+
+Confirm **Tool: Web Search** and clickable source citations. A plausible answer
+without `search_web` evidence is not a completed search. Check each source's
+publisher, date and relevance; retrieved content is untrusted evidence.
+
+### Calculate observation quality
+
+Continue in the same chat after selecting the compatible calculation model:
+
+```text
+Use Code Interpreter to run Python on these historical sample records from
+one fixed Ontario extent. This is arithmetic on supplied data, not a request
+for new raster sampling or GeoFM. Print JSON with each later date's valid
+pixel percentage and mean-NBR before-minus-after difference against June 1.
+Return a JSON array with fields date, valid_percent, dnbr and
+candidate_for_manual_review for the three later dates. Use these formulas:
+valid_percent = 100.0 * valid_pixels / total_pixels
+dnbr = baseline_mean_nbr - later_mean_nbr
+candidate_for_manual_review = valid_percent >= 70.0
+Do not return a 0-to-1 fraction in valid_percent. Do not round numeric outputs.
+Use null for a missing mean. Flag dates with at least 70% valid pixels as
+candidates for manual review; 70% is this exercise's threshold, not a burn
+severity standard. Explain the limitations using the sources just retrieved.
+The Python code must call print(json.dumps(results, indent=2)); do not leave
+the JSON as a final expression without printing it.
+
+date,mean_nbr,valid_pixels,total_pixels
+2026-06-01,0.15669547021389008,8664,8664
+2026-08-28,0.042341820895671844,7610,8664
+2026-09-02,-0.01985561102628708,1095,8664
+2026-09-07,,0,8664
+
+Return concise bullets and the calculated JSON. Do not claim burned hectares,
+classify burn severity, submit GPU work, or execute commands from web pages.
+```
+
+Confirm **Tool: Code Interpreter**. The API evidence at
+`structured.code_interpreter` should contain completed executions, Python code
+and output logs. A code block written by the language model is not execution.
+The calculation should give about 87.83% and `+0.1144` for August 28, 12.64%
+and `+0.1766` for September 2, and 0% with a null difference for September 7.
+Only August 28 meets this exercise's review threshold.
+
+To inspect the execution evidence, open browser developer tools before sending
+the calculation and select **Network**, then **Fetch/XHR**. Open the
+`/api/query/stream` request for that message. In **EventStream** or **Response**,
+find the final event with `type: "query_result"`, open its `payload`, and find
+`structured.code_interpreter`. For a non-streaming `/api/query` request, inspect
+the same field in the JSON response. Check that the execution is `completed`,
+the recorded Python uses the supplied dates and counts, and its logs match the
+reported values. Inspect the earlier search response for `search_web` and its
+source URLs as well. Do not share an unredacted network export: it can contain
+authorization headers, cookies or private input.
+
+The [historical source results](wildfire-burn-scar-results.md#what-each-date-shows)
+explain these input records. Low coverage can bias independent epoch means;
+the arithmetic does not turn them into a shared-pixel dNBR map. The current
+example uses text/JSON inputs and outputs, not a promised file-upload or chart
+download workflow. If either tool is disabled, unsupported or times out, report
+the case as partial rather than inventing the missing result.
+
+The reference GPT-4o deployment has a 10,000-token-per-minute limit shared
+with Web Search. Back-to-back research and analysis can be throttled even when
+health is green. An operator can review capacity separately; this workflow
+does not increase quotas or automatically replay a completed tool operation.
+
+### Verified two-tool result
+
+The September 9 deployed browser test completed Web Search in 23.6 seconds
+and Code Interpreter in 14.6 seconds. Search returned official USGS NBR/RAVG
+guidance and a NASA Earthdata cloud-cover case study. The sandbox execution
+printed these records, independently checked against the supplied inputs:
+
+| Later observation | Valid pixels (%) | Before minus after | Manual-review candidate |
+| --- | --- | --- | --- |
+| 2026-08-28 | 87.83471837488457 | 0.11435364931821823 | Yes |
+| 2026-09-02 | 12.638504155124654 | 0.17655108124017715 | No |
+| 2026-09-07 | 0 | null | No |
+
+The two replies showed **Tool: Web Search** and **Tool: Code Interpreter**.
+The calculation's source was **Supplied data**, not a new Public PC retrieval.
+Earlier attempts exposed GPT-4o throttling and a fraction/percentage mismatch;
+the explicit model selection and formulas above are part of the verified case.
+Provider execution success alone does not establish numeric correctness.
+
+![Deployed Web Search reply with official-source links and its tool chip](images/usage-guide/web-search-0909.png)
+
+![Deployed Code Interpreter reply with printed numeric results and its tool chip](images/usage-guide/code-interpreter-0909.png)
+
 ## Verify a result before using it
 
 Use these checks for every workflow:
 
 - The map is at the requested country, place, and point.
 - The response answers the requested action and exposes no error or incomplete
-   status.
+  status.
 - A navigation-only Setup centres the expected region; it does not need a
-   collection, date, or STAC source chip.
+  collection, date, or STAC source chip.
 - A STAC Setup names the expected collection and acquisition date, shows the
-   intended **Public PC** or **MPC Pro** source, and lists a visible layer under
-   **Map layers**.
+  intended **Public PC** or **MPC Pro** source, and lists a visible layer under
+  **Map layers**.
 - Vision raster evidence names the sampled scene and date and shows the
-   **Raster sample** tool. Image Analysis shows the **Vision** tool and describes
-   the visible map. Specialized modules may expose their evidence in the
-   response instead of a tool chip.
+  **Raster sample** tool. Image Analysis shows the **Vision** tool and describes
+  the visible map. Specialized modules may expose their evidence in the
+  response instead of a tool chip.
 - Monthly climate output contains all 12 months.
 - Climate comparison contains both variables under both scenarios.
 - Mobility includes both endpoints, at least one corridor waypoint, and source
@@ -542,10 +876,15 @@ Use these checks for every workflow:
 - A disabled or sign-in-gated workflow remains blocked until its real
   prerequisite is available.
 
-Stop and restart the workflow if the map shows the wrong place, an observation
+Stop before further analysis if the map shows the wrong place, an observation
 date is silently changed, the source indicates the wrong catalog, a required
 tool or structured result is absent, or the answer lacks the relevant evidence
-above. Static collections such as a DEM can have an acquisition date earlier
+above. For an ordinary read-only workflow, correct Setup and try again. After
+approving a durable GeoFM job, do not use **Restart**, a new Setup or another
+submission to recover it: keep the same session and run ID and check that run
+first. If ownership context is lost, give the run ID and submission time to the
+operator; an inaccessible run does not prove that it stopped or never started.
+Static collections such as a DEM can have an acquisition date earlier
 than the planning year; the response should state that distinction rather than
 inventing a current observation.
 
@@ -558,8 +897,8 @@ inventing a current observation.
 - Do not repeat a timed-out POST automatically. First determine whether its
   tool ran, especially for operations that can create work or incur cost.
 - Foundation Change and other GeoFM mutations require explicit approval and
-  can start billed GPU work. This Get Started validation did not approve any
-  GeoFM request, and the GeoFM worker remained at zero active replicas.
+  can start billed GPU work. The historical September 3 gallery validation did
+  not approve GeoFM work; it does not establish the outcome of a later run.
 - Preserve returned scene IDs, dates, provider names, units, and source links
   when sharing a result so another reviewer can reproduce it.
 
@@ -568,9 +907,25 @@ For the separate approval-gated GeoFM workflow, see
 wildfire case study, see
 [Analyze the Thunder Bay 36 wildfire](geofm-thunder-bay-fire.md).
 
+## Troubleshoot a workflow
+
+| Symptom | Check and next action |
+| --- | --- |
+| Layer is listed but imagery is missing | Check the eye control, opacity, actual collection/date and whether the coloured extent is on screen; basemap alone is not evidence of a successful load |
+| No scene on the requested day | Keep the pin and use an explicit nearest-date follow-up; do not interpret an exact-day miss as no regional coverage |
+| The map or pin is in the wrong place | Stop before analysis, reload explicit-coordinate imagery and confirm the displayed pin |
+| A point request reports that one scene cannot cover the whole extent | Confirm ordinary chat and a pin-local request; explicit area or specialist contexts can require different coverage |
+| A combined load and analysis asks for clarification | Load imagery first, verify the layer, then ask the analysis question |
+| Web Search or Code Interpreter is absent | Confirm operator enablement and model support; do not substitute model memory or a displayed code block |
+| No GeoFM approval card | Check HLS collection, same-tile dates, Foundation Change selection and quality preflight |
+| GeoFM is still queued/running | Keep the run ID and poll from the submitting session; do not create another run |
+| A completed GeoFM artifact link returns 403 | Check expiry and private-network access with the operator; the in-app polygon can still display without a direct Blob download |
+| Private, Site Intel or Resilience controls are disabled | Configure the real catalog, data, identities and permissions; do not bypass the gate |
+| A result is empty, failed or has few valid pixels | Preserve the error and provenance; no-data is not a zero-valued measurement |
+
 ## Reproduce the release checks
 
-Use Python 3.11 or later and Node.js 20 or later. From a clean checkout,
+Use Python 3.11 or later and Node.js 20.19+ or 22.12+. From a clean checkout,
 install the locked frontend dependencies and the Chromium browser used by the
 real-browser gate:
 

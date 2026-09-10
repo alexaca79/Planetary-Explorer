@@ -877,6 +877,12 @@ def _extract_stac_datetime_fallback(query: str) -> Optional[str]:
 
 def _requests_exact_stac_date(query: str) -> bool:
     """Return whether the query explicitly requests one exact ISO date."""
+    from tile_selector import TileSelector
+
+    if re.search(r"\b\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}", query):
+        return False
+    if TileSelector.nearest_requested_date(query) is not None:
+        return False
     iso_dates = re.findall(
         r"(?<!\d)((?:19|20)\d{2}-\d{2}-\d{2})(?!\d)",
         query.casefold(),
@@ -910,8 +916,10 @@ def _should_apply_stac_datetime_fallback(
     stac_query: Dict[str, Any],
     natural_query: str,
 ) -> bool:
-    """Return whether prose dates should fill a missing STAC datetime."""
-    if stac_query.get("datetime") or not natural_query:
+    """Fill missing dates and preserve exact days over model-expanded ranges."""
+    if not natural_query:
+        return False
+    if stac_query.get("datetime") and not _requests_exact_stac_date(natural_query):
         return False
     collections = stac_query.get("collections") or []
     return not (
@@ -1008,6 +1016,10 @@ async def execute_direct_stac_search(
                 v2_selection = None
 
         stac_query = _sanitize_static_stac_query(stac_query)
+        if _should_apply_stac_datetime_fallback(stac_query, original_query):
+            requested_datetime = _extract_stac_datetime_fallback(original_query)
+            if requested_datetime:
+                stac_query = {**stac_query, "datetime": requested_datetime}
 
         # Normalize datetime ONCE for every endpoint. Public PC tolerates
         # date-only shorthand; GeoCatalog (pgstac strict) rejects it with
@@ -5271,6 +5283,9 @@ async def unified_query_processor(request: Request):
         # The agent's chat_summary and stac_query are stashed on
         # req_body so the response builder can use them at the end.
         if v2_result.get("action") == "LOAD":
+            if v2_result.get("resolved_query"):
+                natural_query = str(v2_result["resolved_query"])
+                req_body["query"] = natural_query
             # Clear any pending LOAD clarification — we are executing now.
             try:
                 if router_agent and session_id:
@@ -6950,6 +6965,13 @@ async def unified_query_processor(request: Request):
                         pin=pin,
                     )
                     collections = list(stac_params.get("collections") or [])
+
+                if not req_body.get("bbox"):
+                    from pipeline.stac_inspection import apply_pin_imagery_overrides
+
+                    stac_params = apply_pin_imagery_overrides(
+                        stac_params=stac_params, query=natural_query, pin=pin,
+                    )
                 
                 if collections:
                     stac_query = build_stac_query(stac_params)
@@ -7031,6 +7053,13 @@ async def unified_query_processor(request: Request):
                     else:
                         # Use the semantic translator's translate_query method with pin and session_bbox fallback
                         stac_params = await translator.translate_query(natural_query, pin_location=pin, session_bbox=session_bbox)
+
+                    if isinstance(stac_params, dict) and not req_body.get("bbox"):
+                        from pipeline.stac_inspection import apply_pin_imagery_overrides
+
+                        stac_params = apply_pin_imagery_overrides(
+                            stac_params=stac_params, query=natural_query, pin=pin,
+                        )
 
                     _post_load_inspection = req_body.get(
                         "_v2_post_load_inspection"

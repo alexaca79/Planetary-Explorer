@@ -27,6 +27,7 @@ import {
 import ChatLegend from './ChatLegend';
 import { deriveChatLegend } from '../utils/chatLegend';
 import { renderMessageHTML } from '../utils/renderMessageHTML';
+import { formatTemporalNbrResponse } from '../utils/temporalNbr';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -2266,6 +2267,7 @@ const Chat: React.FC<ChatProps> = ({
                 );
 
                 const partText =
+                  formatTemporalNbrResponse(partResult) ||
                   partResult?.response ||
                   partResult?.user_response ||
                   partResult?.message ||
@@ -2335,7 +2337,7 @@ const Chat: React.FC<ChatProps> = ({
         rawResponse = responseData?.response || responseData?.user_response || responseData?.message || 'No response received';
         console.log(' Chat: Extracted rawResponse from object properties');
       }
-      const textResponse = extractTextFromResponse(rawResponse);
+      const textResponse = formatTemporalNbrResponse(responseData) || extractTextFromResponse(rawResponse);
 
       console.log(' Chat: Raw response:', rawResponse);
       console.log(' Chat: Extracted textResponse:', textResponse);

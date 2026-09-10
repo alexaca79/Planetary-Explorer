@@ -1,0 +1,90 @@
+{
+  "inference_date_utc": "2026-09-09",
+  "verification_date_utc": "2026-09-10",
+  "run_id": "970a518c-6f9e-4726-8c30-1c61c150ce66",
+  "status": "complete",
+  "progress_pct": 100,
+  "attempt": 1,
+  "error": null,
+  "pin": { "latitude": 50.445201, "longitude": -104.618925 },
+  "collection": "hls2-l30",
+  "source_items": [
+    "HLS.L30.T13UER.2026198T175230.v2.0",
+    "HLS.L30.T13UER.2026230T175247.v2.0"
+  ],
+  "model": "NRCan/Planaura-1.0",
+  "model_revision": "fbbabfdcc0d5e48f7bd05c79b512563cf337742f",
+  "checkpoint_sha256": "cc3041600ec62bc5452f243304ca446c8793e65baf13440cc21c4cf8ba7199eb",
+  "statistics": {
+    "valid_pixel_count": 306,
+    "changed_pixel_count": 296,
+    "mean_distance": 0.07094506919384003,
+    "maximum_distance": 0.08619582653045654,
+    "p95_distance": 0.08320868015289307,
+    "mean_changed_distance": 0.07176905870437622,
+    "changed_area_km2": 0.2664,
+    "threshold": 0.05,
+    "distance_definition": "1 - PlanAura cosine similarity"
+  },
+  "max_features_requested": 10,
+  "features_returned": 1,
+  "artifacts": [
+    {
+      "name": "change_distance.tif",
+      "bytes": 2992,
+      "sha256": "7d24895490c9fb7234c579730d6cd0e647975fee78204e1b638641d27f3129ee",
+      "private_network_bytes_verified": true
+    },
+    {
+      "name": "change_polygons.geojson",
+      "bytes": 906,
+      "sha256": "ba746aed670fd1359feb5ff9bf7c16076883562e1b6ed3018ea7437ef6414e6b",
+      "private_network_bytes_verified": true
+    },
+    {
+      "name": "stac_item.json",
+      "bytes": 2138,
+      "sha256": "95e918247ba4d3ea5982dd7411a9a06331152188f51e8ab2f6745f548d3d4853",
+      "private_network_bytes_verified": true
+    },
+    {
+      "name": "evidence_manifest.json",
+      "bytes": 4967,
+      "sha256": "81227a04ecd1438b113ca8752f84606573d3fe3b7ad5aff4042d44c3c3d50729",
+      "private_network_bytes_verified": true
+    }
+  ],
+  "browser": {
+    "map_width": 1135,
+    "map_height": 726,
+    "zoom": 14,
+    "imagery_opacity_percent": 85,
+    "overlay_opacity_percent": 70,
+    "overlay_visible": true,
+    "changed_pixel_fraction": 0.0284576416015625,
+    "mean_absolute_channel_difference": 0.9439493815104166
+  },
+  "artifact_access": {
+    "external_download_status": 403,
+    "storage_error_code": "AuthorizationFailure",
+    "public_network_access": "Disabled",
+    "default_network_action": "Deny",
+    "shared_key_access": false,
+    "private_endpoint_connections": 2,
+    "verification_path": "Existing GeoFM control container using its configured identity and private network"
+  },
+  "api_revision": "ca-earthcopilot-api--guide-approval-0909-233458",
+  "api_image_digest": "sha256:50eeb853c16fb309820ca0eb61a6b5f38aa9626da11ee3e364c1d6615a41188c",
+  "frontend_deployment_id": "d1a66bd8-981c-4d74-a759-149d8b01c5eb",
+  "frontend_bundle": "index-Bg17pjMx.js",
+  "final_release_verified_at": "2026-09-10T00:04:05.993332+00:00",
+  "final_worker_min_replicas": 0,
+  "final_worker_active_replicas": 0,
+  "limitations": [
+    "One approved GPU attempt; an earlier expired approval did not dispatch a run.",
+    "A chat summary timed out after a successful durable read; only reads were repeated.",
+    "Contextual change at a demonstration threshold is not burn severity or an official fire perimeter.",
+    "External artifact downloads require an authorized private-network or export path.",
+    "This record does not certify every Canadian point, date, model or gallery workflow."
+  ]
+}

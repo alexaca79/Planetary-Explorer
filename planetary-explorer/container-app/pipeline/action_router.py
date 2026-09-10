@@ -33,11 +33,74 @@ _EXPLICIT_WEB_REQUEST = re.compile(
     r"|\bweb\s+search\b",
     re.IGNORECASE,
 )
+_IMAGERY_DISPLAY_REQUEST = re.compile(
+    r"\b(?:show|load|display)\b.{0,240}\b(?:imagery|images?)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_CURRENT_POINT_REFERENCE = re.compile(
+    r"\b(?:at|around|over|for|of)\s+"
+    r"(?:(?:the|this|that|my|current|dropped|selected|pinned)\s+)*(?:pin|point|location)\b"
+    r"|\bhere\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_AREA_REFERENCE = re.compile(
+    r"\b(?:whole|entire|visible|current)\s+(?:(?:visible|map)\s+)?"
+    r"(?:map|area|extent|region|viewport)\b"
+    r"|\b(?:over|within|across|for)\s+(?:the\s+)?(?:viewport|bbox|bounding box|map extent)\b"
+    r"|\bwithin\b.{0,40}\b(?:km|kilometers|kilometres|meters|metres|miles|radius)\b",
+    re.IGNORECASE,
+)
+_ANALYSIS_REQUEST = re.compile(
+    r"\b(?:analy[sz]e|analysis|compare|comparison|calculate|compute|estimate|measure|"
+    r"assess|explain|report|summari[sz]e|nbr|dnbr|ndvi|how|what|why)\b",
+    re.IGNORECASE,
+)
 
 
 def is_explicit_web_request(query: str) -> bool:
     """Return whether the user explicitly requested public-web retrieval."""
     return bool(_EXPLICIT_WEB_REQUEST.search(query))
+
+
+def is_pin_imagery_load(query: str) -> bool:
+    """Identify an explicit display-only request referring to the current pin."""
+    return bool(
+        _IMAGERY_DISPLAY_REQUEST.search(query)
+        and _CURRENT_POINT_REFERENCE.search(query)
+        and not _ANALYSIS_REQUEST.search(query)
+    )
+
+
+def is_point_scoped_query(query: str) -> bool:
+    """Distinguish a pin-local request from an explicitly requested area."""
+    return bool(
+        _CURRENT_POINT_REFERENCE.search(query)
+        and not _EXPLICIT_AREA_REFERENCE.search(query)
+    )
+
+
+def resolve_pin_imagery_followup(query: str, history: list[dict[str, Any]]) -> str:
+    """Resolve a nearest-date follow-up only against the last user imagery load."""
+    if (
+        not re.search(r"\b(?:nearest|closest|closes)\b", query, re.IGNORECASE)
+        or not re.search(r"\b(?:date|day|acquisition|scene|image|imagery)\b", query, re.IGNORECASE)
+        or _ANALYSIS_REQUEST.search(query)
+        or is_explicit_web_request(query)
+    ):
+        return query
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        previous_query = message.get("content")
+        if not isinstance(previous_query, str) or previous_query.strip() == query.strip():
+            continue
+        if not is_pin_imagery_load(previous_query):
+            return query
+        return (
+            f"{previous_query} Use the nearest available acquisition to the requested "
+            f"date at the current pin. {query}"
+        )
+    return query
 
 
 _RESPONSE_SCHEMA: dict[str, Any] = {
@@ -85,6 +148,15 @@ class ActionRouter:
                 action="ANALYZE",
                 analysis_question=query,
                 reasoning="explicit_web_search",
+                confidence=1.0,
+            )
+
+        if has_pin and is_pin_imagery_load(query):
+            return ActionDecision(
+                action="LOAD",
+                use_current_location=True,
+                stac_query=query,
+                reasoning="explicit_pin_imagery_load",
                 confidence=1.0,
             )
 
