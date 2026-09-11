@@ -50,6 +50,18 @@
     "deployChatHistory": {
       "value": "${DEPLOY_CHAT_HISTORY=true}"
     },
+    "deployChatMemory": {
+      "value": "${DEPLOY_CHAT_MEMORY=true}"
+    },
+    "chatMemoryIndexName": {
+      "value": "${CHAT_MEMORY_SEARCH_INDEX=chat-memory-v1}"
+    },
+    "chatMemorySearchLocation": {
+      "value": "${CHAT_MEMORY_SEARCH_LOCATION=}"
+    },
+    "chatHistoryRemoteUrl": {
+      "value": "${CHAT_HISTORY_REMOTE_URL=}"
+    },
     "agentProjectName": {
       "value": "${AGENT_PROJECT_NAME=planetary-explorer-agents}"
     },

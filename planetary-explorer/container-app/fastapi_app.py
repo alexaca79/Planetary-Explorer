@@ -373,7 +373,10 @@ app = FastAPI(
     openapi_url="/openapi.json" if api_docs_enabled else None,
 )
 
-from chat_history_api import router as chat_history_router
+if os.getenv("CHAT_HISTORY_REMOTE_URL"):
+    from chat_history_remote import router as chat_history_router
+else:
+    from chat_history_api import router as chat_history_router
 
 app.include_router(chat_history_router)
 
@@ -1314,6 +1317,14 @@ async def _warm_collection_titles():
         start_background_refresh()
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[STAC-TITLES] failed to start refresher: %s", exc)
+
+
+@app.on_event("startup")
+async def _initialize_chat_memory_index():
+    if os.getenv("CHAT_MEMORY_AUTO_SETUP", "false").lower() == "true" and not os.getenv("CHAT_HISTORY_REMOTE_URL"):
+        from setup_chat_memory import configure_memory_index_from_env
+
+        await asyncio.to_thread(configure_memory_index_from_env)
 
 
 @app.on_event("startup")
@@ -2969,11 +2980,15 @@ async def get_config():
         "api": {
             "baseUrl": "/api"
         },
+        "historyRequiresSignIn": not _env_flag("CHAT_HISTORY_ALLOW_ANONYMOUS", default=False),
         "features": {
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
-            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
+            "chatHistory": _env_flag(
+                "PE_FEATURE_CHAT_HISTORY",
+                default=os.getenv("CHAT_HISTORY_STORE") in {"cosmos", "memory"},
+            ),
             "resilience": (
                 _env_flag("RESILIENCE_MVP", default=True)
                 and AGENT_FRAMEWORK_AVAILABLE
@@ -4836,6 +4851,17 @@ async def unified_query_processor(request: Request):
         )
         req_body['model'] = selected_model
         req_body['reasoning_effort'] = selected_reasoning_effort
+        from chat_history_api import get_request_owner
+        from chat_memory import prepare_chat_memory
+
+        try:
+            memory_owner = get_request_owner(request)
+        except HTTPException:
+            memory_owner = None
+        await prepare_chat_memory(
+            req_body, memory_owner, client_session_id,
+            authorization=request.headers.get("Authorization"),
+        )
         is_foundation_change_turn = (
             req_body.get('geoint_module') == 'foundation_change'
         )
@@ -5201,6 +5227,7 @@ async def unified_query_processor(request: Request):
             return {
                 "success": True,
                 "action": "clarify",
+                "memory": req_body.get("_chat_memory"),
                 "response": v2_result.get("answer", ""),
                 "user_response": v2_result.get("answer", ""),
                 "options": _structured.get("options") or [],
@@ -5218,6 +5245,7 @@ async def unified_query_processor(request: Request):
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "sources": v2_result.get("sources", []),
+                "memory": req_body.get("_chat_memory"),
                 "visualizations": v2_result.get("visualizations", []),
                 "map_data": v2_result.get("map_data"),
                 "structured": v2_result.get("structured", {}),
@@ -5262,6 +5290,7 @@ async def unified_query_processor(request: Request):
             return JSONResponse(content={
                 "session_id": client_session_id,
                 "success": True,
+                "memory": req_body.get("_chat_memory"),
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "user_response": v2_result.get("answer", ""),
@@ -8216,6 +8245,7 @@ async def unified_query_processor(request: Request):
         complete_response = {
             "success": True,
             "response": response_message,
+            "memory": req_body.get("_chat_memory"),
             # Echo the catalog that actually answered this query so the UI
             # can label messages (e.g. "Loaded 3 tiles from MPC Pro").
             "data_source": (

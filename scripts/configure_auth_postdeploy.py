@@ -456,7 +456,18 @@ def main() -> int:
         return EXIT_FAILURE
 
     try:
-        if public_demo_mode:
+        remote_history = os.getenv("CHAT_HISTORY_REMOTE_URL") or os.getenv("AZURE_CHAT_HISTORY_REMOTE_URL")
+        if public_demo_mode and remote_history:
+            tenant_id = os.getenv("MICROSOFT_ENTRA_TENANT_ID", "").strip()
+            client_id = os.getenv("MICROSOFT_ENTRA_CLIENT_ID", "").strip()
+            if not tenant_id or not client_id:
+                raise ValueError("Optional history sign-in requires Entra tenant and client IDs.")
+            _set_api_environment(api_name, resource_group, [
+                "DISABLE_AUTH=true", "TRUST_EASYAUTH_HEADER=false", "CHAT_HISTORY_ALLOW_ANONYMOUS=false",
+                f"AZURE_AD_TENANT_ID={tenant_id}", f"AZURE_AD_CLIENT_ID={client_id}",
+            ])
+            logger.info("Preserving Bicep-managed optional frontend sign-in for private history.")
+        elif public_demo_mode:
             configure_public_mode(api_name, web_name, resource_group)
         else:
             tenant_id = os.getenv("MICROSOFT_ENTRA_TENANT_ID", "").strip()

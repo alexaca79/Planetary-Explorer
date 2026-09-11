@@ -267,6 +267,7 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
             load_plan = await get_load_agent().plan(
                 LoadAgentInput(
                     query=request.question,
+                    memory_context=request.memory_context,
                     location_name=decision.location,
                     has_bbox=bool(request.bbox),
                     bbox=list(request.bbox) if request.bbox else None,

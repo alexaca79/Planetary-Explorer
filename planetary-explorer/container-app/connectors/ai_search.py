@@ -51,8 +51,8 @@ class AiSearchClient:
         )
 
     @classmethod
-    def from_env(cls, index: str | None = None) -> "AiSearchClient | None":
-        endpoint = (os.getenv("AZURE_SEARCH_ENDPOINT") or "").strip()
+    def from_env(cls, index: str | None = None, *, endpoint: str | None = None) -> "AiSearchClient | None":
+        endpoint = (endpoint or os.getenv("AZURE_SEARCH_ENDPOINT") or "").strip()
         if not endpoint:
             return None
         idx = index or os.getenv("AZURE_SEARCH_INDEX") or ""
@@ -73,15 +73,41 @@ class AiSearchClient:
         top: int = 5,
         filter: str | None = None,  # noqa: A002 (Azure SDK uses `filter`)
         select: list[str] | None = None,
+        search_fields: list[str] | None = None,
+        semantic_configuration: str | None = None,
     ) -> list[dict[str, Any]]:
         """Run a full-text search. Returns list of dict documents."""
+        options: dict[str, Any] = {}
+        if search_fields:
+            options["search_fields"] = search_fields
+        if semantic_configuration:
+            options.update(
+                query_type="semantic",
+                semantic_configuration_name=semantic_configuration,
+            )
         results = await self._client.search(
-            search_text=query, top=top, filter=filter, select=select
+            search_text=query, top=top, filter=filter, select=select, **options
         )
         docs: list[dict[str, Any]] = []
         async for doc in results:
             docs.append(dict(doc))
         return docs
+
+    async def upload_documents(self, documents: list[dict[str, Any]]) -> None:
+        """Upsert documents and reject partial indexing failures."""
+        if not documents:
+            return
+        results = await self._client.upload_documents(documents=documents)
+        if len(results) != len(documents) or any(not result.succeeded for result in results):
+            raise RuntimeError("AI Search did not index every document.")
+
+    async def delete_documents(self, documents: list[dict[str, Any]]) -> None:
+        """Delete document keys and reject partial indexing failures."""
+        if not documents:
+            return
+        results = await self._client.delete_documents(documents=documents)
+        if len(results) != len(documents) or any(not result.succeeded for result in results):
+            raise RuntimeError("AI Search did not delete every document.")
 
     async def get_document(self, key: str) -> dict[str, Any] | None:
         try:

@@ -1,7 +1,7 @@
 ---
 title: Planetary Explorer Infrastructure Reference
 description: Explain template scope, CPU defaults, supported resource adoption and the distinction between provisioning and application publishing.
-ms.date: 2026-09-08
+ms.date: 2026-09-11
 ---
 
 ## Canonical Deployment Instructions
@@ -21,15 +21,17 @@ concrete Bicep parameters and an explicit subscription/region.
   Azure Maps and monitoring
 - Foundry account/projects, GPT-4o and GPT-4o-mini, storage and Key Vault
 - Chat history Cosmos DB and artifact storage unless `DEPLOY_CHAT_HISTORY=false`
+- Dedicated Basic memory Search for authenticated direct history unless
+  `DEPLOY_CHAT_MEMORY=false`; the service identity initializes its index
 - GPU, premium chat models, Fabric, private catalog integration, CPU weather,
   Web Search and private endpoints are opt-in
 - Dedicated ACR build pool defaults to zero; private builds need an explicitly
   configured network-reachable build path
 
 See the [complete create-or-reference matrix](../../documentation/deployment.md#resources-and-responsibilities).
-AI Search indexes, Fabric workspaces/lakehouses and private GeoCatalog data
-are not created by the root template. Existing endpoint references require
-separate permissions and data validation.
+Catalog/document Search indexes, Fabric workspaces/lakehouses and private
+GeoCatalog data are not created by the root template. Existing endpoint
+references require separate permissions and data validation.
 
 ## Existing Resources
 
@@ -42,6 +44,26 @@ Other template modules are still reconciled by `azd provision`. Preserve the
 original environment name and region to retain stable names. For updates
 that must not reconcile infrastructure, deploy only selected applications
 and compare protected settings before and after.
+
+## Chat History and Memory
+
+The main template's authenticated direct-history path provisions Cosmos, Blob,
+a dedicated memory Search service and scoped managed-identity roles. It does
+not grant access to catalog/document Search indexes. `CHAT_MEMORY_SEARCH_INDEX`
+defaults to `chat-memory-v1`; `CHAT_MEMORY_SEARCH_LOCATION` can override the
+default region for capacity. The runtime initializes or validates the schema
+without replacing an incompatible index. Full-text recall needs no embedding
+deployment. `DEPLOY_CHAT_MEMORY=false` omits this Search service in direct mode.
+
+For an existing public API without private-network access, use
+[chat-history-upgrade.bicep](chat-history-upgrade.bicep) and the
+[additive upgrade procedure](../../documentation/deployment.md#add-private-history-to-an-existing-public-app).
+This entry point creates a CPU history service on an existing VNet-integrated
+environment, private data endpoints, a dedicated identity/Search service and
+optional frontend sign-in. The public API uses `CHAT_HISTORY_REMOTE_URL` and
+forwards real validated user tokens; anonymous shared history stays disabled.
+The canonical template accepts the remote URL but does not manage that separate
+history service. Keep its image current through the additive entry point.
 
 ## Infrastructure-Only Script
 

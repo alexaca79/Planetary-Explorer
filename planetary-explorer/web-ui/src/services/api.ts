@@ -53,6 +53,7 @@ export interface ChatLegendDefinition {
 }
 
 export interface ChatMessage {
+  memory?: ChatMemoryUsage;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
@@ -111,12 +112,20 @@ export interface ChatHistoryAttachment {
   createdAt: string;
 }
 
+export interface ChatMemoryUsage {
+  enabled: boolean;
+  provider: 'conversation' | 'history' | 'azure-search' | 'unavailable';
+  earlierTurns: number;
+  sources: Array<{ sessionId: string; title: string; turn: number; updatedAt: string }>;
+}
+
 export interface ChatHistorySummary {
   sessionId: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  memoryEnabled?: boolean;
   attachments: ChatHistoryAttachment[];
 }
 
@@ -144,6 +153,7 @@ export interface ChatHistoryContext {
 
 export interface ChatHistorySnapshot {
   title?: string;
+  memoryEnabled?: boolean;
   expectedRevision: number;
   mutationId: string;
   messages: ChatMessage[];
@@ -509,6 +519,7 @@ class ApiService {
       onProgress?: (evt: any) => void;
       onError?: (err: Error) => void;
     },
+    memoryEnabled = true,
   ): Promise<any> {
     debugLog('sendChatMessage called', { message, datasetId, conversationId, historyLength: messageHistory?.length, pin, geointMode, hasMapContext: !!mapContext, selectedModel, reasoningEffort, geointModule, partOfSplit, stacMode, hasAbortSignal: !!signal });
 
@@ -524,6 +535,7 @@ class ApiService {
       // Use the QueryRequest format for /query endpoint
       const requestData: any = {
         query: message,
+        memory_enabled: memoryEnabled,
         ...(selectedModel && { model: selectedModel }),
         ...(selectedModel && reasoningEffort && { reasoning_effort: reasoningEffort }),
         ...(geointModule && { geoint_module: geointModule }),
@@ -1222,6 +1234,18 @@ class ApiService {
     if (!this.api) throw new Error('API service not initialized');
     const response = await this.api.get('/api/chat-history/sessions');
     return response.data?.sessions || [];
+  }
+
+  async setChatSessionMemory(sessionId: string, enabled: boolean): Promise<ChatHistorySession> {
+    const session = await this.getChatSession(sessionId);
+    return this.saveChatSession(sessionId, {
+      title: session.title,
+      messages: session.messages,
+      context: session.context,
+      expectedRevision: session.revision,
+      mutationId: globalThis.crypto.randomUUID(),
+      memoryEnabled: enabled,
+    });
   }
 
   async getChatSession(sessionId: string): Promise<ChatHistorySession> {

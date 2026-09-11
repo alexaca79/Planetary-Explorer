@@ -99,6 +99,7 @@ _MESSAGE_KEYS = {
     "content",
     "dataSource",
     "legend",
+    "memory",
     "role",
     "source",
     "stacRouting",
@@ -281,6 +282,10 @@ def normalize_session_document(
             "Chat session changed since it was loaded; reload before saving."
         )
 
+    memory_enabled = payload.get("memoryEnabled", (existing or {}).get("memoryEnabled", True))
+    if not isinstance(memory_enabled, bool):
+        raise ChatHistoryValidationError("memoryEnabled must be a boolean.")
+
     raw_messages = payload.get("messages", [])
     if not isinstance(raw_messages, list):
         raise ChatHistoryValidationError("messages must be a JSON array.")
@@ -320,6 +325,7 @@ def normalize_session_document(
         "createdAt": (existing or {}).get("createdAt") or now,
         "updatedAt": now,
         "messageCount": len(messages),
+        "memoryEnabled": memory_enabled,
         "messages": messages,
         "context": context,
         "attachments": copy.deepcopy((existing or {}).get("attachments") or []),
@@ -358,6 +364,7 @@ def session_summary(document: dict[str, Any]) -> dict[str, Any]:
             "createdAt",
             "updatedAt",
             "messageCount",
+            "memoryEnabled",
             "attachments",
         )
         if key in public
@@ -594,7 +601,7 @@ class CosmosChatHistoryRepository:
         container = await self._get_container()
         query = (
             "SELECT c.sessionId, c.title, c.createdAt, c.updatedAt, "
-            "c.messageCount, c.attachments FROM c "
+            "c.messageCount, c.memoryEnabled, c.attachments FROM c "
             "WHERE c.ownerId = @ownerId ORDER BY c.updatedAt DESC"
         )
         parameters = [{"name": "@ownerId", "value": owner_id}]

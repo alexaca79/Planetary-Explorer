@@ -314,6 +314,8 @@ def _build_request(body: dict[str, Any]) -> AnalysisRequest:
         screenshot_url=body.get("imagery_url") or body.get("screenshot_url"),
         screenshot_b64=screenshot_b64,
         history=list(history) if isinstance(history, list) else [],
+        memory_context=str(body.get("_chat_memory_context") or ""),
+        memory_enabled=body.get("memory_enabled", True) is True,
         stac_items=list(stac_items),
         tile_urls=list(tile_urls),
         hint="foundation_change" if geoint_module == "foundation_change" else None,
@@ -510,11 +512,13 @@ async def run_pipeline_v2(body: dict[str, Any]) -> dict[str, Any]:
             decision.action,
         )
     else:
+        memory_options = {"memory_context": request.memory_context} if request.memory_context else {}
         decision = await action_router.route(
             query=request.question,
             loaded_collections=request.loaded_collections,
             has_pin=bool(request.pin),
             has_screenshot=bool(request.screenshot_b64 or request.has_screenshot),
+            **memory_options,
         )
         logger.info(
             "[PIPELINE-V2] L1 action=%s conf=%.2f reason=%r",

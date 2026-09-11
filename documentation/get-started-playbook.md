@@ -1,7 +1,7 @@
 ---
 title: Planetary Explorer application usage guide
 description: Use map and chat controls, Canadian pins, imagery and analysis workflows, with prerequisites, worked examples and verification limits
-ms.date: 2026-09-10
+ms.date: 2026-09-11
 ms.topic: how-to
 keywords:
   - Planetary Explorer
@@ -25,6 +25,7 @@ they are evidence, not current values for every location.
 | Review a wildfire image or NBR comparison | [CPU burn-index comparison](#review-a-burn-scar-with-cpu-tools) |
 | Run an approval-gated foundation model | [Foundation Change](#run-foundation-change-with-geofm) |
 | Combine public research and Python calculations | [Web Search and Code Interpreter](#use-web-search-and-code-interpreter) |
+| Resume work or recall earlier context | [Chat history and memory](chat-memory.md) |
 | Diagnose a missing layer or blocked action | [Troubleshooting](#troubleshoot-a-workflow) |
 | Check an answer before using it | [Result checks](#verify-a-result-before-using-it) and [operational safety](#apply-operational-safety-rules) |
 
@@ -69,17 +70,46 @@ Disabled controls indicate a missing prerequisite. Ask the operator to configure
 it using the [deployment guide](deployment.md); do not switch to another catalog
 and present its output as private tenant data.
 
+### September 11 history checks
+
+The [current deployment](https://app-earthcopilot-e1bb5a9c.azurewebsites.net)
+supports optional **Sign in** for private saved history and Azure AI Search
+memory. Public map use remains available to guests. Keep **Memory** on, wait
+for **Saved**, then open **History** to restore a conversation or exclude it
+from future recall. Recalled assistant statements are context, not new evidence
+or approval for another tool operation.
+
+The release-bound rerun completed 30 Setup examples, 27 analyses and all 12
+public Image Analysis examples with authenticated history save/restore. The
+Setup/analysis matrices made 69 verified transcript round trips. Two private
+Building Damage examples still require MPC Pro; three Site Intel analyses
+still require populated Fabric data. Authenticated Resilience examples passed.
+
+The exact Web Search/Code Interpreter worked example passed with a restored
+search transcript, real provider execution and independently verified printed
+numbers. The BC CPU NBR comparison passed with the documented 60 m pin window
+and actual May 31/September 6 dates. GeoFM's connection, preflight, exact
+approval card and denial transcript passed; no new GPU work was approved.
+The September 9 completed GeoFM run and screenshots below remain historical.
+
+History controls passed at desktop, 390-pixel and 320-pixel widths. Final source
+checks passed 1,472 backend tests (one existing skip), 218 frontend tests and
+152 helper tests (nine shell-tool skips). The API revision is
+`ca-earthcopilot-api--history-executor-0911`; the frontend bundle is
+`index-BHgg9cCg.js`. See [chat memory verification](chat-memory.md#september-11-deployed-verification)
+for exact release identifiers, deployment details and retained failure evidence.
+
 ### September 9 workflow checks
 
-The current guide was checked against the deployed application on September 9,
+The earlier guide was checked against the deployed application on September 9,
 2026. The Web Search/Code Interpreter case returned cited research and verified
 Python calculations. The Regina GeoFM comparison completed one approved GPU
 attempt, displayed its polygon and produced four checksum-verified artifacts.
 Details and screenshots are in the two workflows below.
 
-The final API source passed 1,434 backend tests with one existing skip; the
-frontend passed 212 tests. The API revision is `guide-approval-0909-233458` and
-the frontend bundle is `index-Bg17pjMx.js`. The final release check at 00:04 UTC
+That API source passed 1,434 backend tests with one existing skip; the
+frontend passed 212 tests. Its API revision was `guide-approval-0909-233458` and
+frontend bundle was `index-Bg17pjMx.js`. The final release check at 00:04 UTC
 on September 10 confirmed API health, the live bundle hash and zero active
 GeoFM worker replicas after the completed comparison. These focused checks do not rerun
 the entire historical gallery matrix or establish clear imagery at every point.
@@ -161,6 +191,8 @@ hash, API health, traffic weight, and GeoFM worker replicas before each matrix.
 | **MPC Pro**       | Route STAC searches to a configured private GeoCatalog; disabled when unavailable                                      |
 | Source and tool chips   | Confirm the catalog and analysis tool used for an answer                                                               |
 | **Stop** | Stop the current chat turn; a previously approved durable GPU job can continue |
+| **Memory** | Recall relevant earlier turns and saved chats; control whether this saved chat can be recalled later |
+| **History** | Search saved session titles, reopen a transcript, exclude it from memory, or delete it |
 | **Approve** / **Deny** | Resolve the displayed write request after checking its exact arguments; approval can incur cost |
 | **Restart**       | Clear the whole conversation when you no longer need its messages; Setup already replaces stale map and analysis state |
 

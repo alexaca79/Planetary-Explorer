@@ -31,6 +31,8 @@ def isolated_optional_configuration(monkeypatch):
         "EARTH2_FCN_ENDPOINT_URL", "MAI_WEATHER_ENDPOINT_URL", "MAI_WEATHER_SCORE_PATH",
         "ENABLE_FABRIC", "ENABLE_MPC_PRO", "DEPLOY_AI_FOUNDRY",
         "EXISTING_AI_PROJECT_ENDPOINT", "AZURE_OPENAI_ENDPOINT",
+        "CHAT_HISTORY_REMOTE_URL", "AZURE_CHAT_HISTORY_REMOTE_URL",
+        "AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "AZURE_CHAT_MEMORY_SEARCH_INDEX",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -74,6 +76,37 @@ def test_given_existing_weather_overrides_when_reconciling_then_explicit_endpoin
     assert "MAI_WEATHER_ENDPOINT_URL=https://mai.example" in update
     assert "MAI_WEATHER_SCORE_PATH=/score" in update
     assert update[update.index("--name") + 1] == "api"
+
+
+def test_given_private_history_bridge_when_reconciling_public_api_then_auth_and_remote_store_are_retained(monkeypatch):
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.setenv("AZURE_CHAT_HISTORY_REMOTE_URL", "https://history.example")
+    monkeypatch.setenv("MICROSOFT_ENTRA_TENANT_ID", "tenant")
+    monkeypatch.setenv("MICROSOFT_ENTRA_CLIENT_ID", "client")
+    commands = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "CHAT_HISTORY_STORE=remote" in update
+    assert "CHAT_HISTORY_ALLOW_ANONYMOUS=false" in update
+    assert "AZURE_AD_CLIENT_ID=client" in update
+    assert "PE_FEATURE_CHAT_HISTORY=false" not in update
+
+
+def test_given_memory_outputs_when_reconciling_then_dedicated_endpoint_and_index_are_wired(monkeypatch):
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
+    monkeypatch.setenv("AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "https://memory.search.windows.net")
+    monkeypatch.setenv("AZURE_CHAT_MEMORY_SEARCH_INDEX", "chat-memory-v1")
+    commands = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "CHAT_MEMORY_SEARCH_ENDPOINT=https://memory.search.windows.net" in update
+    assert "CHAT_MEMORY_AUTO_SETUP=true" in update
 
 
 def test_given_adopted_api_when_referencing_existing_services_then_inputs_are_wired(monkeypatch) -> None:

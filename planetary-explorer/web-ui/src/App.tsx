@@ -9,6 +9,7 @@ import MainApp from './components/MainApp';
 import { GlobalStyles } from './styles/GlobalStyles';
 import { API_BASE_URL } from './config/api';
 import type { ChatHistoryContext } from './services/api';
+import { getAuthToken } from './services/authHelper';
 import { confirmFailedHistoryDiscard, restoredStacMode } from './utils/chatHistory';
 import type { DeploymentFeatureFlags } from './components/GetStartedButton';
 
@@ -81,13 +82,15 @@ function App() {
       credentials: import.meta.env.DEV ? 'omit' : 'include',
     })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled || !data || !data.features) return;
+        const historyIdentityAvailable = !data.historyRequiresSignIn || Boolean(await getAuthToken());
+        if (cancelled) return;
         const next: DeploymentFeatures = {
           mpcPublic: data.features.mpcPublic !== false,
           mpcPro: !!data.features.mpcPro,
           fabric: !!data.features.fabric,
-          chatHistory: !!data.features.chatHistory,
+          chatHistory: !!data.features.chatHistory && historyIdentityAvailable,
           resilience: !!data.features.resilience,
           weather: !!data.features.weather,
         };

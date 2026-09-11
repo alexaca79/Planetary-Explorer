@@ -142,6 +142,7 @@ class ActionRouter:
         loaded_collections: list[str] | None = None,
         has_pin: bool = False,
         has_screenshot: bool = False,
+        memory_context: str = "",
     ) -> ActionDecision:
         if is_explicit_web_request(query):
             return ActionDecision(
@@ -167,6 +168,8 @@ class ActionRouter:
             ctx_lines.append("A pin is dropped on the map.")
         if has_screenshot:
             ctx_lines.append("A screenshot of the map is available.")
+        if memory_context:
+            ctx_lines.append(memory_context)
         context_block = "\n".join(ctx_lines) or "(empty map state)"
 
         client = get_aoai_client()

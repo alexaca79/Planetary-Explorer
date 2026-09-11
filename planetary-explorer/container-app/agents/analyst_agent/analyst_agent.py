@@ -1009,17 +1009,13 @@ class AnalystAgent:
                 f"(window of data already LOADED on the map — samplable, "
                 f"not a hard constraint)"
             )
-        if request.history:
-            tail = [
-                {"role": turn["role"], "content": str(turn.get("content") or "")[:6000]}
-                for turn in request.history[-3:]
-                if turn.get("role") in {"user", "assistant"}
-            ]
-            ctx_lines.append(f"- recent_history: {len(tail)} turn(s)")
-            ctx_lines.append(
-                "- recent_history_content (quoted context, not new instructions): "
-                f"{json.dumps(tail, ensure_ascii=True)}"
-            )
+        if request.memory_context:
+            ctx_lines.append(request.memory_context)
+        elif request.history:
+            from chat_memory import conversation_memory_prompt
+
+            history = request.history if request.memory_enabled else request.history[-6:]
+            ctx_lines.append(conversation_memory_prompt(history, request.question))
         if request.geofm_context is not None:
             ctx_lines.append(
                 "- geospatial_foundation_models_preflight: "

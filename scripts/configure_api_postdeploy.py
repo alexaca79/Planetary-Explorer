@@ -149,7 +149,21 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
     blob_endpoint = os.getenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
     history_disabled = "DEPLOY_CHAT_HISTORY" in os.environ and not _enabled(os.environ["DEPLOY_CHAT_HISTORY"])
     chat_requested = public_demo or history_disabled or bool(chat_endpoint or blob_endpoint)
-    if chat_requested:
+    remote_history = (os.getenv("CHAT_HISTORY_REMOTE_URL") or os.getenv("AZURE_CHAT_HISTORY_REMOTE_URL") or "").strip()
+    if remote_history:
+        parsed = urlsplit(remote_history)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise RuntimeError("Remote history requires an HTTPS origin without credentials or a path.")
+        tenant_id = os.getenv("MICROSOFT_ENTRA_TENANT_ID") or os.getenv("AZURE_TENANT_ID")
+        client_id = os.getenv("MICROSOFT_ENTRA_CLIENT_ID") or os.getenv("AUTH_CLIENT_ID")
+        if not tenant_id or not client_id:
+            raise RuntimeError("Remote history requires the configured Entra tenant and application IDs.")
+        values.extend([
+            "PE_FEATURE_CHAT_HISTORY=true", "CHAT_HISTORY_STORE=remote", "CHAT_ARTIFACT_STORE=remote",
+            f"CHAT_HISTORY_REMOTE_URL={remote_history.rstrip('/')}", "CHAT_HISTORY_ALLOW_ANONYMOUS=false",
+            f"AZURE_AD_TENANT_ID={tenant_id}", f"AZURE_AD_CLIENT_ID={client_id}",
+        ])
+    elif chat_requested:
         if public_demo or history_disabled:
             values.extend(
                 [
@@ -191,6 +205,16 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
             )
         else:
             raise RuntimeError("Chat history deployment outputs are incomplete.")
+
+    memory_endpoint = os.getenv("AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "").strip()
+    memory_index = os.getenv("AZURE_CHAT_MEMORY_SEARCH_INDEX", "").strip()
+    if not remote_history and memory_endpoint and memory_index and not public_demo and not history_disabled:
+        values.extend([
+            f"CHAT_MEMORY_SEARCH_ENDPOINT={memory_endpoint}", f"CHAT_MEMORY_SEARCH_INDEX={memory_index}",
+            "CHAT_MEMORY_AUTO_SETUP=true", "PE_FEATURE_CHAT_MEMORY=true",
+        ])
+    elif not remote_history and (public_demo or history_disabled):
+        removed_values.extend(["CHAT_MEMORY_SEARCH_ENDPOINT", "CHAT_MEMORY_SEARCH_INDEX", "CHAT_MEMORY_AUTO_SETUP"])
 
     web_search_url = (os.getenv("WEB_SEARCH_MCP_URL") or os.getenv("AZURE_WEB_SEARCH_MCP_URL", "")).strip()
     web_search_enabled = _enabled(os.getenv("WEB_SEARCH_ENABLED", os.getenv("DEPLOY_WEB_SEARCH_MCP", "false")))

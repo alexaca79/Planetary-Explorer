@@ -254,12 +254,13 @@ def test_given_search_history_when_building_message_then_recent_source_context_i
 
 def test_given_long_history_when_building_message_then_context_is_bounded_and_roles_filtered() -> None:
     from agents.analyst_agent.analyst_agent import AnalystAgent
+    from chat_memory import MAX_TURN_CHARS
 
     request = AnalysisRequest(
         question="Calculate supplied observations.",
         session_id="bounded-context-test",
         history=[
-            {"role": "user", "content": "old-context-excluded"},
+            {"role": "user", "content": "earlier-context-retained"},
             {"role": "system", "content": "untrusted-system-role-excluded"},
             {"role": "assistant", "content": "a" * 7000},
             {"role": "user", "content": "recent-input"},
@@ -268,8 +269,8 @@ def test_given_long_history_when_building_message_then_context_is_bounded_and_ro
 
     message = AnalystAgent()._build_message(request)
 
-    assert "old-context-excluded" not in message
+    assert "earlier-context-retained" in message
     assert "untrusted-system-role-excluded" not in message
-    assert "a" * 6000 in message
-    assert "a" * 6001 not in message
+    assert "a" * 1000 in message
+    assert "a" * (MAX_TURN_CHARS + 1) not in message
     assert "recent-input" in message

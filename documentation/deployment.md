@@ -1,7 +1,7 @@
 ---
 title: Deployment and Existing Resource Guide
 description: Deploy a non-GPU Planetary Explorer environment or explicitly connect existing services, with readiness checks and optional integrations.
-ms.date: 2026-09-10
+ms.date: 2026-09-11
 ---
 
 ## Choose a Deployment Path
@@ -11,6 +11,7 @@ ms.date: 2026-09-10
 | Run the UI and develop locally | [Local development](../LOCAL_DEV_CONTAINER_DEVELOPMENT.md) | None unless you call configured services |
 | Create a complete baseline application | Root `azd up`, below | Provisions selected resources, publishes web/API and enabled optional services |
 | Update an existing environment | [Reuse and application updates](#reuse-and-application-updates) | Selective application deployment; provisioning is separate |
+| Add history to a public API without VNet access | [Private history upgrade](#add-private-history-to-an-existing-public-app) | Additive CPU service, managed identity, private endpoints and optional sign-in |
 | Manage infrastructure separately | [Infrastructure reference](../planetary-explorer/infra/README.md) | Template reconciliation; application publishing is still required |
 | Use GitHub Actions | [Fork CI/CD](#fork-cicd) | Only after explicit workflow authorization |
 
@@ -59,7 +60,8 @@ endpoint can use GPU infrastructure owned elsewhere.
 | Code Interpreter | Off by default | Set `CODE_INTERPRETER_ENABLED=true` on a compatible API build; uses the existing provider's managed sandbox, with additional charges |
 | Fabric | Off by default | Existing populated workspace/lakehouse and backend identity grants required; capacity creation alone does not create data |
 | Private GeoCatalog | Not created | Supply an authorized MPC Pro STAC endpoint and exact asset hosts |
-| AI Search | Not created by the root template | Create or reference a service, populated indexes, and runtime identity permissions separately |
+| Chat memory Search | Dedicated service when authenticated direct history and `DEPLOY_CHAT_MEMORY=true` are enabled | Managed identity initializes `chat-memory-v1`; no embedding deployment required |
+| Catalog/document AI Search | Not created by the root template | Create or reference populated indexes and runtime identity permissions separately |
 | Private endpoints and DNS | Off by default | Opt in when required by policy; build agents and operators need network reachability |
 | GeoFM | Off by default, GPU-dependent | Separate explicit deployment or existing control endpoint with matching keys and network access |
 | Teams/M365 surfaces | Not part of baseline publishing | Tenant app registration, manifest installation, API authorization and capability testing are separate |
@@ -157,7 +159,9 @@ azd env set DEPLOY_WEATHER_STUB true
 The weather choice above enables Forecast without GPU hosting. Set it false
 for a smaller baseline and supply an existing provider URL if Forecast is
 required. Chat history defaults on; `azd env set DEPLOY_CHAT_HISTORY false`
-omits its Cosmos deployment and disables history wiring.
+omits its Cosmos deployment and disables direct history wiring. Memory Search
+defaults on for authenticated direct history; `DEPLOY_CHAT_MEMORY=false` retains
+bounded canonical-history fallback without provisioning its Search service.
 
 For private endpoints, also set `ACR_AGENT_POOL_COUNT 1` before provisioning,
 unless you have verified another private build path. This creates a billed,
@@ -195,8 +199,93 @@ identity propagation, not a fixed one-hour guarantee.
 
 For a disposable public demo only, explicitly choose `PUBLIC_DEMO_MODE=true`
 and `ENABLE_AUTHENTICATION=false`. This makes protected API routes public and
-disables per-user history. It is not a workaround for authentication failures
-and is not suitable for private tenant data.
+disables direct per-user history. The optional-sign-in private-history pattern
+below is an exception: map use stays public, but history always requires a
+validated user. Public mode is not a workaround for authentication failures
+and is not suitable for other private tenant data.
+
+## Add Private History to an Existing Public App
+
+Use [chat-history-upgrade.bicep](../planetary-explorer/infra/chat-history-upgrade.bicep)
+when the existing API cannot reach its private Cosmos and Blob accounts. This
+resource-group entry point adds an authenticated CPU history service to an
+existing VNet-integrated Container Apps environment. It does not replace the
+public API, data accounts, VNet, subnet or registry. The service has external
+HTTPS ingress with in-process JWT validation; its data endpoints are private.
+
+Provide the existing Cosmos database/container and Blob container, registry,
+network resource group, VNet/private-endpoint subnet, Container Apps environment,
+and frontend Web App. Existing Blob and Search private DNS zones must be linked
+to that VNet. The template adds their endpoints plus the Cosmos DNS zone/link.
+The new Search service, history app and managed identity need unique names.
+Set `image` to a tested immutable backend digest, `networkLocation` to the
+existing environment's region, and `searchLocation` to an available region.
+Basic Search and a minimum-one 0.5-vCPU history replica have ongoing charges.
+
+Optional sign-in needs a tenant-only registration matching the frontend's exact
+callback. The preview-first helper below can create a dedicated registration,
+delegated API scope and service principal, and store its confidential-client
+secret directly in `HISTORY_AUTH_CLIENT_SECRET` on the Web App. It never prints
+the secret. It preauthorizes Azure CLI for authenticated operator verification.
+Review that choice against tenant policy; application-owner permissions are
+required. Existing ambiguous or mismatched registrations are rejected. The
+credential lasts one year and needs operator-managed rotation before expiry.
+
+```powershell
+python scripts/setup_chat_history_identity.py --tenant-id $tenantId --subscription-id $subscriptionId --resource-group '<existing-resource-group>' --web-app-name '<existing-web-app>' --application-name '<dedicated-registration-name>'
+```
+
+After reviewing the preview, append `--apply` to perform those writes. Put the
+returned non-secret application ID and tenant ID into the template's `clientId`
+and `tenantId`. The Bicep auth module references only the secret setting name;
+never put a credential value in an ARM parameter file. It enables the token
+store while allowing anonymous public pages.
+
+Review concrete parameters in a private operator file, then validate and preview
+before applying to the existing data-account resource group:
+
+```powershell
+$historyTemplate = 'planetary-explorer/infra/chat-history-upgrade.bicep'
+$historyParameters = '<private-concrete-parameters.json>'
+az account show --query '{tenant:tenantId,subscription:id}' -o json
+az deployment group validate --resource-group '<existing-resource-group>' --template-file $historyTemplate --parameters "@$historyParameters"
+az deployment group what-if --resource-group '<existing-resource-group>' --template-file $historyTemplate --parameters "@$historyParameters"
+az deployment group create --name '<history-upgrade-release>' --resource-group '<existing-resource-group>' --template-file $historyTemplate --parameters "@$historyParameters"
+```
+
+Confirm there are no unintended resource changes, and verify all private
+endpoints and resource-scoped roles after deployment. The history service runs
+`chat_history_app:app` from the backend image and initializes the Search schema.
+The September 11 rollout required an East US Search allocation after East US 2
+returned `InsufficientResourcesAvailable`; do not disable policy or networking
+to handle a capacity failure.
+
+Retain the original azd environment and persist the resulting wiring:
+
+```powershell
+azd env select '<existing-environment>'
+azd env set CHAT_HISTORY_REMOTE_URL 'https://<deployed-history-host>'
+azd env set AZURE_CHAT_HISTORY_REMOTE_URL 'https://<deployed-history-host>'
+azd env set MICROSOFT_ENTRA_CLIENT_ID '<history-application-client-id>'
+azd env set MICROSOFT_ENTRA_TENANT_ID $tenantId
+```
+
+Publish the compatible API and frontend using the
+[application-update procedure](#reuse-and-application-updates). The API/auth
+postdeploy hooks preserve optional sign-in when a remote history URL is set;
+they configure remote stores and real bearer validation instead of anonymous
+history. A strict image-only update needs those same runtime settings applied
+explicitly. The main template also accepts `CHAT_HISTORY_REMOTE_URL`, but does
+not replace the separately managed private history service. Do not run a full
+stack provision solely to refresh this additive service.
+
+Verify guest history requests return 401, signed-in history save/restore works,
+and Search-backed recall survives a fresh chat. Check the actual optional
+sign-in flow as well as managed-identity data access. See
+[chat memory verification](chat-memory.md#september-11-deployed-verification)
+for current results, limits and test entry points. For rollback, retain the
+previous API digest, frontend ZIP, and protected settings; disabling history
+does not require deleting user data or reopening storage firewalls.
 
 ## Reuse and Application Updates
 

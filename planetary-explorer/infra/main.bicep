@@ -60,6 +60,18 @@ param publicDemoMode bool = false
 @description('Deploy durable per-user chat history in Cosmos DB with downloadable artifacts in Blob Storage.')
 param deployChatHistory bool = true
 
+@description('Provision a dedicated AI Search memory service for authenticated chat history.')
+param deployChatMemory bool = true
+
+@description('Name of the dedicated per-user chat memory index.')
+param chatMemoryIndexName string = 'chat-memory-v1'
+
+@description('Optional region override for Search capacity availability; empty uses the primary region.')
+param chatMemorySearchLocation string = ''
+
+@description('Existing authenticated history service origin for a public API without private-network access.')
+param chatHistoryRemoteUrl string = ''
+
 @description('Comma-separated host names accepted by the API. Include custom API domains when configured.')
 param allowedHosts string = '*.azurecontainerapps.io'
 
@@ -417,6 +429,32 @@ module chatHistory './shared/cosmos-chat-history.bicep' = if (deployChatHistory)
   }
 }
 
+module chatMemorySearch './shared/chat-memory-search.bicep' = if (deployChatHistory && deployChatMemory && !publicDemoMode) {
+  name: 'chat-memory-search'
+  scope: rg
+  params: {
+    name: '${abbrs.searchSearchServices}${resourceToken}-memory'
+    location: empty(chatMemorySearchLocation) ? location : chatMemorySearchLocation
+    tags: tags
+    enablePrivateEndpoints: enablePrivateEndpoints
+    cloudEnvironment: cloudEnvironment
+  }
+}
+
+module peChatMemory './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployChatHistory && deployChatMemory && !publicDemoMode) {
+  name: 'pe-chat-memory'
+  scope: rg
+  params: {
+    name: 'pe-search-memory-${resourceToken}'
+    location: location
+    tags: tags
+    serviceResourceId: chatMemorySearch.?outputs.?id ?? ''
+    groupId: 'searchService'
+    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
+    privateDnsZoneId: privateDnsZones.?outputs.?searchDnsZoneId ?? ''
+  }
+}
+
 // Key Vault (required for AI Foundry Hub)
 module keyVault './shared/keyvault.bicep' = if (deployAIFoundry) {
   name: 'keyvault'
@@ -714,12 +752,15 @@ module web './app/web.bicep' = if (shouldDeployApiContainer) {
     microsoftEntraClientId: microsoftEntraClientId
     microsoftEntraTenantId: microsoftEntraTenantId
     microsoftEntraClientSecret: microsoftEntraClientSecret
-    enableChatHistory: deployChatHistory && !publicDemoMode
+    enableChatHistory: !empty(chatHistoryRemoteUrl) || (deployChatHistory && !publicDemoMode)
+    chatHistoryRemoteUrl: chatHistoryRemoteUrl
     cosmosChatEndpoint: deployChatHistory && !publicDemoMode ? (chatHistory.?outputs.?endpoint ?? '') : ''
     cosmosChatDatabase: chatHistory.?outputs.?databaseName ?? 'planetary-explorer'
     cosmosChatContainer: chatHistory.?outputs.?containerName ?? 'chat-history'
     chatArtifactBlobEndpoint: deployChatHistory && !publicDemoMode ? (storage.?outputs.?blobEndpoint ?? '') : ''
     chatArtifactContainer: storage.?outputs.?chatArtifactContainerName ?? 'chat-artifacts'
+    chatMemorySearchEndpoint: chatMemorySearch.?outputs.?endpoint ?? ''
+    chatMemoryIndexName: chatMemoryIndexName
     // Cloud environment
     cloudEnvironment: cloudEnvironment
     // AI Agent Service project endpoint
@@ -774,6 +815,17 @@ module chatHistoryAccess './shared/chat-history-access.bicep' = if (deployChatHi
     cosmosContainerName: chatHistory.?outputs.?containerName ?? ''
     storageAccountName: storage.?outputs.?name ?? ''
     blobContainerName: storage.?outputs.?chatArtifactContainerName ?? ''
+    principalId: shouldDeployApiContainer
+      ? (web.?outputs.?principalId ?? '')
+      : (adoptedApi.?identity.?principalId ?? '')
+  }
+}
+
+module chatMemoryAccess './shared/chat-memory-access.bicep' = if (deployChatHistory && deployChatMemory && !publicDemoMode && (shouldDeployApiContainer || !empty(apiContainerAppName))) {
+  name: 'chat-memory-access'
+  scope: rg
+  params: {
+    searchServiceName: chatMemorySearch.?outputs.?name ?? ''
     principalId: shouldDeployApiContainer
       ? (web.?outputs.?principalId ?? '')
       : (adoptedApi.?identity.?principalId ?? '')
@@ -900,6 +952,9 @@ output AZURE_COSMOS_CHAT_HISTORY_DATABASE string = chatHistory.?outputs.?databas
 output AZURE_COSMOS_CHAT_HISTORY_CONTAINER string = chatHistory.?outputs.?containerName ?? ''
 output AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT string = storage.?outputs.?blobEndpoint ?? ''
 output AZURE_CHAT_ARTIFACT_CONTAINER string = storage.?outputs.?chatArtifactContainerName ?? ''
+output AZURE_CHAT_MEMORY_SEARCH_ENDPOINT string = chatMemorySearch.?outputs.?endpoint ?? ''
+output AZURE_CHAT_MEMORY_SEARCH_INDEX string = deployChatHistory && deployChatMemory && !publicDemoMode ? chatMemoryIndexName : ''
+output AZURE_CHAT_HISTORY_REMOTE_URL string = chatHistoryRemoteUrl
 output AZURE_WEB_APP_NAME string = deployFrontend ? (frontend.?outputs.?webAppName ?? '') : frontendWebAppName
 output AZURE_WEB_APP_URL string = deployFrontend ? (frontend.?outputs.?webAppUrl ?? '') : resolvedFrontendUrl
 output AZURE_APP_SERVICE_PLAN_NAME string = deployFrontend ? (frontend.?outputs.?appServicePlanName ?? '') : frontendAppServicePlanName
