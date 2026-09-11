@@ -203,6 +203,40 @@ describe('GEOINT module flow', () => {
   });
 
   it.each([
+    { sceneCount: 1, hasItemUrl: true, expected: 'item' },
+    { sceneCount: 2, hasItemUrl: true, expected: 'mosaic' },
+    { sceneCount: 1, hasItemUrl: false, expected: 'mosaic' },
+  ])('selects the correct dated imagery source: %j', async ({ sceneCount, hasItemUrl, expected }) => {
+    const response = createHlsFireResponse();
+    const feature = response.data.stac_results.features[0];
+    feature.id = 'S2C_MSIL2A_20260828T165841_R069_T15UYR_20260828T215915';
+    feature.collection = 'sentinel-2-l2a';
+    feature.properties.datetime = '2026-08-28T16:58:41Z';
+    response.translation_metadata.render_profile = null;
+    response.translation_metadata.all_tile_urls[0].item_id = feature.id;
+    const itemUrl = response.translation_metadata.all_tile_urls[0].tilejson_url;
+    const mosaicUrl = 'https://example.test/mosaic/tilejson.json?assets=B04&assets=B03&assets=B02';
+    response.translation_metadata.mosaic_tilejson = {
+      tilejson_url: mosaicUrl,
+      search_id: 'mosaic-search',
+      collection: 'sentinel-2-l2a',
+    };
+    if (sceneCount > 1) {
+      response.data.stac_results.features.push({ ...feature, id: 'second-scene' });
+    }
+    if (!hasItemUrl) response.translation_metadata.all_tile_urls = [];
+
+    renderMap({ selectedDataset: null, lastChatResponse: response });
+
+    await waitFor(() => {
+      expect(tileJsonMocks.fetchAndSignTileJSON.mock.calls.map(([url]) => url))
+        .toContain(expected === 'item' ? itemUrl : mosaicUrl);
+    });
+    expect(tileJsonMocks.fetchAndSignTileJSON.mock.calls.map(([url]) => url))
+      .not.toContain(expected === 'item' ? mosaicUrl : itemUrl);
+  });
+
+  it.each([
     { azureMaps: {} },
     { azureMaps: { subscriptionKey: 'DEVELOPMENT_MODE_NO_KEY', developmentMode: true } },
     null,

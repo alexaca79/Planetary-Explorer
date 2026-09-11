@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).parents[1] / "configure_api_postdeploy.py"
 SPEC = importlib.util.spec_from_file_location("configure_api_postdeploy", SCRIPT_PATH)
@@ -17,6 +19,120 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+@pytest.fixture(autouse=True)
+def isolated_optional_configuration(monkeypatch):
+    for name in (
+        "DEPLOY_GEOFM", "DEPLOY_GEOFM_SERVICES", "GEOFM_ENABLED", "GEOFM_MCP_URL",
+        "DEPLOY_WEB_SEARCH_MCP", "WEB_SEARCH_ENABLED", "WEB_SEARCH_MCP_URL",
+        "DEPLOY_CHAT_HISTORY", "DEPLOY_WEATHER_STUB", "FORECAST_AGENT_ENABLED",
+        "AZURE_WEATHER_STUB_CONTAINER_APP_NAME", "AURORA_ENDPOINT_URL",
+        "EARTH2_FCN_ENDPOINT_URL", "MAI_WEATHER_ENDPOINT_URL", "MAI_WEATHER_SCORE_PATH",
+        "ENABLE_FABRIC", "ENABLE_MPC_PRO", "DEPLOY_AI_FOUNDRY",
+        "EXISTING_AI_PROJECT_ENDPOINT", "AZURE_OPENAI_ENDPOINT",
+        "CHAT_HISTORY_REMOTE_URL", "AZURE_CHAT_HISTORY_REMOTE_URL",
+        "AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "AZURE_CHAT_MEMORY_SEARCH_INDEX",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_given_cpu_settings_with_stale_outputs_when_reconciling_then_gpu_stays_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("DEPLOY_GEOFM", "false")
+    monkeypatch.setenv("DEPLOY_WEB_SEARCH_MCP", "false")
+    monkeypatch.setenv("DEPLOY_CHAT_HISTORY", "false")
+    monkeypatch.setenv("FORECAST_AGENT_ENABLED", "false")
+    monkeypatch.setenv("AZURE_GEOFM_MCP_URL", "https://old-gpu.internal")
+    monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://old-search.internal")
+    monkeypatch.setenv("AZURE_WEATHER_STUB_URL", "https://old-weather.internal")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "GEOFM_ENABLED=false" in update
+    assert "WEB_SEARCH_ENABLED=false" in update
+    assert "PE_FEATURE_CHAT_HISTORY=false" in update
+    assert "FORECAST_AGENT_ENABLED=0" in update
+    assert not any(command[:3] == ["containerapp", "secret", "set"] for command in commands)
+
+
+def test_given_existing_weather_overrides_when_reconciling_then_explicit_endpoints_win(monkeypatch) -> None:
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_URL", raising=False)
+    monkeypatch.setenv("AZURE_WEATHER_STUB_URL", "https://weather.internal")
+    monkeypatch.setenv("AURORA_ENDPOINT_URL", "https://aurora.example")
+    monkeypatch.setenv("MAI_WEATHER_ENDPOINT_URL", "https://mai.example")
+    monkeypatch.setenv("MAI_WEATHER_SCORE_PATH", "/score")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "AURORA_ENDPOINT_URL=https://aurora.example" in update
+    assert "EARTH2_FCN_ENDPOINT_URL=https://weather.internal" in update
+    assert "MAI_WEATHER_ENDPOINT_URL=https://mai.example" in update
+    assert "MAI_WEATHER_SCORE_PATH=/score" in update
+    assert update[update.index("--name") + 1] == "api"
+
+
+def test_given_private_history_bridge_when_reconciling_public_api_then_auth_and_remote_store_are_retained(monkeypatch):
+    monkeypatch.setenv("PUBLIC_DEMO_MODE", "true")
+    monkeypatch.setenv("AZURE_CHAT_HISTORY_REMOTE_URL", "https://history.example")
+    monkeypatch.setenv("MICROSOFT_ENTRA_TENANT_ID", "tenant")
+    monkeypatch.setenv("MICROSOFT_ENTRA_CLIENT_ID", "client")
+    commands = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "CHAT_HISTORY_STORE=remote" in update
+    assert "CHAT_HISTORY_ALLOW_ANONYMOUS=false" in update
+    assert "AZURE_AD_CLIENT_ID=client" in update
+    assert "PE_FEATURE_CHAT_HISTORY=false" not in update
+
+
+def test_given_memory_outputs_when_reconciling_then_dedicated_endpoint_and_index_are_wired(monkeypatch):
+    monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)
+    monkeypatch.setenv("AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "https://memory.search.windows.net")
+    monkeypatch.setenv("AZURE_CHAT_MEMORY_SEARCH_INDEX", "chat-memory-v1")
+    commands = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "CHAT_MEMORY_SEARCH_ENDPOINT=https://memory.search.windows.net" in update
+    assert "CHAT_MEMORY_AUTO_SETUP=true" in update
+
+
+def test_given_adopted_api_when_referencing_existing_services_then_inputs_are_wired(monkeypatch) -> None:
+    monkeypatch.delenv("AZURE_GEOFM_MCP_URL", raising=False)
+    monkeypatch.delenv("AZURE_WEB_SEARCH_MCP_URL", raising=False)
+    monkeypatch.setenv("DEPLOY_AI_FOUNDRY", "false")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://models.example")
+    monkeypatch.setenv("EXISTING_AI_PROJECT_ENDPOINT", "https://foundry.example/api/projects/existing")
+    monkeypatch.setenv("ENABLE_FABRIC", "true")
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", "workspace")
+    monkeypatch.setenv("FABRIC_LAKEHOUSE_ID", "lakehouse")
+    monkeypatch.setenv("ENABLE_MPC_PRO", "true")
+    monkeypatch.setenv("MPC_PRO_STAC_URL", "https://catalog.example/stac")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(MODULE, "run_az", lambda arguments: commands.append(arguments) or "")
+
+    MODULE.reconcile_api_optional_services("api", "rg")
+
+    update = next(command for command in commands if command[:2] == ["containerapp", "update"])
+    assert "AZURE_OPENAI_ENDPOINT=https://models.example" in update
+    assert "AZURE_AI_PROJECT_ENDPOINT=https://foundry.example/api/projects/existing" in update
+    assert "PE_FEATURE_FABRIC=true" in update
+    assert "FABRIC_LAKEHOUSE_WORKSPACE_ID=workspace" in update
+    assert "FABRIC_LAKEHOUSE_ID=lakehouse" in update
+    assert "MPC_PRO_STAC_URL=https://catalog.example/stac" in update
+    assert update[update.index("--name") + 1] == "api"
 
 
 def test_given_container_app_when_building_update_then_runtime_settings_are_restored() -> None:
@@ -138,6 +254,29 @@ def test_given_web_search_profile_when_building_update_then_mcp_probes_are_resto
     ) == "/ready"
 
 
+def test_given_cpu_weather_when_building_update_then_internal_health_probes_are_restored() -> None:
+    resource = {
+        "identity": {"type": "SystemAssigned"},
+        "properties": {
+            "environmentId": "/subscriptions/example/environments/example",
+            "configuration": {"ingress": {"external": False, "targetPort": 80}},
+            "template": {
+                "containers": [{"name": "weather-stub", "image": "example/weather:release"}],
+                "scale": {"minReplicas": 0, "maxReplicas": 2},
+            },
+        },
+    }
+
+    document = MODULE.build_update_document(resource, "weather")
+
+    ingress = document["properties"]["configuration"]["ingress"]
+    assert ingress["external"] is False
+    assert ingress["targetPort"] == 8080
+    probes = document["properties"]["template"]["containers"][0]["probes"]
+    assert {probe["httpGet"]["path"] for probe in probes} == {"/health"}
+    assert document["properties"]["template"]["scale"] == {"minReplicas": 0, "maxReplicas": 2}
+
+
 def test_given_optional_outputs_when_reconciling_api_then_services_are_configured(
     monkeypatch,
 ) -> None:
@@ -149,6 +288,7 @@ def test_given_optional_outputs_when_reconciling_api_then_services_are_configure
     monkeypatch.setenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "https://blob.example")
     monkeypatch.setenv("AZURE_CHAT_ARTIFACT_CONTAINER", "chat-artifacts")
     monkeypatch.setenv("AZURE_WEB_SEARCH_MCP_URL", "https://search.internal")
+    monkeypatch.setenv("DEPLOY_WEB_SEARCH_MCP", "true")
     monkeypatch.setenv("WEB_SEARCH_MCP_API_KEY", "w" * 32)
     monkeypatch.setenv("AZURE_WEATHER_STUB_URL", "https://weather.example")
     monkeypatch.delenv("PUBLIC_DEMO_MODE", raising=False)

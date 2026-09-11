@@ -71,6 +71,9 @@ param microsoftEntraClientSecret string = ''
 @description('Enable durable per-user chat history and downloadable test artifacts.')
 param enableChatHistory bool = false
 
+@description('Authenticated remote history service origin; empty uses direct data access.')
+param chatHistoryRemoteUrl string = ''
+
 @description('Keyless Cosmos DB endpoint for chat history.')
 param cosmosChatEndpoint string = ''
 
@@ -85,6 +88,12 @@ param chatArtifactBlobEndpoint string = ''
 
 @description('Private Blob container containing chat artifact files.')
 param chatArtifactContainer string = 'chat-artifacts'
+
+@description('Dedicated keyless Search endpoint for chat memory.')
+param chatMemorySearchEndpoint string = ''
+
+@description('Dedicated Search index for owner-filtered memory.')
+param chatMemoryIndexName string = 'chat-memory-v1'
 
 // Cloud environment
 @description('Cloud environment: Commercial or Government')
@@ -313,8 +322,32 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
               value: enableChatHistory ? 'true' : 'false'
             }
             {
+              name: 'PE_FEATURE_CHAT_MEMORY'
+              value: 'true'
+            }
+            {
+              name: 'CHAT_MEMORY_SEARCH_ENDPOINT'
+              value: enableChatHistory ? chatMemorySearchEndpoint : ''
+            }
+            {
+              name: 'CHAT_MEMORY_SEARCH_INDEX'
+              value: enableChatHistory && !empty(chatMemorySearchEndpoint) ? chatMemoryIndexName : ''
+            }
+            {
+              name: 'CHAT_MEMORY_AUTO_SETUP'
+              value: enableChatHistory && !empty(chatMemorySearchEndpoint) ? 'true' : 'false'
+            }
+            {
               name: 'CHAT_HISTORY_STORE'
-              value: enableChatHistory ? 'cosmos' : 'disabled'
+              value: enableChatHistory ? (!empty(chatHistoryRemoteUrl) ? 'remote' : 'cosmos') : 'disabled'
+            }
+            {
+              name: 'CHAT_HISTORY_REMOTE_URL'
+              value: chatHistoryRemoteUrl
+            }
+            {
+              name: 'CHAT_HISTORY_ALLOW_ANONYMOUS'
+              value: 'false'
             }
             {
               name: 'COSMOS_CHAT_ENDPOINT'
@@ -330,7 +363,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'CHAT_ARTIFACT_STORE'
-              value: enableChatHistory ? 'blob' : 'disabled'
+              value: enableChatHistory ? (!empty(chatHistoryRemoteUrl) ? 'remote' : 'blob') : 'disabled'
             }
             {
               name: 'CHAT_ARTIFACT_BLOB_ENDPOINT'

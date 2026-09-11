@@ -373,7 +373,10 @@ app = FastAPI(
     openapi_url="/openapi.json" if api_docs_enabled else None,
 )
 
-from chat_history_api import router as chat_history_router
+if os.getenv("CHAT_HISTORY_REMOTE_URL"):
+    from chat_history_remote import router as chat_history_router
+else:
+    from chat_history_api import router as chat_history_router
 
 app.include_router(chat_history_router)
 
@@ -877,6 +880,12 @@ def _extract_stac_datetime_fallback(query: str) -> Optional[str]:
 
 def _requests_exact_stac_date(query: str) -> bool:
     """Return whether the query explicitly requests one exact ISO date."""
+    from tile_selector import TileSelector
+
+    if re.search(r"\b\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}", query):
+        return False
+    if TileSelector.nearest_requested_date(query) is not None:
+        return False
     iso_dates = re.findall(
         r"(?<!\d)((?:19|20)\d{2}-\d{2}-\d{2})(?!\d)",
         query.casefold(),
@@ -910,8 +919,10 @@ def _should_apply_stac_datetime_fallback(
     stac_query: Dict[str, Any],
     natural_query: str,
 ) -> bool:
-    """Return whether prose dates should fill a missing STAC datetime."""
-    if stac_query.get("datetime") or not natural_query:
+    """Fill missing dates and preserve exact days over model-expanded ranges."""
+    if not natural_query:
+        return False
+    if stac_query.get("datetime") and not _requests_exact_stac_date(natural_query):
         return False
     collections = stac_query.get("collections") or []
     return not (
@@ -1008,6 +1019,10 @@ async def execute_direct_stac_search(
                 v2_selection = None
 
         stac_query = _sanitize_static_stac_query(stac_query)
+        if _should_apply_stac_datetime_fallback(stac_query, original_query):
+            requested_datetime = _extract_stac_datetime_fallback(original_query)
+            if requested_datetime:
+                stac_query = {**stac_query, "datetime": requested_datetime}
 
         # Normalize datetime ONCE for every endpoint. Public PC tolerates
         # date-only shorthand; GeoCatalog (pgstac strict) rejects it with
@@ -1302,6 +1317,14 @@ async def _warm_collection_titles():
         start_background_refresh()
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[STAC-TITLES] failed to start refresher: %s", exc)
+
+
+@app.on_event("startup")
+async def _initialize_chat_memory_index():
+    if os.getenv("CHAT_MEMORY_AUTO_SETUP", "false").lower() == "true" and not os.getenv("CHAT_HISTORY_REMOTE_URL"):
+        from setup_chat_memory import configure_memory_index_from_env
+
+        await asyncio.to_thread(configure_memory_index_from_env)
 
 
 @app.on_event("startup")
@@ -2957,11 +2980,15 @@ async def get_config():
         "api": {
             "baseUrl": "/api"
         },
+        "historyRequiresSignIn": not _env_flag("CHAT_HISTORY_ALLOW_ANONYMOUS", default=False),
         "features": {
             "mpcPublic": True,
             "mpcPro": _env_flag("PE_FEATURE_MPC_PRO", default=False),
             "fabric": _env_flag("PE_FEATURE_FABRIC", default=False),
-            "chatHistory": _env_flag("PE_FEATURE_CHAT_HISTORY", default=False),
+            "chatHistory": _env_flag(
+                "PE_FEATURE_CHAT_HISTORY",
+                default=os.getenv("CHAT_HISTORY_STORE") in {"cosmos", "memory"},
+            ),
             "resilience": (
                 _env_flag("RESILIENCE_MVP", default=True)
                 and AGENT_FRAMEWORK_AVAILABLE
@@ -4824,6 +4851,17 @@ async def unified_query_processor(request: Request):
         )
         req_body['model'] = selected_model
         req_body['reasoning_effort'] = selected_reasoning_effort
+        from chat_history_api import get_request_owner
+        from chat_memory import prepare_chat_memory
+
+        try:
+            memory_owner = get_request_owner(request)
+        except HTTPException:
+            memory_owner = None
+        await prepare_chat_memory(
+            req_body, memory_owner, client_session_id,
+            authorization=request.headers.get("Authorization"),
+        )
         is_foundation_change_turn = (
             req_body.get('geoint_module') == 'foundation_change'
         )
@@ -5189,6 +5227,7 @@ async def unified_query_processor(request: Request):
             return {
                 "success": True,
                 "action": "clarify",
+                "memory": req_body.get("_chat_memory"),
                 "response": v2_result.get("answer", ""),
                 "user_response": v2_result.get("answer", ""),
                 "options": _structured.get("options") or [],
@@ -5206,6 +5245,7 @@ async def unified_query_processor(request: Request):
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "sources": v2_result.get("sources", []),
+                "memory": req_body.get("_chat_memory"),
                 "visualizations": v2_result.get("visualizations", []),
                 "map_data": v2_result.get("map_data"),
                 "structured": v2_result.get("structured", {}),
@@ -5250,6 +5290,7 @@ async def unified_query_processor(request: Request):
             return JSONResponse(content={
                 "session_id": client_session_id,
                 "success": True,
+                "memory": req_body.get("_chat_memory"),
                 "answer": v2_result.get("answer", ""),
                 "response": v2_result.get("answer", ""),
                 "user_response": v2_result.get("answer", ""),
@@ -5271,6 +5312,9 @@ async def unified_query_processor(request: Request):
         # The agent's chat_summary and stac_query are stashed on
         # req_body so the response builder can use them at the end.
         if v2_result.get("action") == "LOAD":
+            if v2_result.get("resolved_query"):
+                natural_query = str(v2_result["resolved_query"])
+                req_body["query"] = natural_query
             # Clear any pending LOAD clarification — we are executing now.
             try:
                 if router_agent and session_id:
@@ -6950,6 +6994,13 @@ async def unified_query_processor(request: Request):
                         pin=pin,
                     )
                     collections = list(stac_params.get("collections") or [])
+
+                if not req_body.get("bbox"):
+                    from pipeline.stac_inspection import apply_pin_imagery_overrides
+
+                    stac_params = apply_pin_imagery_overrides(
+                        stac_params=stac_params, query=natural_query, pin=pin,
+                    )
                 
                 if collections:
                     stac_query = build_stac_query(stac_params)
@@ -7031,6 +7082,13 @@ async def unified_query_processor(request: Request):
                     else:
                         # Use the semantic translator's translate_query method with pin and session_bbox fallback
                         stac_params = await translator.translate_query(natural_query, pin_location=pin, session_bbox=session_bbox)
+
+                    if isinstance(stac_params, dict) and not req_body.get("bbox"):
+                        from pipeline.stac_inspection import apply_pin_imagery_overrides
+
+                        stac_params = apply_pin_imagery_overrides(
+                            stac_params=stac_params, query=natural_query, pin=pin,
+                        )
 
                     _post_load_inspection = req_body.get(
                         "_v2_post_load_inspection"
@@ -7173,7 +7231,7 @@ async def unified_query_processor(request: Request):
                 # block (collection_name_mapper.find_collections) with a
                 # live inventory lookup, so lookalike tokens (e.g.
                 # ``sentinel-2`` when only ``sentinel-2-l2a`` exists in
-                # the catalog) cannot clobber a correct SK pick.
+                # the catalog) cannot clobber a correct collection choice.
                 _post_load_inspection = req_body.get("_v2_post_load_inspection")
                 try:
                     from collection_index import get_collection_index as _get_idx
@@ -7189,8 +7247,8 @@ async def unified_query_processor(request: Request):
                     # ---- Stage A: literal-id passthrough (always-on) ----
                     try:
                         _idx = await _get_idx()
-                        _sk_collections = list(stac_query.get("collections") or [])
-                        _sk_lower = {c.lower() for c in _sk_collections}
+                        _selected_collections = list(stac_query.get("collections") or [])
+                        _selected_collections_lower = {c.lower() for c in _selected_collections}
                         # Token-split on whitespace + common punctuation. We rely on
                         # ``lookup_exact`` to be authoritative — only tokens that ARE
                         # real ids in the live inventory will resolve.
@@ -7200,18 +7258,18 @@ async def unified_query_processor(request: Request):
                         _tokens = [t for t in _raw.split() if t and len(t) >= 3]
                         _literal_hit: Optional[str] = None
                         for _tok in _tokens:
-                            if _tok in _sk_lower:
+                            if _tok in _selected_collections_lower:
                                 continue
                             _hit = await _idx.lookup_exact(_tok, _v2_mode)
-                            if _hit and _hit.lower() not in _sk_lower:
+                            if _hit and _hit.lower() not in _selected_collections_lower:
                                 _literal_hit = _hit
                                 break
                         if _literal_hit:
                             logger.info(
                                 "[COLLECTION-PASSTHROUGH] Literal STAC id resolved via "
-                                "CollectionIndex (mode=%s); overriding SK collections=%s "
+                                "CollectionIndex (mode=%s); overriding selected collections=%s "
                                 "with [%s] (query=%r)",
-                                _v2_mode, _sk_collections, _literal_hit, natural_query,
+                                _v2_mode, _selected_collections, _literal_hit, natural_query,
                             )
                             stac_query["collections"] = [_literal_hit]
                             if isinstance(stac_params, dict):
@@ -8126,12 +8184,8 @@ async def unified_query_processor(request: Request):
 
         # ----------------------------------------------------------------
         # FINAL SAFETY NET: response_message must NEVER be empty / blank.
-        # The legacy SemanticTranslator + SK shim path silently returns ""
-        # in some failure modes (gpt-5 reasoning models exhausting their
-        # max_completion_tokens on hidden reasoning, SK credential errors,
-        # etc.) which propagates to the frontend as the user-visible
-        # "No response received" string. Synthesize a deterministic
-        # description of what was rendered so the chat is never blank.
+        # Synthesize a deterministic description of what was rendered so
+        # the frontend never displays "No response received".
         # ----------------------------------------------------------------
         if not response_message or not str(response_message).strip():
             _cols = stac_query.get("collections", []) if stac_query else []
@@ -8191,6 +8245,7 @@ async def unified_query_processor(request: Request):
         complete_response = {
             "success": True,
             "response": response_message,
+            "memory": req_body.get("_chat_memory"),
             # Echo the catalog that actually answered this query so the UI
             # can label messages (e.g. "Loaded 3 tiles from MPC Pro").
             "data_source": (
@@ -9477,7 +9532,6 @@ async def geoint_vision_analysis(request: Request):
         import time
         agent_start = time.time()
         
-        # Get Vision Agent (SK Agent with memory and vision tools)
         from agents import get_vision_agent
         vision_agent = get_vision_agent()
         

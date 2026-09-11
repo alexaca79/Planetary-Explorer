@@ -48,6 +48,8 @@ interface Chip {
  * provenance to show (e.g. plain greeting turns).
  */
 const TOOL_DISPLAY: Record<string, string> = {
+  search_web: 'Web Search',
+  code_interpreter: 'Code Interpreter',
   general_earth_qa: 'Earth Q&A',
   describe_map_screenshot: 'Vision',
   sample_raster_value: 'Raster sample',

@@ -63,15 +63,20 @@ Rules:
 - For ANALYZE or LOAD_AND_ANALYZE, copy the user's analytical question into
   `analysis_question`.
 
-PIN PRIORITY RULE (overrides everything below):
-- If MAP STATE shows "A pin is dropped on the map." AND the user's query
-  references that point ("here", "at this location", "this pin", "value at
-  this point", "what is the X here", "sample the raster", "describe what's
-  at this location", or any analytical phrasing without a new place name),
-  the action is **ALWAYS ANALYZE**, never LOAD. The pin + an existing
-  loaded collection is the canonical raster_sampling / vision trigger. Do
-  NOT re-search STAC just because the query mentions a band, index, or
-  variable name (NDVI, elevation, temperature, etc.). Set
+PIN LOCATION RULE:
+- A pin supplies the location; it does not determine the action.
+- Requests to show, load, display, or find imagery at the pin are LOAD.
+  This includes fire false-colour imagery and nearest-available-date searches.
+  A display composite is not an instruction to calculate NBR or compare dates.
+  Example: "Show collection sentinel-2-l2a fire false-colour imagery at point
+  on 2026-08-28" is LOAD with use_current_location=true.
+- Requests to load imagery and then assess or measure it are LOAD_AND_ANALYZE.
+- If the query asks a substantive question at the pin ("value at this point",
+  "what is the X here", "sample the raster", or "describe what's at this
+  location"), use ANALYZE. A pin and an existing loaded collection are the
+  canonical raster_sampling / vision context. Do NOT re-search STAC just
+  because an analytical query mentions a band, index, or variable name
+  (NDVI, elevation, temperature, etc.). Set
   `analysis_question` to the user's exact question. Set confidence ≥ 0.85.
 
 Examples that MUST be ANALYZE when a pin is present:

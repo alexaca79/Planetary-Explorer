@@ -487,11 +487,7 @@ class EnhancedVisionAgent:
         conversation_history: Optional[List[Dict]] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        Analyze a user query with vision tools.
-
-        Same interface as the previous SK-based agent for drop-in compatibility.
-        """
+        """Analyze a user query with vision tools."""
         try:
             await self._ensure_initialized()
 

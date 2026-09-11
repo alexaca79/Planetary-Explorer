@@ -39,6 +39,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _code_interpreter_enabled() -> bool:
+    return os.getenv("CODE_INTERPRETER_ENABLED", "false").strip().casefold() == "true"
+
+
+def _record_code_interpreter_execution(
+    tool_call: Any, *, provider: str, status: str | None = None
+) -> None:
+    from .session_context import get_session
+
+    raw = tool_call.model_dump() if hasattr(tool_call, "model_dump") else tool_call.as_dict()
+    details = raw.get("code_interpreter") or raw
+    code = str(details.get("input") or details.get("code") or "")
+    outputs = details.get("outputs") or []
+    logs = [str(output.get("logs") or "") for output in outputs if output.get("type") == "logs"]
+    execution_status = str(raw.get("status") or status or "unknown")
+    execution = {
+        "call_id": raw.get("id"),
+        "status": execution_status,
+        "code": code[:16000],
+        "logs": [value[:8000] for value in logs[:4]],
+        "output_truncated": len(code) > 16000 or len(logs) > 4 or any(len(value) > 8000 for value in logs),
+    }
+    evidence = get_session().evidence
+    existing = next((entry for entry in evidence if entry.get("tool") == "code_interpreter"), None)
+    if existing is None:
+        existing = {
+            "tool": "code_interpreter",
+            "payload": {"success": True, "provider": provider, "sandbox": "provider-managed", "executions": []},
+        }
+        evidence.append(existing)
+    payload = existing["payload"]
+    if any(entry["call_id"] == execution["call_id"] for entry in payload["executions"]):
+        return
+    payload["success"] = payload["success"] and execution_status == "completed"
+    payload["executions"].append(execution)
+
+
 def _serialize_tool_result_for_model(result: Any) -> str:
     from mcp_runtime import redact_sensitive_value
 
@@ -168,6 +205,10 @@ class AnalystAgent:
         functions = AsyncFunctionTool(create_analyst_functions())
         toolset = AsyncToolSet()
         toolset.add(functions)
+        if _code_interpreter_enabled():
+            from azure.ai.agents.models import CodeInterpreterTool
+
+            toolset.add(CodeInterpreterTool())
         self._agents_client.enable_auto_function_calls(toolset)
 
         agent = await self._agents_client.create_agent(
@@ -284,15 +325,22 @@ class AnalystAgent:
                 request
             )
         else:
+            from mcp_runtime.confirm_bus import track_confirmation_wait
+
             invocation = AnalystInvocation(session_id=request.session_id)
-            invocation_task = asyncio.create_task(
-                self._invoke_serialized(request, invocation)
-            )
-            try:
-                done, _pending = await asyncio.wait(
-                    {invocation_task},
-                    timeout=self._run_timeout_seconds,
+            with track_confirmation_wait() as approval_wait:
+                invocation_task = asyncio.create_task(
+                    self._invoke_serialized(request, invocation)
                 )
+            deadline = time.monotonic() + self._run_timeout_seconds
+            try:
+                while True:
+                    remaining = deadline + approval_wait.elapsed_seconds - time.monotonic()
+                    done, _pending = await asyncio.wait(
+                        {invocation_task}, timeout=max(0.0, remaining),
+                    )
+                    if done or time.monotonic() >= deadline + approval_wait.elapsed_seconds:
+                        break
             except asyncio.CancelledError:
                 invocation.stop_requested = True
                 invocation.stop_event.set()
@@ -695,6 +743,10 @@ class AnalystAgent:
         for definition in function_tool.definitions:
             function_definition = definition.as_dict()["function"]
             response_tools.append({"type": "function", **function_definition})
+        response_options = {}
+        if _code_interpreter_enabled():
+            response_tools.append({"type": "code_interpreter", "container": {"type": "auto"}})
+            response_options["include"] = ["code_interpreter_call.outputs"]
 
         input_items: List[Dict[str, Any]] = []
         for turn in request.history[-4:]:
@@ -715,11 +767,16 @@ class AnalystAgent:
                 reasoning={"effort": request.reasoning_effort},
                 parallel_tool_calls=False,
                 max_output_tokens=16000,
+                **response_options,
             )
             tool_rounds = 0
             while True:
                 if invocation.stop_requested:
                     raise asyncio.CancelledError
+                for item in response.output:
+                    if getattr(item, "type", None) == "code_interpreter_call":
+                        tool_calls.append("code_interpreter")
+                        _record_code_interpreter_execution(item, provider="azure_openai_responses")
                 calls = [
                     item
                     for item in response.output
@@ -762,6 +819,7 @@ class AnalystAgent:
                     reasoning={"effort": request.reasoning_effort},
                     parallel_tool_calls=False,
                     max_output_tokens=16000,
+                    **response_options,
                 )
         finally:
             await client.close()
@@ -887,6 +945,13 @@ class AnalystAgent:
                     fn = getattr(tc, "function", None)
                     if fn and getattr(fn, "name", None):
                         tool_calls.append(fn.name)
+                    elif getattr(tc, "type", None) == "code_interpreter":
+                        tool_calls.append("code_interpreter")
+                        raw_status = getattr(step, "status", "unknown")
+                        _record_code_interpreter_execution(
+                            tc, provider="azure_ai_agents",
+                            status=str(getattr(raw_status, "value", raw_status)),
+                        )
 
         # Tools recorded their results on the session ContextVar
         from .session_context import get_session
@@ -920,6 +985,12 @@ class AnalystAgent:
 
     def _build_message(self, request) -> str:
         ctx_lines: List[str] = []
+        ctx_lines.append(
+            "- Code Interpreter: provider-managed Python sandbox enabled. Use it when requested; "
+            "report only calculations supported by its outputs."
+            if _code_interpreter_enabled()
+            else "- Code Interpreter: disabled in this deployment. Do not claim to execute Python."
+        )
         if request.location_name:
             ctx_lines.append(f"- location_name: {request.location_name}")
         if request.pin:
@@ -938,10 +1009,13 @@ class AnalystAgent:
                 f"(window of data already LOADED on the map — samplable, "
                 f"not a hard constraint)"
             )
-        if request.history:
-            # Last 3 turns max, condensed
-            tail = request.history[-3:]
-            ctx_lines.append(f"- recent_history: {len(tail)} turn(s)")
+        if request.memory_context:
+            ctx_lines.append(request.memory_context)
+        elif request.history:
+            from chat_memory import conversation_memory_prompt
+
+            history = request.history if request.memory_enabled else request.history[-6:]
+            ctx_lines.append(conversation_memory_prompt(history, request.question))
         if request.geofm_context is not None:
             ctx_lines.append(
                 "- geospatial_foundation_models_preflight: "

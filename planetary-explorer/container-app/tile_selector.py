@@ -26,7 +26,7 @@ REVISION: v1.0.0 - Initial implementation
 import logging
 import re
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,31 @@ class TileSelector:
         "cop-dem-glo-30", "cop-dem-glo-90", "nasadem", "3dep-seamless", 
         "alos-dem", "srtm"
     }
+
+    @staticmethod
+    def nearest_requested_date(query: Optional[str]) -> Optional[date]:
+        """Return a dated nearest-acquisition target, without inventing a date."""
+        if not query or not re.search(r"\b(?:nearest|closest|closes)\b", query, re.IGNORECASE):
+            return None
+        targets = set(re.findall(r"(?<!\d)((?:19|20)\d{2}-\d{2}-\d{2})(?!\d)", query))
+        if len(targets) == 1:
+            try:
+                return date.fromisoformat(targets.pop())
+            except ValueError:
+                return None
+        if targets:
+            return None
+        named_date = re.search(
+            r"\b(January|February|March|April|May|June|July|August|September|October|November|December)"
+            r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d{2})\b",
+            query, re.IGNORECASE,
+        )
+        if named_date:
+            try:
+                return datetime.strptime(" ".join(named_date.groups()), "%B %d %Y").date()
+            except ValueError:
+                return None
+        return None
     
     @classmethod
     def get_optimal_query_params(
@@ -298,6 +323,11 @@ class TileSelector:
                     len(features),
                 )
                 features = center_covering
+            elif all(
+                cls._geometry_covers_query_center(feature, query_bbox) is False
+                for feature in features
+            ):
+                return []
         
         # =================================================================
         # STEP 0.5: DETERMINE IF WE SHOULD GROUP BY DATE OR PRIORITIZE COVERAGE
@@ -320,6 +350,23 @@ class TileSelector:
         if not skip_date_grouping:
             # Group by date for smaller areas to ensure temporal consistency
             tiles_by_date = cls._group_tiles_by_acquisition_date(features)
+            nearest_date = cls.nearest_requested_date(query)
+            if nearest_date and tiles_by_date:
+                date_distances = {}
+                for acquisition_date in tiles_by_date:
+                    try:
+                        date_distances[acquisition_date] = abs(
+                            (date.fromisoformat(acquisition_date) - nearest_date).days
+                        )
+                    except ValueError:
+                        continue
+                if date_distances:
+                    closest_distance = min(date_distances.values())
+                    tiles_by_date = {
+                        acquisition_date: tiles
+                        for acquisition_date, tiles in tiles_by_date.items()
+                        if date_distances.get(acquisition_date) == closest_distance
+                    }
             
             if tiles_by_date:
                 # Select the best date group (most recent with good coverage)
@@ -375,6 +422,11 @@ class TileSelector:
         
         # Ensure we don't exceed available tiles
         effective_max = min(max_tiles, len(scored_tiles))
+        if point_aoi:
+            from pipeline.action_router import is_pin_imagery_load, is_point_scoped_query
+
+            if is_pin_imagery_load(query or "") and is_point_scoped_query(query or ""):
+                effective_max = min(effective_max, 1)
         selected = scored_tiles[:effective_max]
         
         # =================================================================

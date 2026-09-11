@@ -1,62 +1,45 @@
-# `connectors/` — typed external-platform clients
+---
+title: External Platform Connectors
+description: Identify connector ownership, service configuration and limits without mistaking a configured URL for a provisioned dependency.
+---
 
-One module per platform. Each owns endpoint + auth + retry + caching for
-that platform; agents import the connector and never touch raw HTTP or
-SDK constructors directly.
+## Connector Responsibilities
 
-This package is the single source of truth for **how PE talks to the
-outside world**. If you're forking PE for a customer, this is the file
-you read first to see what's pluggable.
+These modules wrap selected external services. They do not provision Azure
+resources, grant access, create datasets or guarantee live availability.
+Existing agents also call other clients directly; this package is not yet the
+only outbound access layer.
 
-| Module                 | Wraps                              | Auth                             | Status      |
-|------------------------|------------------------------------|----------------------------------|-------------|
-| `weather.*`            | Aurora / Earth-2 / MAI Weather     | bearer key or Managed Identity   | live (stubs) |
-| `mpc_pro`              | MPC Pro MCP sidecar                | bearer key                       | live (re-export of `mcp_catalog_client`) |
-| `fabric`               | Microsoft Fabric REST + OneLake    | Managed Identity (preferred)     | live (re-export of `fabric_client`) |
-| `ai_search`            | Azure AI Search                    | key or Managed Identity          | live (thin wrapper) |
-| `openmeteo`            | Open-Meteo free forecast API       | none                             | live (thin wrapper) |
-| `mcp_registry`         | MCP tool registry                  | inherits per-server              | re-export of `container-app/mcp/registry.py` |
+| Module | Interface and Prerequisites |
+| --- | --- |
+| `weather` | Capability-based provider registry; activates configured scoring endpoints with their auth contracts |
+| `mpc_pro` | Re-exports the catalog MCP client; requires `USE_MPC_MCP`, `MPC_MCP_URL`, private catalog access and compatible tools |
+| `fabric` | Re-exports functions such as `list_workspaces`, `list_lakehouses`, `get_lakehouse_schema` and `execute_sql`; not a `FabricClient` class |
+| `ai_search` | `AiSearchClient.from_env()`, `search`, `get_document`; requires a populated index and an authorized identity or protected key |
+| `openmeteo` | `OpenMeteoClient.forecast`; public operational forecast API with an in-process cache |
+| `mcp_registry` | Re-exports `McpRegistry` and `TracedMcpClient` from `mcp_runtime`, including confirmation and tracing |
 
-## One-page contract per platform
+## Configuration and Data
 
-### `weather` (sub-package)
-- Capability-tagged `WeatherModelProvider` protocol.
-- Registry singleton `get_registry()` returns the configured providers.
-- Each provider activates only when its `*_ENDPOINT_URL` env var is set.
-- See `weather/README.md` (if present) and `weather/provider.py` for the contract.
+Use the [deployment/resource guide](../../../documentation/deployment.md)
+to choose create versus reference. For weather, the [CPU adapter](../../weather-stub-server/README.md)
+is a non-GPU option, not native foundation-model inference. Providers must
+preserve source and synthetic-fallback metadata.
 
-### `mpc_pro`
-- Re-exports `MpcMcpClient` from `mcp_catalog_client`.
-- Inert until `USE_MPC_MCP=true` + `MPC_MCP_URL=https://...`.
-- Wraps all 35 MPC Pro MCP tools — search, ingest, lifecycle, rendering.
-- See top docstring of `mcp_catalog_client.py` for tool coverage.
+Fabric uses the backend identity; see [FABRIC.md](../FABRIC.md) for grants and
+query limitations. Search expects `AZURE_SEARCH_ENDPOINT`,
+`AZURE_SEARCH_INDEX`, and identity permissions or `AZURE_SEARCH_KEY`.
+The root stack does not create/populate every index. Inspect the specific
+consumer's required schema before ingesting documents.
 
-### `fabric`
-- Re-exports `FabricClient` from `fabric_client`.
-- App-identity auth (Managed Identity in prod, service principal locally).
-- Reads Fabric workspaces / lakehouses / Delta tables / SQL endpoint.
+Register only authorized MCP endpoints. Tool discovery is not permission to
+execute a mutation; retain confirmation gates and never log bearer tokens,
+keys or signed asset URLs. No connector change should bypass a disabled
+feature or turn missing data into a fabricated success.
 
-### `ai_search`
-- `AiSearchClient.from_env()` factory; honours `AZURE_SEARCH_ENDPOINT`,
-  `AZURE_SEARCH_KEY` (or Managed Identity if no key), `AZURE_SEARCH_INDEX`.
-- Two methods: `search(query, top, filter)` and `get_document(key)`.
-- Returns dicts, not SDK objects, so agents stay decoupled from `azure-search-documents`.
+## Extending Connectors
 
-### `openmeteo`
-- `OpenMeteoClient` — `forecast(lat, lon, hourly=..., days=...)`.
-- Public, no auth. Fallback only — Aurora / Earth-2 / MAI take priority.
-- TTL-cached in-process (10 minutes) to absorb chat retries.
-
-### `mcp_registry`
-- Re-exports `McpRegistry` and `TracedMcpClient` from
-  `container-app/mcp/registry.py`. The registry discovers tools across all
-  configured MCP servers; the traced client wraps every call with a
-  per-turn trace buffer suitable for the future tool-trace UI.
-
-## Migration plan
-
-Existing agents currently import `mcp_catalog_client`, `fabric_client`,
-and various `AsyncAzureOpenAI` constructors directly. **They keep
-working.** New agents (Forecast, Curator, Lineage) should import from
-`connectors/` instead. We migrate existing agents one at a time, each
-in its own PR, never as a big bang.
+Prefer existing typed interfaces and tests. Add bounded timeouts, classify
+retry safety before dispatch, and preserve source provenance. Test both a
+successful dependency response and unavailable/unauthorized behavior before
+advertising the feature as usable.

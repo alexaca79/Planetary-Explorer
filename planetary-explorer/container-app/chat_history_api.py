@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from chat_memory_search import delete_saved_memory, sync_saved_memory
 from chat_history_store import (
     MAX_ATTACHMENT_BYTES,
     ArtifactStore,
@@ -146,6 +147,7 @@ async def save_chat_session(
     document = await _history_call(
         repository.upsert_session(owner_id, session_id, payload)
     )
+    await sync_saved_memory(owner_id, session_id, repository)
     return public_session_document(document)
 
 
@@ -160,6 +162,7 @@ async def delete_chat_session(
     document = await _history_call(
         repository.begin_delete(owner_id, session_id, document.get("_etag"))
     )
+    await _history_call(delete_saved_memory(owner_id, session_id))
     cleanup_failures: list[str] = []
     for attachment in document.get("attachments", []):
         try:

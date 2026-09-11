@@ -106,6 +106,9 @@ def test_extract_stac_datetime_fallback_prefers_exact_dates(
         ("Show HLS S30 for the date 2026-07-04", True),
         ("Show HLS S30 around 2026-07-04", False),
         ("Show HLS S30 before 2026-07-04", False),
+        ("Show HLS S30 at 2026-07-04T17:09:44Z", False),
+        ("Show Sentinel-2 on 2026-08-28. Use the nearest available acquisition to that date.", False),
+        ("Show the nearest Sentinel-2 imagery at this pin to 2026-08-28", False),
         ("Compare 2026-06-01 to 2026-07-04", False),
     ],
 )
@@ -164,6 +167,33 @@ async def test_given_exact_date_when_no_results_then_date_is_not_relaxed(
     assert search_calls == []
 
 
+@pytest.mark.asyncio
+async def test_given_expanded_translation_when_searching_exact_day_then_boundary_constrains_date(
+    monkeypatch,
+) -> None:
+    fastapi_app = _load_app(monkeypatch)
+    normalized_dates = []
+    normalize = fastapi_app._normalize_stac_datetime
+
+    def capture(raw):
+        normalized_dates.append(raw)
+        return normalize(raw)
+
+    monkeypatch.setattr(fastapi_app, "_normalize_stac_datetime", capture)
+    monkeypatch.setattr(
+        fastapi_app, "_resolve_stac_endpoint",
+        lambda endpoint: ("", "planetary_computer_pro_unconfigured", True),
+    )
+
+    await fastapi_app.execute_direct_stac_search(
+        {"collections": ["hls2-l30"], "datetime": "2026-08-17/2026-08-19"},
+        original_query="Show HLS L30 at Regina on 2026-08-18.",
+        locked_collection="hls2-l30",
+    )
+
+    assert normalized_dates == ["2026-08-18"]
+
+
 def test_given_static_dem_when_query_mentions_year_then_datetime_fallback_is_skipped(
     monkeypatch,
 ) -> None:
@@ -194,6 +224,27 @@ def test_given_dynamic_hls_when_query_mentions_date_then_datetime_fallback_is_us
 
     # Assert
     assert result is True
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("Show HLS L30 at Regina on 2026-08-18.", True),
+        ("Show HLS L30 at Regina closest to 2026-08-18.", False),
+        ("Show HLS L30 at Regina from 2026-07-17 to 2026-08-18.", False),
+    ],
+)
+def test_given_translated_date_range_when_user_requests_exact_day_then_requested_day_wins(
+    monkeypatch, query: str, expected: bool
+) -> None:
+    fastapi_app = _load_app(monkeypatch)
+
+    result = fastapi_app._should_apply_stac_datetime_fallback(
+        {"collections": ["hls2-l30"], "datetime": "2026-08-17/2026-08-19"},
+        query,
+    )
+
+    assert result is expected
 
 
 def test_given_translated_date_for_static_dem_when_building_query_then_date_is_removed(

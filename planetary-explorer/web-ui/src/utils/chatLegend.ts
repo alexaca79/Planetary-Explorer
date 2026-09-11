@@ -141,6 +141,30 @@ function hlsFireLegend(): ChatLegendDefinition {
   ], 'B12/B8A/B04 uses scene-level 2nd to 98th percentile stretches. Colours are relative to this scene, not official burn severity.');
 }
 
+function hasSentinelFireFalseColour(response: any, mapContext?: MapContext): boolean {
+  if (firstCollection(response, mapContext)?.toLowerCase() !== 'sentinel-2-l2a') return false;
+  const features = response?.data?.stac_results?.features;
+  const itemTiles = response?.translation_metadata?.all_tile_urls;
+  const singleItemTile = Array.isArray(features) && features.length === 1 && Array.isArray(itemTiles)
+    ? itemTiles.find((tile: any) => (
+      tile.item_id === features[0].id
+      && typeof tile.tilejson_url === 'string'
+      && tile.tilejson_url.trim().length > 0
+    ))
+    : undefined;
+  const url = singleItemTile?.tilejson_url
+    || response?.translation_metadata?.mosaic_tilejson?.tilejson_url
+    || mapContext?.imagery_url
+    || mapContext?.tile_urls?.[0]?.tilejson_url;
+  if (typeof url !== 'string') return false;
+  try {
+    const assets = new URL(url).searchParams.getAll('assets');
+    return assets.length === 3 && assets.join('/') === 'B12/B8A/B04';
+  } catch {
+    return false;
+  }
+}
+
 function hasCompletedGeoFmFeatures(response: any): boolean {
   const structured = response?.structured || response?.data?.structured || {};
   return ['compare_with_geofm', 'get_geofm_run'].some((toolName) => {
@@ -167,6 +191,11 @@ export function deriveChatLegend(response: any, mapContext?: MapContext): ChatLe
   }
 
   if (isHlsFireFalseColour) return hlsFireLegend();
+
+  if (hasSentinelFireFalseColour(response, mapContext)) {
+    return categorical('Sentinel-2 fire false colour', hlsFireLegend().items,
+      'RGB uses B12/B8A/B04. Colours are relative to the display stretch, not official burn severity.');
+  }
 
   if (response?.isResilienceResponse && Array.isArray(response?.dossier?.facilities)) {
     return categorical('Facility risk severity', [

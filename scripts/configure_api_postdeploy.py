@@ -34,6 +34,26 @@ class RuntimeProfile:
 
 
 RUNTIME_PROFILES: dict[str, RuntimeProfile] = {
+    "weather": RuntimeProfile(
+        sticky_sessions=False,
+        probes=(
+            {
+                "type": "Liveness",
+                "httpGet": {"path": "/health", "port": API_PORT},
+                "periodSeconds": 30,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            },
+            {
+                "type": "Readiness",
+                "httpGet": {"path": "/health", "port": API_PORT},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10,
+                "timeoutSeconds": 3,
+                "failureThreshold": 3,
+            },
+        ),
+    ),
     "api": RuntimeProfile(
         sticky_sessions=True,
         probes=(
@@ -127,9 +147,24 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
     public_demo = _enabled(os.getenv("PUBLIC_DEMO_MODE", ""))
     chat_endpoint = os.getenv("AZURE_COSMOS_CHAT_HISTORY_ENDPOINT", "").strip()
     blob_endpoint = os.getenv("AZURE_CHAT_ARTIFACT_BLOB_ENDPOINT", "").strip()
-    chat_requested = public_demo or bool(chat_endpoint or blob_endpoint)
-    if chat_requested:
-        if public_demo:
+    history_disabled = "DEPLOY_CHAT_HISTORY" in os.environ and not _enabled(os.environ["DEPLOY_CHAT_HISTORY"])
+    chat_requested = public_demo or history_disabled or bool(chat_endpoint or blob_endpoint)
+    remote_history = (os.getenv("CHAT_HISTORY_REMOTE_URL") or os.getenv("AZURE_CHAT_HISTORY_REMOTE_URL") or "").strip()
+    if remote_history:
+        parsed = urlsplit(remote_history)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise RuntimeError("Remote history requires an HTTPS origin without credentials or a path.")
+        tenant_id = os.getenv("MICROSOFT_ENTRA_TENANT_ID") or os.getenv("AZURE_TENANT_ID")
+        client_id = os.getenv("MICROSOFT_ENTRA_CLIENT_ID") or os.getenv("AUTH_CLIENT_ID")
+        if not tenant_id or not client_id:
+            raise RuntimeError("Remote history requires the configured Entra tenant and application IDs.")
+        values.extend([
+            "PE_FEATURE_CHAT_HISTORY=true", "CHAT_HISTORY_STORE=remote", "CHAT_ARTIFACT_STORE=remote",
+            f"CHAT_HISTORY_REMOTE_URL={remote_history.rstrip('/')}", "CHAT_HISTORY_ALLOW_ANONYMOUS=false",
+            f"AZURE_AD_TENANT_ID={tenant_id}", f"AZURE_AD_CLIENT_ID={client_id}",
+        ])
+    elif chat_requested:
+        if public_demo or history_disabled:
             values.extend(
                 [
                     "PE_FEATURE_CHAT_HISTORY=false",
@@ -171,8 +206,23 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
         else:
             raise RuntimeError("Chat history deployment outputs are incomplete.")
 
-    web_search_url = os.getenv("AZURE_WEB_SEARCH_MCP_URL", "").strip()
-    if web_search_url:
+    memory_endpoint = os.getenv("AZURE_CHAT_MEMORY_SEARCH_ENDPOINT", "").strip()
+    memory_index = os.getenv("AZURE_CHAT_MEMORY_SEARCH_INDEX", "").strip()
+    if not remote_history and memory_endpoint and memory_index and not public_demo and not history_disabled:
+        values.extend([
+            f"CHAT_MEMORY_SEARCH_ENDPOINT={memory_endpoint}", f"CHAT_MEMORY_SEARCH_INDEX={memory_index}",
+            "CHAT_MEMORY_AUTO_SETUP=true", "PE_FEATURE_CHAT_MEMORY=true",
+        ])
+    elif not remote_history and (public_demo or history_disabled):
+        removed_values.extend(["CHAT_MEMORY_SEARCH_ENDPOINT", "CHAT_MEMORY_SEARCH_INDEX", "CHAT_MEMORY_AUTO_SETUP"])
+
+    web_search_url = (os.getenv("WEB_SEARCH_MCP_URL") or os.getenv("AZURE_WEB_SEARCH_MCP_URL", "")).strip()
+    web_search_enabled = _enabled(os.getenv("WEB_SEARCH_ENABLED", os.getenv("DEPLOY_WEB_SEARCH_MCP", "false")))
+    if not web_search_enabled and (web_search_url or "DEPLOY_WEB_SEARCH_MCP" in os.environ or "WEB_SEARCH_ENABLED" in os.environ):
+        values.append("WEB_SEARCH_ENABLED=false")
+    if web_search_enabled:
+        if not web_search_url:
+            raise RuntimeError("Web Search requires a deployed or existing MCP URL.")
         web_search_key = os.getenv("WEB_SEARCH_MCP_API_KEY", "").strip()
         if len(web_search_key) < 32:
             raise RuntimeError(
@@ -201,25 +251,51 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
             ]
         )
 
+    forecast_enabled = _enabled(os.getenv("FORECAST_AGENT_ENABLED", "true"))
     weather_stub_url = os.getenv("AZURE_WEATHER_STUB_URL", "").strip().rstrip("/")
-    if weather_stub_url:
-        parsed_weather_url = urlsplit(weather_stub_url)
-        if parsed_weather_url.scheme != "https" or not parsed_weather_url.hostname:
-            raise RuntimeError("AZURE_WEATHER_STUB_URL must be an absolute HTTPS URL.")
-        values.extend(
-            [
-                "FORECAST_AGENT_ENABLED=1",
-                f"AURORA_ENDPOINT_URL={weather_stub_url}",
-                f"EARTH2_FCN_ENDPOINT_URL={weather_stub_url}",
-            ]
-        )
+    if "DEPLOY_WEATHER_STUB" in os.environ and not _enabled(os.environ["DEPLOY_WEATHER_STUB"]):
+        weather_stub_url = ""
+    weather_name = os.getenv("AZURE_WEATHER_STUB_CONTAINER_APP_NAME", "").strip()
+    if forecast_enabled and weather_stub_url and weather_name:
+        hostname = run_az([
+            "containerapp", "show", "--name", weather_name,
+            "--resource-group", resource_group,
+            "--query", "properties.configuration.ingress.fqdn", "--output", "tsv",
+        ]).strip()
+        if not hostname:
+            raise RuntimeError("Weather adapter has no live ingress hostname.")
+        weather_stub_url = f"https://{hostname}"
+    weather_endpoints = {
+        name: os.getenv(name, "").strip().rstrip("/") or weather_stub_url
+        for name in ("AURORA_ENDPOINT_URL", "EARTH2_FCN_ENDPOINT_URL", "MAI_WEATHER_ENDPOINT_URL")
+    }
+    if "FORECAST_AGENT_ENABLED" in os.environ or any(weather_endpoints.values()):
+        values.append(f"FORECAST_AGENT_ENABLED={int(forecast_enabled)}")
+    if forecast_enabled:
+        for endpoint_name, endpoint in weather_endpoints.items():
+            if not endpoint:
+                continue
+            parsed = urlsplit(endpoint)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise RuntimeError(f"{endpoint_name} must be an absolute HTTPS base URL without credentials or query parameters.")
+            values.append(f"{endpoint_name}={endpoint}")
+        if any(weather_endpoints.values()):
+            values.append("MAI_WEATHER_SCORE_PATH=" + os.getenv("MAI_WEATHER_SCORE_PATH", "/mai-weather/score"))
 
-    geofm_url = os.getenv("AZURE_GEOFM_MCP_URL", "").strip()
-    if geofm_url:
+    geofm_url = (os.getenv("GEOFM_MCP_URL") or os.getenv("AZURE_GEOFM_MCP_URL", "")).strip()
+    geofm_deployed = _enabled(os.getenv("DEPLOY_GEOFM", "false")) and _enabled(os.getenv("DEPLOY_GEOFM_SERVICES", "true"))
+    geofm_enabled = _enabled(os.getenv("GEOFM_ENABLED", str(geofm_deployed)))
+    if not geofm_enabled and (geofm_url or "DEPLOY_GEOFM" in os.environ or "GEOFM_ENABLED" in os.environ):
+        values.append("GEOFM_ENABLED=false")
+    if geofm_enabled:
+        if not geofm_url:
+            raise RuntimeError("GeoFM requires a deployed or existing MCP URL.")
         api_key = os.getenv("GEOFM_MCP_API_KEY", "").strip()
         owner_key = os.getenv("GEOFM_OWNER_SIGNING_KEY", "").strip()
         if len(api_key) < 32 or len(owner_key) < 32:
             raise RuntimeError("GeoFM API and owner-signing keys are required.")
+        if api_key == owner_key:
+            raise RuntimeError("GeoFM API and owner-signing keys must be distinct.")
         run_az(
             [
                 "containerapp",
@@ -244,6 +320,29 @@ def reconcile_api_optional_services(name: str, resource_group: str) -> None:
                 "GEOFM_OWNER_SIGNING_KEY=secretref:geofm-owner-signing-key",
             ]
         )
+
+    model_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("AZURE_AI_FOUNDRY_ENDPOINT")
+    project_endpoint = os.getenv("EXISTING_AI_PROJECT_ENDPOINT") or os.getenv("AZURE_AI_PROJECT_ENDPOINT")
+    if model_endpoint:
+        values.append(f"AZURE_OPENAI_ENDPOINT={model_endpoint.strip()}")
+    if project_endpoint:
+        values.append(f"AZURE_AI_PROJECT_ENDPOINT={project_endpoint.strip()}")
+    for flag, runtime_flag, references in (
+        ("ENABLE_FABRIC", "PE_FEATURE_FABRIC", {
+            "FABRIC_WORKSPACE_ID": "FABRIC_LAKEHOUSE_WORKSPACE_ID",
+            "FABRIC_LAKEHOUSE_ID": "FABRIC_LAKEHOUSE_ID",
+        }),
+        ("ENABLE_MPC_PRO", "PE_FEATURE_MPC_PRO", {
+            "MPC_PRO_STAC_URL": "MPC_PRO_STAC_URL",
+            "MPC_PRO_ASSET_HOSTS": "MPC_PRO_ASSET_HOSTS",
+        }),
+    ):
+        if flag in os.environ:
+            values.append(f"{runtime_flag}={str(_enabled(os.environ[flag])).lower()}")
+            if _enabled(os.environ[flag]):
+                for input_name, runtime_name in references.items():
+                    if os.getenv(input_name):
+                        values.append(f"{runtime_name}={os.environ[input_name].strip()}")
 
     if values or removed_values:
         arguments = [
@@ -294,7 +393,7 @@ def run_az(arguments: list[str]) -> str:
 
 def build_update_document(
     resource: dict[str, object],
-    profile_name: Literal["api", "geofm", "web-search"] = "api",
+    profile_name: Literal["api", "geofm", "web-search", "weather"] = "api",
 ) -> dict[str, object]:
     """Build a writable Container Apps YAML document from an ARM response."""
     profile = RUNTIME_PROFILES[profile_name]
@@ -342,7 +441,7 @@ def build_update_document(
 def configure_container_app(
     name: str,
     resource_group: str,
-    profile_name: Literal["api", "geofm", "web-search"] = "api",
+    profile_name: Literal["api", "geofm", "web-search", "weather"] = "api",
 ) -> None:
     """Apply and verify a production ingress and probe configuration."""
     resource = json.loads(
@@ -506,6 +605,7 @@ def main(arguments: list[str] | None = None) -> int:
         "api": "AZURE_CONTAINER_APP_NAME",
         "geofm": "AZURE_GEOFM_MCP_CONTAINER_APP_NAME",
         "web-search": "AZURE_WEB_SEARCH_MCP_CONTAINER_APP_NAME",
+        "weather": "AZURE_WEATHER_STUB_CONTAINER_APP_NAME",
     }[parsed_arguments.profile]
     name = (parsed_arguments.name or os.getenv(default_name_variable, "")).strip()
     resource_group = (

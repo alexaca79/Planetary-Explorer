@@ -29,6 +29,7 @@ class LoadAgentInput(BaseModel):
     """
 
     query: str = Field(..., description="User's latest natural-language message.")
+    memory_context: str = Field("", description="Quoted prior context; current query and map state take precedence.")
 
     # Spatial context
     location_name: Optional[str] = Field(

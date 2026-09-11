@@ -1,4 +1,9 @@
-# Local dev container development
+---
+title: Local Dev Container Development
+description: Develop on CPU without provisioning Azure, and explicitly connect existing services when needed.
+---
+
+## Local Development Scope
 
 The repository includes a VS Code dev container for developing and validating
 Planetary Explorer without provisioning Azure resources.
@@ -26,9 +31,14 @@ Planetary Explorer without provisioning Azure resources.
 - Recommended Python, Ruff, Prettier, ESLint, Bicep, Azure, Docker, PowerShell,
   and GitHub Actions VS Code extensions
 
-Python 3.12 is intentional. Although Python 3.14 was considered, the project
-documentation identifies Python 3.12 as the backend runtime and its native
-geospatial and Azure dependencies are validated against that version.
+This dev container uses Python 3.12; the deployed backend Dockerfiles use
+Python 3.11. Validate changes against the deployment runtime as well. No GPU
+is required for local UI/API development.
+
+The supplied dev container assumes Microsoft CFS access. External contributors
+without that access should use the public dependency setup in
+[CONTRIBUTING.md](CONTRIBUTING.md), not disable certificate validation or copy
+corporate feed credentials into the repository.
 
 ## Open the container
 
@@ -77,8 +87,11 @@ Authentication is not required to run the application locally. To inspect an
 existing Azure subscription later, use device-code login:
 
 ```bash
-az login --use-device-code
-azd auth login --use-device-code
+export AZURE_CONFIG_DIR="$HOME/.azure-tenants/<tenant-alias>"
+export AZD_CONFIG_DIR="$HOME/.azd-tenants/<tenant-alias>"
+az login --tenant '<tenant-id>' --use-device-code
+az account set --subscription '<subscription-id>'
+azd auth login --tenant-id '<tenant-id>' --use-device-code
 gh auth login --web
 ```
 
@@ -127,8 +140,7 @@ bash .devcontainer/validate.sh
 It verifies:
 
 - Requested CLI tools and CFS client configuration
-- 21 targeted backend tests
-- 12 targeted frontend tests
+- Targeted backend and frontend tests selected by the validation script
 - The production frontend build
 - Bicep compilation for `planetary-explorer/infra/main.bicep`
 - Live backend configuration and health responses
@@ -178,7 +190,12 @@ validation.
   environment/config values above.
 - **Backend health is degraded:** Expected until Azure OpenAI and Azure Maps
   are configured.
-- **Port already in use:** Set `BACKEND_PORT` or `FRONTEND_PORT` before running
-  `.devcontainer/start-local.sh`.
+- **Port already in use:** Set `BACKEND_PORT` and matching
+  `LOCAL_BACKEND_URL=http://localhost:<backend-port>`, or `FRONTEND_PORT`,
+  before running `.devcontainer/start-local.sh`.
 - **Dependencies changed:** Re-run `.devcontainer/post-create.sh`, then
   `.devcontainer/validate.sh`.
+
+See the [resource-reference guide](documentation/deployment.md) for existing
+model, weather, Fabric and catalog settings. Do not assume a local startup or
+configuration response proves those services are authorized and reachable.

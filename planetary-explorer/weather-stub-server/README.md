@@ -76,6 +76,9 @@ If env `STUB_API_KEY` is set, requests must send
 
 ## Run locally
 
+From this directory, after installing its requirements in an isolated Python
+environment:
+
 ```powershell
 uv run --with-requirements requirements.txt uvicorn app:app --reload --port 8080
 ```
@@ -86,6 +89,24 @@ uv run --with-requirements requirements.txt uvicorn app:app --reload --port 8080
 docker build -t weather-stub .
 docker run -p 8080:8080 -e STUB_API_KEY=dev weather-stub
 ```
+
+Use a private local network and a real protected credential if the service is
+reachable by others. The literal `dev` value above is only a local example.
+
+## Azure CPU Option
+
+In the selected root azd environment, set `DEPLOY_WEATHER_STUB=true` and keep
+`DEPLOY_GEOFM=false`. The optional-service hook builds and publishes this
+adapter after infrastructure provisioning. It verifies the real image,
+internal ingress and port 8080; the postdeploy hook restores `/health` probes.
+The API uses the live internal hostname and explicit provider URL overrides
+take precedence. This path needs no GPU quota.
+
+Alternatively set `DEPLOY_WEATHER_STUB=false` and reference existing provider
+URLs. Configure only compatible authorized providers. See the
+[resource-reference guide](../../documentation/deployment.md#weather-provider-references)
+for the full contract. A created Container App or reachable health endpoint
+does not validate forecast accuracy or native-model execution.
 
 ## Swap to a native model endpoint
 

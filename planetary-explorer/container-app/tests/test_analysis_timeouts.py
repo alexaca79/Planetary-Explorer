@@ -27,6 +27,126 @@ def _request() -> AnalysisRequest:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("approve", [True, False])
+async def test_given_pending_approval_when_review_exceeds_analysis_budget_then_broker_decides(
+    approve: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_runtime import confirm_bus
+
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.02
+    scheduled_tasks = []
+
+    async def capture(event):
+        if approve and event["type"] == "confirm_request":
+            asyncio.get_running_loop().call_later(
+                0.06,
+                lambda: scheduled_tasks.append(asyncio.create_task(
+                    confirm_bus.resolve_confirmation(trace_id=event["trace_id"], approved=True)
+                )),
+            )
+
+    async def provider(_request, _invocation):
+        approved, _note = await confirm_bus.request_confirmation(
+            trace_id=f"review-budget-{approve}", server_id="geofm",
+            tool="geofm_compare_epochs", args={}, tier="write", timeout=0.1,
+        )
+        return "queued" if approved else "denied", [], []
+
+    monkeypatch.setattr(confirm_bus, "emit_trace", capture)
+    monkeypatch.setattr(agent, "_invoke_agent_service", provider)
+
+    result = await asyncio.wait_for(agent.run(_request()), timeout=0.4)
+    if scheduled_tasks:
+        await asyncio.gather(*scheduled_tasks)
+
+    assert result.answer == ("queued" if approve else "denied")
+    assert "analyst_status" not in result.structured
+    assert confirm_bus.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_given_approved_request_when_analysis_stalls_then_active_budget_still_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_runtime import confirm_bus
+
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.02
+    approved_calls = []
+
+    async def capture(event):
+        if event["type"] == "confirm_request":
+            await confirm_bus.resolve_confirmation(trace_id=event["trace_id"], approved=True)
+
+    async def provider(_request, _invocation):
+        approved, _note = await confirm_bus.request_confirmation(
+            trace_id="post-approval-budget", server_id="geofm",
+            tool="geofm_compare_epochs", args={}, tier="write", timeout=0.1,
+        )
+        approved_calls.append(approved)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(confirm_bus, "emit_trace", capture)
+    monkeypatch.setattr(agent, "_invoke_agent_service", provider)
+
+    result = await asyncio.wait_for(agent.run(_request()), timeout=0.4)
+    if agent._background_tasks:
+        await asyncio.gather(*list(agent._background_tasks), return_exceptions=True)
+
+    assert approved_calls == [True]
+    assert result.structured["analyst_status"]["status"] == "timeout"
+    assert confirm_bus.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_given_one_session_awaiting_approval_when_other_times_out_then_wait_and_cancel_are_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_runtime import confirm_bus
+
+    agent = AnalystAgent()
+    agent._run_timeout_seconds = 0.02
+    confirmation_started = asyncio.Event()
+    dispatched = []
+
+    async def capture(event):
+        if event["type"] == "confirm_request":
+            confirmation_started.set()
+
+    async def provider(request, _invocation):
+        if request.session_id == "session-1":
+            approved, _note = await confirm_bus.request_confirmation(
+                trace_id="isolated-approval", server_id="geofm",
+                tool="geofm_compare_epochs", args={}, tier="write", timeout=1.0,
+            )
+            if approved:
+                dispatched.append(request.session_id)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(confirm_bus, "emit_trace", capture)
+    monkeypatch.setattr(agent, "_invoke_agent_service", provider)
+
+    review_task = asyncio.create_task(agent.run(_request()))
+    try:
+        await asyncio.wait_for(confirmation_started.wait(), timeout=0.2)
+        other_result = await asyncio.wait_for(
+            agent.run(_request().model_copy(update={"session_id": "session-2"})), timeout=0.2,
+        )
+        assert other_result.structured["analyst_status"]["status"] == "timeout"
+        assert not review_task.done()
+    finally:
+        review_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await review_task
+        if agent._background_tasks:
+            await asyncio.gather(*list(agent._background_tasks), return_exceptions=True)
+
+    assert dispatched == []
+    assert confirm_bus.pending_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_given_existing_thread_when_resetting_session_then_mapping_and_remote_thread_are_deleted(
 ) -> None:
     # Arrange

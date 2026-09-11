@@ -142,6 +142,7 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             )
         entra_configured = bool(TENANT_ID.strip() and CLIENT_ID.strip())
         self._enabled = not explicitly_disabled
+        self._optional_identity = explicitly_disabled and entra_configured
         if self._enabled and entra_configured:
             logger.info(
                 "[AUTH] Entra ID auth middleware ENABLED  "
@@ -252,7 +253,10 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
 
         # --- Auth disabled — pass through ---
         if not self._enabled:
-            return await call_next(request)
+            has_bearer = bool(request.headers.get("Authorization"))
+            history_request = request.url.path.startswith("/api/chat-history")
+            if not self._optional_identity or not (has_bearer or history_request):
+                return await call_next(request)
 
         # ----------------------------------------------------------------
         # Path A: EasyAuth header (preferred — used when the request comes

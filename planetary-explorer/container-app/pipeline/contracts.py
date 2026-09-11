@@ -100,6 +100,8 @@ class AnalysisRequest(BaseModel):
 
     # Conversation
     history: list[dict[str, Any]] = Field(default_factory=list)
+    memory_context: str = ""
+    memory_enabled: bool = True
 
     # Chained context — populated by Orchestrator from upstream analyzers
     grounding: list["AnalyzerResult"] = Field(default_factory=list)

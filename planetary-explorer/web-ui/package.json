@@ -11,7 +11,7 @@
     "build:analyze": "vite build --mode production && npx vite-bundle-analyzer dist",
     "clean": "rimraf dist",
     "test": "vitest",
-    "test:deployment": "node --test deployment/server.test.cjs",
+    "test:deployment": "node --test deployment/server.test.cjs deployment/vite-config.test.mjs",
     "test:ui": "vitest --ui",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"

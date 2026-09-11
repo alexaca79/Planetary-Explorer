@@ -199,3 +199,52 @@ def test_given_adopted_api_without_auth_inputs_when_validating_then_existing_mod
 
     # Act
     MODULE.validate_fresh_authentication(targets, {})
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({"DEPLOY_GEOFM": "yes"}, "DEPLOY_GEOFM"),
+        ({"DEPLOY_AI_FOUNDRY": "false"}, "AZURE_OPENAI_ENDPOINT"),
+        ({"DEPLOY_AI_FOUNDRY": "false", "AZURE_OPENAI_ENDPOINT": "https://models.example"}, "EXISTING_AI_PROJECT_ENDPOINT"),
+        ({"ENABLE_MPC_PRO": "true"}, "MPC_PRO_STAC_URL"),
+        ({"ENABLE_MPC_PRO": "true", "MPC_PRO_STAC_URL": "http://catalog.example/stac"}, "HTTPS"),
+        ({"ENABLE_FABRIC": "true"}, "FABRIC_WORKSPACE_ID"),
+        ({"ENABLE_FABRIC": "true", "FABRIC_WORKSPACE_ID": "workspace"}, "FABRIC_LAKEHOUSE_ID"),
+        ({"DEPLOY_GEOFM": "true"}, "GEOFM_MCP_API_KEY"),
+        ({"DEPLOY_GEOFM": "true", "GEOFM_MCP_API_KEY": "m" * 32}, "GEOFM_OWNER_SIGNING_KEY"),
+        ({"DEPLOY_GEOFM": "true", "GEOFM_MCP_API_KEY": "m" * 32, "GEOFM_OWNER_SIGNING_KEY": "m" * 32}, "distinct"),
+        ({"DEPLOY_WEB_SEARCH_MCP": "true"}, "WEB_SEARCH_MCP_API_KEY"),
+        ({"GEOFM_ENABLED": "true"}, "GEOFM_MCP_URL"),
+        ({"WEB_SEARCH_ENABLED": "true"}, "WEB_SEARCH_MCP_URL"),
+        ({"WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_MCP_URL": "http://search.example", "WEB_SEARCH_MCP_API_KEY": "w" * 32}, "HTTPS"),
+        ({"AURORA_ENDPOINT_URL": "http://weather.example"}, "HTTPS"),
+        ({"EARTH2_FCN_ENDPOINT_URL": "https://user:password@weather.example"}, "credentials"),
+        ({"DEPLOY_FABRIC_CAPACITY": "true"}, "ENABLE_FABRIC"),
+        ({"ACR_AGENT_POOL_COUNT": "-1"}, "ACR_AGENT_POOL_COUNT"),
+    ],
+)
+def test_given_incomplete_feature_contract_when_validating_then_preflight_rejects(
+    environment: dict[str, str], message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        MODULE.validate_feature_configuration(environment)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {},
+        {"DEPLOY_GEOFM": "false", "DEPLOY_WEATHER_STUB": "true"},
+        {"DEPLOY_AI_FOUNDRY": "false", "AZURE_OPENAI_ENDPOINT": "https://models.example", "EXISTING_AI_PROJECT_ENDPOINT": "https://foundry.example/api/projects/existing"},
+        {"ENABLE_MPC_PRO": "true", "MPC_PRO_STAC_URL": "https://catalog.example/stac"},
+        {"ENABLE_FABRIC": "true", "FABRIC_WORKSPACE_ID": "workspace", "FABRIC_LAKEHOUSE_ID": "lakehouse"},
+        {"AURORA_ENDPOINT_URL": "https://weather.example"},
+        {"DEPLOY_GEOFM": "false", "GEOFM_ENABLED": "true", "GEOFM_MCP_URL": "https://geofm.example", "GEOFM_MCP_API_KEY": "m" * 32, "GEOFM_OWNER_SIGNING_KEY": "o" * 32},
+        {"DEPLOY_WEB_SEARCH_MCP": "false", "WEB_SEARCH_ENABLED": "true", "WEB_SEARCH_MCP_URL": "https://search.example", "WEB_SEARCH_MCP_API_KEY": "w" * 32},
+    ],
+)
+def test_given_complete_resource_contract_when_validating_then_cpu_or_reuse_is_allowed(
+    environment: dict[str, str],
+) -> None:
+    MODULE.validate_feature_configuration(environment)

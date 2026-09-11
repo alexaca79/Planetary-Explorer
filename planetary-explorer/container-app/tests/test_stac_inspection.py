@@ -1,11 +1,94 @@
 """Tests for deterministic post-load STAC asset inspection."""
 
+from datetime import date
+
 import pytest
 
+import pipeline.stac_inspection as stac_inspection
 from pipeline.stac_inspection import (
     apply_collection_inspection_overrides,
     build_collection_asset_inspection_summary,
 )
+
+
+def test_given_bc_pin_when_translator_invents_other_location_then_point_load_stays_at_pin() -> None:
+    # Arrange
+    translated = {
+        "collections": ["sentinel-2-l2a"],
+        "bbox": [-118.67, 33.7, -118.16, 34.34],
+        "datetime": "2026-08-28",
+        "location_name": "Los Angeles",
+    }
+
+    # Act
+    result = stac_inspection.apply_pin_imagery_overrides(
+        stac_params=translated,
+        query="Show Sentinel-2 imagery at this point on 2026-08-28.",
+        pin={"lat": 49.432296, "lng": -122.482823},
+    )
+
+    # Assert
+    west, south, east, north = result["bbox"]
+    assert (west + east) / 2 == pytest.approx(-122.482823)
+    assert (south + north) / 2 == pytest.approx(49.432296)
+    assert east - west < 0.1
+    assert result["datetime"] == "2026-08-28"
+    assert translated["location_name"] == "Los Angeles"
+
+
+def test_given_nearest_date_when_searching_at_pin_then_expands_window_without_default_cloud_filter() -> None:
+    # Arrange
+    translated = {
+        "collections": ["sentinel-2-l2a"],
+        "datetime": "2026-08-28",
+        "query": {"eo:cloud_cover": {"lt": 20}, "platform": {"eq": "sentinel-2a"}},
+    }
+
+    # Act
+    result = stac_inspection.apply_pin_imagery_overrides(
+        stac_params=translated,
+        query="Show imagery at point on 2026-08-28. Use the nearest available date.",
+        pin={"lat": 49.432296, "lng": -122.482823},
+        today=date(2026, 9, 9),
+    )
+
+    # Assert
+    assert result["datetime"] == "2026-08-14/2026-09-09"
+    assert result["query"] == {"platform": {"eq": "sentinel-2a"}}
+    assert result["limit"] == 200
+    assert translated["query"]["eo:cloud_cover"] == {"lt": 20}
+
+
+def test_given_explicit_cloud_requirement_when_searching_nearest_then_preserves_filter() -> None:
+    # Arrange
+    translated = {"collections": ["sentinel-2-l2a"], "query": {"eo:cloud_cover": {"lt": 10}}}
+
+    # Act
+    result = stac_inspection.apply_pin_imagery_overrides(
+        stac_params=translated,
+        query="Show the nearest clear imagery here to August 28, 2026.",
+        pin={"lat": 49.432296, "lng": -122.482823},
+        today=date(2026, 9, 9),
+    )
+
+    # Assert
+    assert result["query"] == translated["query"]
+    assert result["datetime"] == "2026-08-14/2026-09-09"
+
+
+def test_given_explicit_region_when_applying_point_overrides_then_region_is_preserved() -> None:
+    # Arrange
+    translated = {"collections": ["sentinel-2-l2a"], "bbox": [-124, 48, -120, 51]}
+
+    # Act
+    result = stac_inspection.apply_pin_imagery_overrides(
+        stac_params=translated,
+        query="Show imagery over the entire map around this pin.",
+        pin={"lat": 49.432296, "lng": -122.482823},
+    )
+
+    # Assert
+    assert result == translated
 
 
 def test_given_pin_when_applying_inspection_overrides_then_collection_and_aoi_are_pinned() -> (

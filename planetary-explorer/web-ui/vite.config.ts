@@ -137,7 +137,7 @@ export default defineConfig(({ command, mode }) => {
       // VITE_API_BASE_URL is set by the deployment workflow at build time
       // For local development, use localhost backend
       'import.meta.env.VITE_API_BASE_URL': JSON.stringify(
-        isDev ? LOCAL_BACKEND : process.env.VITE_API_BASE_URL || ''
+        isDev ? LOCAL_BACKEND : process.env.VITE_API_BASE_URL || process.env.AZURE_CONTAINER_APP_URL || ''
       )
     }
   };

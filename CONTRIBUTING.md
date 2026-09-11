@@ -18,7 +18,7 @@ Thank you for your interest in contributing to Planetary Explorer! This document
 Before contributing, ensure you have the required technical background:
 
 - **Azure Cloud Services** — Understanding of Azure Container Apps, Azure AI Foundry, Azure Maps, and Azure AI Search
-- **Python Development** — Python 3.12+ with FastAPI / async
+- Python 3.11 for the deployed backend; the optional dev container uses 3.12
 - **React / TypeScript** — Frontend development with Vite
 - **AI / LLM Concepts** — Familiarity with Azure OpenAI and tool/function calling
 - **Geospatial Data** — Knowledge of STAC (SpatioTemporal Asset Catalog) standards
@@ -28,31 +28,29 @@ Before contributing, ensure you have the required technical background:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/microsoft/Planetary-Explorer.git
+  git clone https://github.com/YOUR-USERNAME/Planetary-Explorer.git
    cd Planetary-Explorer
    ```
 
-2. **Install root dev tooling** (linters / formatters / pytest):
+2. **Create an isolated environment and install development tooling**:
    ```bash
-   pip install -r requirements.txt
+  uv venv --python 3.11
+  uv pip install -r requirements.txt
    ```
 
 3. **Install per-service runtime dependencies** as needed:
    ```bash
    # FastAPI backend (Container App)
-   pip install -r planetary-explorer/container-app/requirements.txt
+  uv pip install -r planetary-explorer/container-app/requirements.txt
 
    # Web UI
-   cd planetary-explorer/web-ui && npm install && cd ../..
+  npm --prefix planetary-explorer/web-ui ci
    ```
 
-4. **Provision Azure resources** with the Azure Developer CLI:
-   ```bash
-   azd auth login
-   azd init      # picks up the root azure.yaml
-   azd up        # provisions infra + builds + deploys
-   ```
-   See [`QUICK_DEPLOY.md`](QUICK_DEPLOY.md) for the full deploy walkthrough and feature toggles (Fabric, MPC Pro, private endpoints).
+4. Choose [local development](LOCAL_DEV_CONTAINER_DEVELOPMENT.md) or follow
+  the [deployment guide](documentation/deployment.md). Local development
+  does not require provisioning Azure. AI/private-data workflows require
+  configured existing services and access; the baseline does not need a GPU.
 
 ##  Build Instructions
 
@@ -61,7 +59,7 @@ Before contributing, ensure you have the required technical background:
 **Backend** (FastAPI container):
 ```bash
 cd planetary-explorer/container-app
-uvicorn fastapi_app:app --reload --port 8080
+uv run --no-project uvicorn fastapi_app:app --reload --port 8000
 ```
 
 **Frontend** (React / Vite):
@@ -72,16 +70,24 @@ npm run dev
 
 Access the application at: http://localhost:5173
 
+Use separate terminals, each starting at the repository root. Activate the
+repository virtual environment before running the backend. Set
+`LOCAL_BACKEND_URL=http://localhost:8000` in the frontend terminal; if you
+change the backend port, change this value too. Disable auth only for an
+explicit local-only setup, never as a fix for a deployed sign-in problem.
+
 ### Testing
 
 ```bash
-# Backend tests
+# Backend tests, from the repository root with the virtual environment active
 cd planetary-explorer/container-app
-python -m pytest
+python -m pytest tests -q
+cd ../..
 
 # Frontend tests
-cd planetary-explorer/web-ui
-npm test
+npm --prefix planetary-explorer/web-ui run test:run
+npm --prefix planetary-explorer/web-ui run test:deployment
+python -m pytest scripts/tests -q
 ```
 
 ##  Coding Conventions
@@ -96,7 +102,7 @@ npm test
 
 **Example**:
 ```python
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -180,7 +186,7 @@ export const Chat: React.FC<ChatProps> = ({ onQuerySubmit, isLoading }) => {
 
 - **Azure AI Updates**: Migration to latest Azure AI services and models
 - **Frontend Framework**: Potential React 19 adoption for improved performance
-- **Backend Optimization**: Performance improvements in Azure Functions
+- Backend optimization: FastAPI/Container Apps request and raster performance
 
 ##  Bug Reports and Feature Requests
 
@@ -211,7 +217,10 @@ For new features, please provide:
 3. **Add or update tests** for new functionality
 4. **Update documentation** as needed
 5. **Run the full test suite** and ensure all tests pass
-6. **Submit a pull request** with a clear description
+6. Submit a pull request to the explicitly selected repository, normally your fork
+
+Opening a PR or pushing a branch does not authorize merging. Merge only on
+explicit direction, and verify the base repository before any GitHub write.
 
 ### PR Requirements
 
@@ -234,7 +243,7 @@ For new features, please provide:
 - **STAC Specification**: https://stacspec.org/
 - **Microsoft Planetary Computer**: https://planetarycomputer.microsoft.com/
 - **Microsoft Agent Framework documentation**: <https://learn.microsoft.com/agent-framework/overview/>
-- **Azure Functions Python Guide**: https://docs.microsoft.com/en-us/azure/azure-functions/functions-reference-python
+- [Deployment and resource guide](documentation/deployment.md)
 
 ##  Support
 

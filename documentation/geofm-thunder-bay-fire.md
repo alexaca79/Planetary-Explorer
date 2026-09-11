@@ -1,7 +1,7 @@
 ---
 title: Analyze the Thunder Bay 36 wildfire with fire false colour and PlanAura
 description: Use a scene-stretched HLS fire composite and GeoFM to inspect change inside the 2026 Thunder Bay 36 perimeter
-ms.date: 2026-09-01
+ms.date: 2026-09-09
 ms.topic: how-to
 keywords:
   - GeoFM
@@ -13,6 +13,12 @@ keywords:
 estimated_reading_time: 10
 ---
 ## Understand the example
+
+Use the [application usage guide](get-started-playbook.md#run-foundation-change-with-geofm)
+for current controls, approval and artifact-access behavior. This case study
+retains its historical Thunder Bay measurements and incident dates. The
+[September 9 Regina verification](geofm-foundation-change.md#september-9-verification)
+tests the current workflow; it is not a new Thunder Bay fire assessment.
 
 This example examines a point inside the 2026 Thunder Bay 36 wildfire
 (`THU036`) in Thunder Bay District, Ontario. It does not analyze the City of

@@ -1,165 +1,118 @@
 ---
-title: Planetary Explorer Resilience Agent MCP Server
-description: Connect the Canadian 2026 operational resilience agent to MCP clients.
+title: Resilience MCP Wrapper
+description: Connect an authorized existing Resilience API to MCP clients with separate inbound and backend credentials.
+ms.date: 2026-09-08
 ---
 
-A Model Context Protocol (MCP) server that wraps the four
-`/api/resilience/*` endpoints of the Planetary Explorer backend so any
-MCP-aware client (Copilot Studio, Claude Desktop, VS Code, Cursor, ChatGPT
-desktop) can call the resilience agent as a tool.
+## Scope
 
-## Tools exposed
+This CPU-only FastMCP service wraps the Planetary Explorer Resilience API.
+It does not create the backend, deploy models, populate Fabric tables, install
+a Teams app or implement user-delegated OAuth. Backend source/provenance may
+be live tenant data or explicitly synthetic seed data; inspect each response.
 
-| Tool | Backend call |
-|---|---|
-| `check_resilience_health` | `GET /api/resilience/health` |
-| `list_facilities` | `GET /api/resilience/facilities` |
-| `assess_resilience` | `POST /api/resilience/assess` |
-| `get_resilience_snapshot` | `GET /api/resilience/snapshot` (returns URL) |
+| Tool | Backend Route |
+| --- | --- |
+| `check_resilience_health` | `/api/resilience/health` |
+| `list_facilities` | `/api/resilience/facilities` |
+| `assess_resilience` | `/api/resilience/assess` |
+| `get_resilience_snapshot` | `/api/resilience/snapshot` |
 
-## Local run
+See the [deployment/resource guide](../../documentation/deployment.md) and
+[Get Started playbook](../../documentation/get-started-playbook.md) for backend
+requirements. A wrapper health response does not prove model/data readiness.
 
-### One-shot launcher (recommended)
+## Local Startup
 
-```powershell
-cd m365/mcp-server
-.\start-mcp.ps1
-```
-
-This finds `devtunnel.exe`, sets up the venv, installs deps, generates and
-persists a bearer token in `.env`, starts the MCP server, brings up the
-public tunnel, and prints the exact Copilot Studio paste values. Ctrl+C
-shuts everything down.
-
-Useful flags:
-
-| Flag | Effect |
-|---|---|
-| `-BackendUrl <url>` | Override the backend tunnel URL |
-| `-Port <int>` | Use a different local port (default 8765) |
-| `-NewToken` | Rotate the bearer token |
-| `-ResetTunnel` | Delete and recreate the devtunnel |
-
-### Manual run
-cd m365/mcp-server
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
-
-# Point at your backend (local or tunnel)
-$env:RESILIENCE_API_BASE_URL = "https://<your-backend-tunnel>-8080.use.devtunnels.ms"
-$env:RESILIENCE_TUNNEL_SKIP = "1"
-
-# Strongly recommended before exposing the tunnel: set a bearer token
-$env:MCP_BEARER_TOKEN = "use-a-long-random-string-here"
-
-python server.py
-```
-
-Server starts on `http://0.0.0.0:8765` with the MCP **streamable HTTP**
-transport at `/mcp` and an unauthenticated liveness probe at `/healthz`.
-
-Liveness probe:
+From this directory, using Python 3.11 or newer:
 
 ```powershell
-curl http://localhost:8765/healthz   # -> "ok"
+uv venv --python 3.11
+uv pip install -e '.[dev]'
+$env:MCP_HOST = '127.0.0.1'
+$env:MCP_PORT = '8765'
+$env:RESILIENCE_API_BASE_URL = 'http://localhost:8000'
+$env:MCP_BEARER_TOKEN = '<strong-secret-from-your-secret-store>'
+.\.venv\Scripts\python.exe server.py
 ```
 
-If `MCP_BEARER_TOKEN` is set, every request to `/mcp` must include:
+Set `RESILIENCE_API_BASE_URL` explicitly to the actual local or HTTPS backend;
+the server's default port 8080 differs from the main local-development port.
+The server does not load `.env` automatically. On macOS/Linux use exported
+environment variables and `.venv/bin/python`.
 
-```
-Authorization: Bearer <your-token>
+`/mcp` uses Streamable HTTP; `/healthz` is an unauthenticated liveness probe.
+When `MCP_BEARER_TOKEN` is configured, every MCP request must carry its matching
+Bearer header. Without it the service is open and must stay on loopback.
+
+The convenience launcher accepts `-BackendUrl` but can create a public tunnel
+and print generated credentials. It is not the default secure path. Review
+its actions before using it; never send printed tokens to chat or logs.
+
+## Two Authentication Boundaries
+
+`MCP_BEARER_TOKEN` protects client-to-wrapper traffic. Separately,
+`RESILIENCE_API_KEY` is forwarded as a Bearer token to the backend. A protected
+Entra backend requires an authorized token with the correct audience/tenant;
+an arbitrary static string is not an Entra credential. Tokens expire, and
+this wrapper does not implement automatic OAuth acquisition or per-user token
+exchange. Do not expose it publicly until that lifecycle and access model
+meet your requirements.
+
+Use `RESILIENCE_TUNNEL_SKIP=1` only when the backend is an approved dev tunnel.
+It changes the tunnel interstitial header, not backend authentication.
+
+## VS Code Client
+
+For a running protected local wrapper, configure `.vscode/mcp.json` without
+committing the token:
+
+```json
+{
+  "inputs": [
+    {
+      "id": "resilience-mcp-token",
+      "type": "promptString",
+      "description": "Resilience MCP access token",
+      "password": true
+    }
+  ],
+  "servers": {
+    "planetary-explorer-resilience": {
+      "type": "http",
+      "url": "http://localhost:8765/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:resilience-mcp-token}"
+      }
+    }
+  }
+}
 ```
 
-The server will respond `401 Unauthorized` otherwise. If the token is
-unset, the server logs a `WARNING` on startup and accepts all requests
-(development mode only).
+Other clients must support Streamable HTTP and the configured authentication.
+Do not select “None” when the server requires a token. Client availability,
+tenant policy and government-cloud support require separate confirmation.
+
+## Tunnels and Deployment
+
+The local server speaks HTTP. A TLS-terminating dev tunnel must forward HTTP
+to port 8765, not attempt HTTPS to the local Python process. Public exposure
+requires explicit approval, a protected MCP endpoint and backend authorization;
+anonymous tunnel access alone is not an application security model.
+
+The Dockerfile is a packaging starting point. The root azd workflow does not
+deploy this wrapper. Create or explicitly select its host, registry, API URL,
+ingress and secrets separately, then test MCP initialization and a real
+authorized tool call. Neither a proxy nor an API gateway creates missing data
+or model dependencies.
 
 ## Tests
 
 ```powershell
-pip install -e ".[dev]"
-pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-15 tests cover: tool happy paths, structured error mapping
-(`backend_error`, `backend_timeout`, `backend_unreachable`), the
-devtunnel header injection, snapshot image content blocks, and all four
-bearer-token middleware code paths.
-
-## Expose to Copilot Studio via devtunnel
-
-Copilot Studio needs a public HTTPS URL. Open a second tunnel on port 8765:
-
-```powershell
-devtunnel create resilience-mcp --allow-anonymous
-devtunnel port create resilience-mcp -p 8765 --protocol https
-devtunnel host resilience-mcp
-```
-
-Copy the public URL (e.g. `https://abc123-8765.use.devtunnels.ms`). The MCP
-endpoint is `<that-url>/mcp`.
-
-## Register in Copilot Studio (GCC)
-
-1. Open your agent in `gcc.copilotstudio.microsoft.us`
-2. **Tools → + Add a tool → + New tool**
-3. Click the **Model Context Protocol** tile in the "Create new" row
-4. Fill the form:
-
-    | Field | Value |
-    |---|---|
-    | Server name | `Planetary Explorer Resilience Agent` |
-    | Server description | `Operational resilience assessment for facilities: live weather risk scoring, supply-chain blast radius, BCP playbook retrieval.` |
-    | Server URL | `https://<your-tunnel>-8765.use.devtunnels.ms/mcp` |
-    | Authentication | `None` (dev) — switch to API key when you deploy |
-
-5. Save. Copilot Studio should auto-discover the four tools.
-6. Test from the right-hand pane: *"For the week of August 26, 2026, which Canadian facilities are most at risk?"*
-
-## Use from VS Code
-
-Add to `.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "planetary-explorer-resilience": {
-      "type": "http",
-      "url": "http://localhost:8765/mcp"
-    }
-  }
-}
-```
-
-## Use from Claude Desktop
-
-Edit `claude_desktop_config.json` (Settings → Developer → Edit Config):
-
-```json
-{
-  "mcpServers": {
-    "planetary-explorer-resilience": {
-      "url": "http://localhost:8765/mcp"
-    }
-  }
-}
-```
-
-## Environment variables
-
-| Var | Default | Purpose |
-|---|---|---|
-| `RESILIENCE_API_BASE_URL` | `http://localhost:8080` | Backend root URL |
-| `RESILIENCE_API_KEY` | unset | Optional Bearer token forwarded to backend |
-| `RESILIENCE_TUNNEL_SKIP` | `0` | Set to `1` when backend is on a devtunnel |
-| `MCP_HOST` | `0.0.0.0` | Bind host |
-| `MCP_PORT` | `8765` | Bind port |
-| `MCP_BEARER_TOKEN` | unset | If set, required on every `/mcp` request |
-| `MCP_LOG_LEVEL` | `INFO` | Python logging level |
-
-## Production deploy (later)
-
-`Dockerfile` included. Push to Azure Container Apps, front with Application
-Gateway or APIM, swap Copilot Studio auth from `None` → `API key` or
-`OAuth 2.0` (Entra), retire the devtunnel.
+Test both missing/incorrect client credentials and backend denial, expiry,
+timeout and success. Validate returned source metadata. Never count an
+HTTP 200 error payload or a synthetic seed result as a successful private-data
+integration.

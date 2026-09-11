@@ -451,7 +451,7 @@ jobs:
           PARAMETERS_FILE=$(mktemp)
           trap 'rm -f "$PARAMETERS_FILE"' EXIT
           jq --arg webSearchKey "$WEB_SEARCH_MCP_API_KEY" \
-            '.parameters.webSearchMcpApiKey.value = $webSearchKey' \
+            '.parameters |= with_entries(select(if (.value.value | type) == "string" then (.value.value | startswith("${") | not) else true end)) | .parameters.webSearchMcpApiKey.value = $webSearchKey' \
             infra/main.parameters.json > "$PARAMETERS_FILE"
           
           DEPLOYMENT_NAME="${{ env.PROJECT_NAME }}-$(date +%Y%m%d-%H%M%S)"
@@ -700,11 +700,9 @@ jobs:
             EXTRA_PARAMS+=(--parameters frontendAppServicePlanName="$RESOLVED_PLAN_NAME")
             EXTRA_PARAMS+=(--parameters agentProjectName="$AGENT_PROJECT_NAME")
 
-            # Use main.parameters.json as the baseline so values like
-            # mpcProStacUrl and enableMpcPro persist across deploys. Without
-            # this every run would reset opt-in parameters to their bicep
-            # defaults (e.g. mpcProStacUrl='') because individual --parameters
-            # flags only override the keys they name.
+            # Only literal parameter values are retained in the baseline.
+            # azd substitutions are not ARM syntax; workflow inputs below
+            # override the Bicep defaults explicitly.
             if az deployment sub create \
               --location "${{ env.LOCATION }}" \
               --template-file infra/main.bicep \
@@ -942,7 +940,14 @@ jobs:
           CORS_ORIGINS: ${{ steps.discover.outputs.web_app_url }},http://localhost:5173
           ENABLE_PRIVATE_ENDPOINTS: ${{ steps.discover.outputs.private_endpoints_enabled }}
           PUBLIC_DEMO_MODE: ${{ github.event.inputs.disable_auth || 'false' }}
-        run: bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"
+          AURORA_ENDPOINT_URL: ${{ env.INPUT_AURORA_ENDPOINT_URL }}
+          EARTH2_FCN_ENDPOINT_URL: ${{ env.INPUT_EARTH2_FCN_ENDPOINT_URL }}
+          MAI_WEATHER_ENDPOINT_URL: ${{ env.INPUT_MAI_WEATHER_ENDPOINT_URL }}
+        run: |
+          export AURORA_ENDPOINT_URL="${AURORA_ENDPOINT_URL:-$(jq -r '.parameters.auroraEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          export EARTH2_FCN_ENDPOINT_URL="${EARTH2_FCN_ENDPOINT_URL:-$(jq -r '.parameters.earth2FcnEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          export MAI_WEATHER_ENDPOINT_URL="${MAI_WEATHER_ENDPOINT_URL:-$(jq -r '.parameters.maiWeatherEndpointUrl.value // "" | select(startswith("${") | not)' planetary-explorer/infra/main.parameters.json)}"
+          bash "$GITHUB_WORKSPACE/scripts/deploy-backend.sh"
 
   deploy-web-search:
     name: Deploy Azure Web Search MCP

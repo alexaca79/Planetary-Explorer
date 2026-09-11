@@ -5,13 +5,18 @@ description: Query Microsoft Planetary Computer collections with Canadian exampl
 
 **Microsoft Planetary Computer | Planetary Explorer**
 
-This guide helps you craft queries that return results for all 21 available satellite and geospatial collections.
+This guide gives query examples for selected satellite and geospatial
+collections. Availability depends on the point, date, footprint, quality and
+access permissions; it is not a guarantee that every example returns data.
+Use the [Get Started playbook](../../../documentation/get-started-playbook.md)
+for release-bound checks and expected evidence.
 
 ---
 
 ## ⭐ Featured Collections
 
-The following collections are production-ready, high-priority datasets optimized for reliable querying and visualization in Planetary Explorer.
+The following collections illustrate supported query patterns. Verify live
+catalog and raster availability before relying on a result.
 
 ### 🌍 Harmonized Landsat and Sentinel-2 (HLS) v2.0
 
@@ -404,8 +409,10 @@ such as 2026 before-and-after imagery over Jasper, Alberta.
 - **MODIS 14A1/14A2** - Fire detection
 - **MODIS 11A1** - Land surface temperature
 
-### Category 4: Seasonal Data (Winter 2026 for Snow)
-- **MODIS 10A1** - Snow cover (use January through March 2026)
+### Category 4: Seasonal Snow Data
+- MODIS 10A1: verify the requested winter interval in the catalog. The tested
+  Canadian playbook uses February 2025 explicitly; a missing 2026 interval
+  must not be silently replaced with another year.
 
 ---
 
@@ -430,6 +437,6 @@ If your query returns no results:
 
 ---
 
-**Last Updated:** August 27, 2026
+**Last Updated:** September 8, 2026
 **Data Source:** Microsoft Planetary Computer STAC API  
-**Validated Collections:** 21/21 (100% operational)
+**Validation Scope:** Query examples, not universal scene, pixel or model validation.

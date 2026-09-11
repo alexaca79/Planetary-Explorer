@@ -85,12 +85,15 @@ class ActionRouterExecutor(Executor):  # type: ignore[misc]
         loaded_collections: list[str] | None = None,
         has_pin: bool = False,
         has_screenshot: bool = False,
+        memory_context: str = "",
     ) -> ActionDecision:
+        memory_options = {"memory_context": memory_context} if memory_context else {}
         return await self.router.route(
             query=query,
             loaded_collections=loaded_collections,
             has_pin=has_pin,
             has_screenshot=has_screenshot,
+            **memory_options,
         )
 
     if _AGENT_FRAMEWORK_AVAILABLE:
@@ -101,11 +104,12 @@ class ActionRouterExecutor(Executor):  # type: ignore[misc]
             ctx: "WorkflowContext[PipelineMessage]",
         ) -> None:
             req = msg.request
-            decision = await self.router.route(
+            decision = await self.route(
                 query=req.question,
                 loaded_collections=req.loaded_collections or [],
                 has_pin=bool(req.pin),
                 has_screenshot=bool(req.screenshot_b64 or req.has_screenshot),
+                memory_context=req.memory_context,
             )
             msg.decision = decision
             await ctx.send_message(msg)

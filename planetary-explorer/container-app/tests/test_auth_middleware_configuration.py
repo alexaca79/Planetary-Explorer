@@ -135,6 +135,26 @@ def test_given_explicit_disable_when_entra_ids_exist_then_public_mode_allows_req
     assert response.status_code == 200
 
 
+def test_given_public_mode_with_identity_when_invalid_token_supplied_then_it_is_not_accepted(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "TENANT_ID", "tenant-id")
+    monkeypatch.setattr(auth_middleware, "CLIENT_ID", "client-id")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+
+    response = _build_client().get("/protected", headers={"Authorization": "Bearer invalid-token"})
+
+    assert response.status_code == 401
+
+
+def test_given_public_mode_with_identity_when_history_requested_without_token_then_it_is_rejected(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "TENANT_ID", "tenant-id")
+    monkeypatch.setattr(auth_middleware, "CLIENT_ID", "client-id")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+
+    response = _build_client().get("/api/chat-history/sessions")
+
+    assert response.status_code == 401
+
+
 def test_given_untrusted_easyauth_header_when_request_has_no_token_then_request_is_rejected(
     monkeypatch,
 ) -> None:

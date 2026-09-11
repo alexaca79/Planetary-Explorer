@@ -267,6 +267,7 @@ class LoadSpecialistAgent(Executor):  # type: ignore[misc]
             load_plan = await get_load_agent().plan(
                 LoadAgentInput(
                     query=request.question,
+                    memory_context=request.memory_context,
                     location_name=decision.location,
                     has_bbox=bool(request.bbox),
                     bbox=list(request.bbox) if request.bbox else None,
@@ -458,9 +459,13 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
         body: Dict[str, Any],
     ) -> Dict[str, Any]:
         started = time.time()
-        # Use the focused analysis_question if the router rewrote it.
-        if decision.analysis_question:
-            request = request.model_copy(update={"question": decision.analysis_question})
+        if decision.analysis_question and decision.analysis_question != request.question:
+            request = request.model_copy(update={
+                "question": (
+                    f"{request.question}\n\n"
+                    f"Router analysis focus: {decision.analysis_question}"
+                ),
+            })
 
         # ------------------------------------------------------------
         # Wave 10 (REQ-ARCH-1): delegate to the single AnalystAgent
@@ -512,6 +517,16 @@ class AnalyzeAgent(Executor):  # type: ignore[misc]
             if _has_model_backed_geofm_evidence(response.structured or {})
             else _catalog_source
         )
+        used_tools = set(_tools_used)
+        if (
+            used_tools.intersection({"search_web", "code_interpreter"})
+            and used_tools.issubset({"search_web", "code_interpreter", "get_current_datetime"})
+        ):
+            _data_source = (
+                "Web Search + supplied data"
+                if {"search_web", "code_interpreter"}.issubset(used_tools)
+                else "Web Search" if "search_web" in used_tools else "Supplied data"
+            )
         _visualizations = [v.model_dump() for v in response.visualizations]
         _map_data = next(
             (

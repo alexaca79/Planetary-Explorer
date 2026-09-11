@@ -453,6 +453,8 @@ class LoadAgent:
                 ),
                 clarification_round=payload.clarification_round,
             )
+            if payload.memory_context:
+                user_prompt = f"{payload.memory_context}\n\n{user_prompt}"
 
             client = self._get_client()
             # Model-aware kwargs: gpt-5 / o-series reasoning models reject

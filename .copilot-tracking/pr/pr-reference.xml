@@ -2364,7 +2364,7 @@
   @@ -6934,6 +7174,7 @@ async def unified_query_processor(request: Request):
                    # live inventory lookup, so lookalike tokens (e.g.
                    # ``sentinel-2`` when only ``sentinel-2-l2a`` exists in
-                   # the catalog) cannot clobber a correct SK pick.
+                     # the catalog) cannot clobber a correct collection choice.
   +                _post_load_inspection = req_body.get("_v2_post_load_inspection")
                    try:
                        from collection_index import get_collection_index as _get_idx

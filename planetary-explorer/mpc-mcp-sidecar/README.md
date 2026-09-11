@@ -1,8 +1,18 @@
-# MPC Pro MCP sidecar
+---
+title: MPC Pro MCP Sidecar
+description: Deploy or reference the CPU catalog bridge and verify private GeoCatalog authorization with the MCP SDK.
+---
+
+## Scope
 
 Internal-only Container App that runs Microsoft's `geocatalog-mcp-server`
 (v1.0.9, MIT) behind a streamable-HTTP transport so the Planetary Explorer
 backend can call its tools as a network MCP client.
+
+This service uses CPU only and is optional for the public-data baseline.
+It does not create a private GeoCatalog, ingest imagery or grant catalog
+access. [Deployment prerequisites](../../documentation/deployment.md#resources-and-responsibilities)
+must be completed for the selected catalog and backend identity.
 
 ## Architecture (Option A: vendor + bridge)
 
@@ -168,32 +178,19 @@ The backend container app needs one new env var (already plumbed by
 
 ## Smoke test (after deploy + GeoCatalog grant)
 
-From inside the backend container (`az containerapp exec`):
+Use the [SDK smoke test](../container-app/tools/mpc_mcp_smoke.py) from the
+backend working directory with its dependencies installed and network access
+to the internal endpoint:
 
 ```bash
-# 1. tools/list
-curl -s -X POST "$MPC_MCP_URL/mcp" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}'
-
-# 2. Reuse the Mcp-Session-Id header from step 1's response, then:
-SID=<session-id-from-step-1>
-curl -s -X POST "$MPC_MCP_URL/mcp" \
-  -H "Mcp-Session-Id: $SID" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | jq '.result.tools | length'
-# expect: 20+
-
-# 3. Real call
-curl -s -X POST "$MPC_MCP_URL/mcp" \
-  -H "Mcp-Session-Id: $SID" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"check_mpc_collection_exists","arguments":{"collection_id":"sentinel-2-l2a"}}}' \
-  | jq '.result'
+export MPC_MCP_URL='https://<actual-sidecar-fqdn>'
+export MPC_PRO_STAC_URL='https://<authorized-geocatalog>/stac'
+PYTHONPATH=. python tools/mpc_mcp_smoke.py
 ```
 
-The Python smoke test at
-[`planetary-explorer/container-app/tools/mpc_mcp_smoke.py`](../container-app/tools/mpc_mcp_smoke.py)
-does the same thing via the MCP SDK Python client.
+The SDK manages initialization and session headers, then calls the private
+collection inventory tool. A successful Public PC query does not validate
+private GeoCatalog permissions. Inspect the returned collection IDs and run
+an authorized item/asset check before enabling private workflows. An empty
+inventory can prove the transport works without proving your required data
+exists. Do not parse an SSE stream as an ordinary JSON response.

@@ -37,8 +37,7 @@ workflows:
       - azd: package api
       - azd: deploy web
       - azd: deploy api
-      # GeoFM is opt-in because deployGeoFm defaults to false. After enabling
-      # it, run: azd deploy geofm; azd deploy geofm-worker.
+      # The postup hook publishes only explicitly enabled optional services.
 
 services:
   web:
@@ -68,6 +67,24 @@ services:
         posix:
           shell: sh
           run: python3 ../../scripts/configure_api_postdeploy.py
+
+  weather-stub:
+    project: ./weather-stub-server
+    host: containerapp
+    language: docker
+    resourceName: ${AZURE_WEATHER_STUB_CONTAINER_APP_NAME}
+    docker:
+      path: ./Dockerfile
+      context: .
+      remoteBuild: true
+    hooks:
+      postdeploy:
+        windows:
+          shell: pwsh
+          run: python ../../scripts/configure_api_postdeploy.py --profile weather
+        posix:
+          shell: sh
+          run: python3 ../../scripts/configure_api_postdeploy.py --profile weather
 
   web-search-mcp:
     project: ./web-search-mcp

@@ -18,7 +18,7 @@ Planetary Explorer, built on AI Foundry, demonstrates how organizations can use 
 
 Planetary Explorer turns natural-language questions into grounded geospatial answers. Its multi-agent system picks the right data, renders it on the map, and reasons over the result.
 
-It fuses mutliple surfaces behind one chat:
+It connects these surfaces when their prerequisites are configured:
 - **Microsoft Planetary Computer** — 130+ public STAC collections & MPC Pro / GeoCatalog in your tenant for private collections
 - **Microsoft Fabric Lakehouse** — delta tables and compute feed workflows
 - **Azure AI Search** — documentation for grounding responses
@@ -26,15 +26,26 @@ It fuses mutliple surfaces behind one chat:
 
 Meet users where they already work:
 - **React web app** — purpose-built map + chat experience
-- **Microsoft Teams** — chat with Planetary Explorer agents in any channel
-- **M365 Copilot** — declarative agent surfaces the same answers inside Word, Outlook, and Copilot Chat
-- **VS Code / Claude Desktop** — every agent exposed as MCP tools for developers
+- **Microsoft Teams / M365 Copilot**: optional tenant-specific manifests and connectors, not part of the baseline deployment
+- **MCP clients**: separate service-specific integrations; the general MCP server folder contains experimental mock tools
 
 Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model Context Protocol** so analysts, operators, and decision-makers spend less time wrangling data and more time acting on insight.
 
 **Watch Satya Nadella introduce NASA Earth Copilot, the inspiration behind Planetary Explorer, at Microsoft Ignite 2024**: [View Here](https://www.linkedin.com/posts/microsoft_msignite-activity-7265061510635241472-CAYx/?utm_source=share&utm_medium=member_desktop)
 
-**Auto-Deploy Ready:** This repository includes fully automated deployment via **Bicep** and **GitHub Actions**. Follow the [Quick Start Guide](QUICK_DEPLOY.md) to deploy the complete architecture: infrastructure, backend, and frontend within one hour. Its modular architecture is designed for extensibility.
+Start with the [deployment guide](documentation/deployment.md). It separates
+resource provisioning, application publishing, existing-service references,
+and live readiness checks. Deployment time depends on region, quota, identity
+propagation and builds.
+
+### Non-GPU Option
+
+The API and web UI run on CPU hosts. Public imagery, raster sampling, image,
+terrain, mobility and climate workflows use hosted model APIs and data
+services, not a local GPU. Forecast can use the optional CPU weather adapter
+or existing scoring endpoints. Keep `DEPLOY_GEOFM=false` and
+`GEOFM_ENABLED=false`; PlanAura Foundation Change is the separate GPU-only
+capability. Hosted model calls and other Azure resources still incur charges.
 
 > **Planetary Explorer is a reusable geospatial AI pattern that can be adapted across different use cases. It is not a supported Microsoft product.**
 
@@ -45,10 +56,10 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model 
 - **Multi-Agent Architecture** — Microsoft Agent Framework prompt agents and `WorkflowBuilder` graphs plus Azure AI Agent Service tool agents.
 - **Dual MPC Surface** — Chat over **MPC Public** *or* **MPC Pro / GeoCatalog** in your own tenant
 - **Pluggable Connection Surfaces** — Bring your own **Microsoft Fabric** Lakehouse, **Azure AI Search** indexes, and **Foundry geospatial + weather models**.
-- **MCP Server** — Expose every agent as Model Context Protocol tools for VS Code GitHub Copilot, Claude Desktop, and other MCP clients.
+- **MCP integrations**: protected Web Search, GeoFM and private catalog sidecars; check each service's readiness and authentication requirements.
 - **Multiple Client Surfaces** — One backend, your choice of UI: a purpose-built React web app, a **Microsoft Teams bot**, or an **M365 Copilot** declarative agent.
 - **Copilot Studio & ArcGIS** — Custom connectors for Copilot Studio, plus optional Esri ArcGIS integration for enterprise GIS workflows.
-- **Fully Private Deployment** — Optional VNet integration with private endpoints, private DNS zones, and Entra ID authentication for an enterprise-ready deployment out of the box.
+- **Private networking option**: VNet integration, private endpoints and DNS require policy review, reachable build agents, identity grants and live verification.
 
 ![Planetary Explorer Platform](documentation/images/platform.png)
 
@@ -64,120 +75,43 @@ Built on **Microsoft Agent Framework**, **Azure AI Agent Service**, and **Model 
 
 ![GEOINT Modules](./documentation/images/get_started.png)
 
-Use the [Get Started playbook](documentation/get-started-playbook.md) for the
-tested Setup and Analyze sequence, one recommended example from each of the 11
-families, expected evidence, prerequisites, and interpretation limits.
+Use the [application usage guide](documentation/get-started-playbook.md) for
+controls, Canadian pins, Setup and Analyze workflows, CPU wildfire review,
+GeoFM approval and polling, Web Search with Code Interpreter, prerequisites
+and troubleshooting. It is the main reference for using the application.
 
 Each **Setup** action starts a fresh map context. It replaces any previously
 selected location, pin, module, loaded collection, and conversation routing
 state before it runs the example. Place the example's new analysis pin only
 after its Setup response and map layer finish loading.
 
-The September 3, 2026 (UTC) reference release uses API revision
-`ca-earthcopilot-api--getstarted-hardened-0903-0316` and frontend bundle
-`index-jUC2ydNZ.js`. Its release-bound checks recorded 30 passed setups with
-2 MPC Pro capability blocks, 24 passed analyses with 8 prerequisite gates, and
-12 of 12 passed browser Image Analysis workflows. The Setup and browser
-matrices began from conflicting prior locations and stale pins, proving that
-every runnable example owns its requested location. Local release gates passed
-597 backend tests with one skip, 160 frontend tests, 49 Python verifier tests,
-8 browser-semantic tests, and 1 weather-adapter test. The unfiltered backend
-run also recorded 644 passes, 1 skip, and 6 known baseline mismatches in two
-excluded test files.
+The September 8, 2026 reference deployment used API commit `aaa0c53` and
+frontend commit `6056728`. Release-bound checks passed 30 available setups,
+24 enabled analyses, all 12 Image Analysis browser workflows, and desktop/
+mobile map interactions. Two setups and eight analyses remained blocked by
+MPC Pro, Fabric or sign-in prerequisites. GPU work was not submitted.
+These dated results do not certify later local changes or every Canadian
+point/date; rerun the playbook checks for each release.
 
 ### Query Examples
 
 <!-- markdownlint-disable MD013 MD033 MD060 -->
 
-<details>
-<summary><b>STAC Agent: chat-to-map (MPC Public + MPC Pro)</b></summary>
+Choose a worked workflow in the usage guide instead of copying a prompt without
+its required setup:
 
-| Query |
-|-------|
-| Show Sentinel-2 imagery over Toronto, Canada from 2026-06-01 to 2026-08-26 |
-| Show MODIS 10A1 daily snow cover at Quebec City, Canada, latitude 46.8139, longitude -71.2080, from 2025-02-01 to 2025-02-28 |
-| Show Sentinel-1 RTC radar imagery over the Red River, Manitoba from 2026-03-01 to 2026-05-31 |
+| Goal | Workflow |
+| --- | --- |
+| Load imagery at a dropped point | [Canadian pins and nearest dates](documentation/get-started-playbook.md#use-a-different-canadian-point) |
+| Read source pixels or describe the map | [Raster versus Image Analysis](documentation/get-started-playbook.md#use-the-common-map-workflow) |
+| Review wildfire change without GPU inference | [CPU burn-index comparison](documentation/get-started-playbook.md#review-a-burn-scar-with-cpu-tools) |
+| Run PlanAura on HLS imagery | [Foundation Change approval and results](documentation/get-started-playbook.md#run-foundation-change-with-geofm) |
+| Research official guidance and calculate sample quality | [Web Search and Code Interpreter](documentation/get-started-playbook.md#use-web-search-and-code-interpreter) |
+| Use terrain, mobility, climate, forecast or private-data modules | [Module examples and prerequisites](documentation/get-started-playbook.md#recommended-examples) |
 
-When MPC Pro is configured, use the **MPC Pro** toggle to route STAC queries to
-your authorized tenant collections. The control remains disabled when no
-private GeoCatalog is configured.
-
-</details>
-
-<details>
-<summary><b>Raster Sampling + Contextual Agent</b></summary>
-
-| Action | Query |
-|--------|-------|
-| Pin drop to chat | Sample the 2026 raster value at this Canadian location |
-| Chat | How do I interpret the colours in this 2026 collection? |
-| Chat | Explain each class in this Canadian land-cover raster and show its legend |
-
-</details>
-
-<details>
-<summary><b>GEOINT Modules: Vision, Terrain, Mobility, Comparison, Building Damage</b></summary>
-
-| Module | Query |
-|--------|-------|
-| **Vision** | Describe urban growth and vegetation patterns visible around Calgary in 2026. |
-| **Terrain** | For 2026, is this Metro Vancouver location suitable for a construction permit? Analyze slope, flood exposure, and flat areas. |
-| **Comparison** | Compare Alberta wildfire activity on 2026-08-24 and 2026-08-26 and explain the change over 48 hours. |
-| **Foundation Change** | Use PlanAura to compare HLS L30 on 2026-07-17 and 2026-08-18 at a pinned Regina location. |
-| **Foundation Change** | Load scene-stretched HLS S30 fire false colour, then analyze early-event change inside the official 2026 Thunder Bay 36 wildfire perimeter. |
-| **Mobility** | Assess this 2026 emergency-supply route for water crossings, wildfire exposure, steep slopes, and ground-vehicle feasibility. |
-| **Building Damage** | Using the 2026 before-and-after tenant imagery, assess potential building damage and distinguish destroyed, major-damage, and unaffected structures. |
-
-Follow the [screenshot-backed Foundation Change walkthrough](documentation/geofm-foundation-change.md)
-to verify PlanAura, set a Canadian HLS area, approve GPU work, and poll the
-durable result. The [Thunder Bay 36 wildfire case study](documentation/geofm-thunder-bay-fire.md)
-applies that workflow to an official Ontario fire perimeter.
-
-</details>
-
-<details>
-<summary><b>Extreme Weather Agent: NASA NEX-GDDP-CMIP6</b></summary>
-
-| Query |
-|-------|
-| What are the projected annual precipitation and peak daily rainfall values for Vancouver in 2026? |
-| Show monthly projected precipitation for Toronto in 2026 and identify the wettest month. |
-| What are the projected temperature and precipitation trends for Montreal during 2026 under SSP245 and SSP585? |
-
-</details>
-
-<details>
-<summary><b>Forecast Agent: configured AI weather providers</b></summary>
-
-| Query |
-|-------|
-| Give me a 120-hour (five-day) forecast over Lake Ontario using every available model and summarize ensemble spread. |
-| Forecast 2m temperature and 10m wind across southern Saskatchewan for the next 72 hours. |
-| Compare Aurora and Earth-2 FCN precipitation over Nova Scotia for the next 24 hours and explain model disagreement. |
-
-</details>
-
-<details>
-<summary><b>Site Intel Agent: Fabric + MPC siting workflow</b></summary>
-
-| Query |
-|-------|
-| For 2026, score our candidate data-centre sites near Calgary for power, water, competition, wildfire, flood, and heat exposure. |
-| Which 2026 candidate parcels near Montreal clear slope, flood, heat, and grid-proximity thresholds? |
-| Rank the top three 2026 sites near Edmonton with permitting precedent and grid proximity weighted highest. |
-
-</details>
-
-<details>
-<summary><b>Resilience Agent: continuous monitoring on Fabric + MPC</b></summary>
-
-| Query |
-|-------|
-| Over the next seven days, which Canadian facilities are most at risk and what is the supply-chain blast radius? |
-| If our Vancouver distribution centre goes offline for 48 hours in 2026, which downstream Canadian facilities are exposed? |
-| Show 2026 heat and wildfire risk for all Western Canada facilities this week, ranked by severity with a response playbook. |
-
-</details>
+Detailed evidence remains in the [Regina GeoFM walkthrough](documentation/geofm-foundation-change.md),
+[Thunder Bay 36 case study](documentation/geofm-thunder-bay-fire.md), and
+[September wildfire photos and results](documentation/wildfire-burn-scar-results.md).
 
 ### Examples
 
@@ -202,8 +136,7 @@ that each example replaces that state with its own location.
 
 ## 🏗️ Architecture
 
-Planetary Explorer uses Microsoft Agent Framework for orchestration. There is
-no Semantic Kernel runtime or dependency.
+Planetary Explorer uses Microsoft Agent Framework for orchestration.
 
 ```mermaid
 flowchart LR
@@ -320,19 +253,11 @@ You can deploy this application using **Agent mode in Visual Studio Code** or
 
 ## 🚀 Deployment
 
-Full, step-by-step deployment instructions cover GitHub Actions and local
-one-command deployment, what gets provisioned, opt-in flags (`-EnableMpcPro`,
-`-EnableFabric`, `-EnableWeatherModels`, `-EnablePrivateEndpoints`),
-multi-environment setup, and Copilot Studio, MCP, and ArcGIS integrations:
-
-[**QUICK_DEPLOY.md →**](QUICK_DEPLOY.md)
-
-```powershell
-# Quickest path: clone your fork and run the one-command local deploy
-git clone https://github.com/YOUR-USERNAME/Planetary-Explorer.git
-cd Planetary-Explorer
-.\deploy-infrastructure.ps1
-```
+Use [Quick Deploy](QUICK_DEPLOY.md) to choose local development, a new CPU
+environment, or an application-only update. The [resource matrix](documentation/deployment.md#resources-and-responsibilities)
+identifies which components are created, which can be adopted, and which need
+existing endpoints, permissions, indexes or data. Choose authentication and
+verify your fork, tenant, subscription and resource names before any writes.
 
 ## 📄 License
 

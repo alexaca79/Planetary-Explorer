@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { authenticateHistoryBrowser, historyApiHeaders } from './browser_history_auth.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const WEB_UI = join(ROOT, 'planetary-explorer', 'web-ui');
@@ -24,6 +25,7 @@ function parseArgs(argv) {
     apiBaseUrl: DEFAULT_API_URL,
     outputDir: DEFAULT_OUTPUT_DIR,
     allowProduction: false,
+    withHistory: false,
     headed: false,
     limit: undefined,
     name: undefined,
@@ -50,6 +52,7 @@ function parseArgs(argv) {
     const argument = argv[index];
     if (argument === '--headed') options.headed = true;
     else if (argument === '--allow-production') options.allowProduction = true;
+    else if (argument === '--with-history') options.withHistory = true;
     else if (argument === '--app-url') options.appUrl = argv[++index];
     else if (argument === '--api-base-url') options.apiBaseUrl = argv[++index];
     else if (argument === '--output-dir') options.outputDir = argv[++index];
@@ -650,6 +653,7 @@ export function adversarialMinimumZoom(configuredQuery, bbox) {
 
 async function runScenario(browser, scenario, index, options) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  if (options.withHistory) await authenticateHistoryBrowser(context, options.appUrl);
   if (options.proxyApiOrigin) {
     const apiOrigin = new URL(options.proxyApiOrigin).origin;
     await context.route(`${apiOrigin}/**`, async (route) => {
@@ -665,6 +669,13 @@ async function runScenario(browser, scenario, index, options) {
     });
   }
   const page = await context.newPage();
+  const historySaves = [];
+  page.on('response', response => {
+    if (response.request().method() === 'PUT'
+      && response.url().startsWith(`${new URL(options.apiBaseUrl).origin}/api/chat-history/sessions/`)) {
+      historySaves.push(response);
+    }
+  });
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   const scenarioSlug = `${String(index + 1).padStart(2, '0')}-${slug(scenario.location)}`;
@@ -1102,6 +1113,19 @@ async function runScenario(browser, scenario, index, options) {
     if (pageErrors.length > 0) {
       throw new Error(`Browser page errors: ${pageErrors.join(' | ')}`);
     }
+    let historyVerification;
+    if (options.withHistory) {
+      await page.locator('.chat-save-state.saved').waitFor({ state: 'visible', timeout: 30000 });
+      const saved = historySaves.at(-1);
+      if (!saved || saved.status() !== 200) throw new Error('Image Analysis transcript was not saved.');
+      const document = await saved.json();
+      const restored = await context.request.get(saved.url(), { headers: historyApiHeaders(), maxRedirects: 0 });
+      if (restored.status() !== 200) throw new Error('Saved Image Analysis transcript could not be restored.');
+      const restoredDocument = await restored.json();
+      if (!isDeepStrictEqual(document.messages, restoredDocument.messages)) throw new Error('Image Analysis history did not round-trip.');
+      if (!document.messages.some(message => message.content.includes(scenario.image_query))) throw new Error('Saved history omitted the image question.');
+      historyVerification = { sessionId: document.sessionId, revision: document.revision, messageCount: document.messageCount, saveRestore: 'passed', authentication: 'EasyAuth user token login' };
+    }
     return {
       family: scenario.family,
       location: scenario.location,
@@ -1136,6 +1160,7 @@ async function runScenario(browser, scenario, index, options) {
       uniform_grounding_sentence: diagnostics.uniform_grounding_sentence,
       response_excerpt: responseText.slice(0, 1000),
       browser_screenshot: browserPath,
+      history: historyVerification,
     };
   } catch (error) {
     const failurePath = join(options.outputDir, 'failures', `${scenarioSlug}.png`);
@@ -1154,6 +1179,12 @@ async function runScenario(browser, scenario, index, options) {
       failure_screenshot: failurePath,
     };
   } finally {
+    if (options.withHistory) {
+      for (const url of new Set(historySaves.map(response => response.url()))) {
+        const deleted = await context.request.delete(url, { headers: historyApiHeaders(), maxRedirects: 0 });
+        if (![204, 404].includes(deleted.status())) throw new Error('Image Analysis history fixture cleanup failed.');
+      }
+    }
     await context.close();
   }
 }

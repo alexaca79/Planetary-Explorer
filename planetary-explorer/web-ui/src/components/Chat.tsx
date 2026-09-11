@@ -3,7 +3,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { History } from 'lucide-react';
+import { Brain, History } from 'lucide-react';
 import { apiService, ChatHistoryContext, ChatHistorySnapshot, Dataset, ChatMessage, ChatHistorySession, MapContext } from '../services/api';
 import { enhanceMessageForMapVisualization, hasVisualizableData } from './PlanetaryExplorerMapIntegration';
 import vedaSearchService from '../services/vedaSearchService';
@@ -11,6 +11,7 @@ import SourceChips from './SourceChips';
 import { TraceDrawer, ConfirmationCard, useToolTrace } from './trace';
 import type { PendingConfirm } from './trace';
 import ChatHistoryDrawer from './ChatHistoryDrawer';
+import ChatMemorySources from './ChatMemorySources';
 import {
   boundedHistorySceneRefs,
   boundedHistoryTileUrls,
@@ -27,6 +28,7 @@ import {
 import ChatLegend from './ChatLegend';
 import { deriveChatLegend } from '../utils/chatLegend';
 import { renderMessageHTML } from '../utils/renderMessageHTML';
+import { formatTemporalNbrResponse } from '../utils/temporalNbr';
 
 // Enhanced function to extract text from complex response objects
 function extractTextFromResponse(content: any): string {
@@ -323,8 +325,10 @@ const Chat: React.FC<ChatProps> = ({
   // Add conversation ID to maintain context across messages
   const [conversationId, setConversationId] = useState(createWebSessionId);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [historySaveState, setHistorySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const lastSavedSnapshotRef = useRef('');
+  const restoredHistoryTitleRef = useRef<{ sessionId: string; title: string } | null>(null);
   const lastServerRevisionRef = useRef(0);
   const historyGenerationRef = useRef(0);
   const historySaveInFlightRef = useRef(false);
@@ -2044,6 +2048,7 @@ const Chat: React.FC<ChatProps> = ({
           requestedStacMode || stacMode,
           controller.signal,
           stream.handlers,
+          memoryEnabled,
         );
 
         // Return the complete response object for map integration
@@ -2263,9 +2268,11 @@ const Chat: React.FC<ChatProps> = ({
                   stacMode,
                   partsController.signal,
                   partStream.handlers,
+                  memoryEnabled,
                 );
 
                 const partText =
+                  formatTemporalNbrResponse(partResult) ||
                   partResult?.response ||
                   partResult?.user_response ||
                   partResult?.message ||
@@ -2282,6 +2289,7 @@ const Chat: React.FC<ChatProps> = ({
                       content: answers[part.id],
                       timestamp: new Date(),
                       toolTrace: partStream.rows,
+                      memory: partResult?.memory,
                     },
                   ];
                 });
@@ -2335,7 +2343,7 @@ const Chat: React.FC<ChatProps> = ({
         rawResponse = responseData?.response || responseData?.user_response || responseData?.message || 'No response received';
         console.log(' Chat: Extracted rawResponse from object properties');
       }
-      const textResponse = extractTextFromResponse(rawResponse);
+      const textResponse = formatTemporalNbrResponse(responseData) || extractTextFromResponse(rawResponse);
 
       console.log(' Chat: Raw response:', rawResponse);
       console.log(' Chat: Extracted textResponse:', textResponse);
@@ -2393,6 +2401,7 @@ const Chat: React.FC<ChatProps> = ({
           stacRouting: _stacRouting,
           toolTrace: _toolTrace,
           legend: _legend,
+          memory: responseData?.memory,
         }
       ]));
 
@@ -2859,7 +2868,10 @@ const Chat: React.FC<ChatProps> = ({
       return;
     }
     const snapshot: Omit<ChatHistorySnapshot, 'expectedRevision' | 'mutationId'> = {
+      title: restoredHistoryTitleRef.current?.sessionId === conversationId
+        ? restoredHistoryTitleRef.current.title : undefined,
       messages: persistedMessages,
+      memoryEnabled,
       context: {
         selectedModel: selectedModel || undefined,
         reasoningEffort: reasoningEffort || undefined,
@@ -2923,6 +2935,7 @@ const Chat: React.FC<ChatProps> = ({
     mapContext,
     mapAnalysisBusy,
     messages,
+    memoryEnabled,
     partsPending,
     privateSearchMutation.isPending,
     reasoningEffort,
@@ -2952,14 +2965,18 @@ const Chat: React.FC<ChatProps> = ({
       historyRetryTimerRef.current = null;
     }
     lastServerRevisionRef.current = session.revision;
+    restoredHistoryTitleRef.current = { sessionId: session.sessionId, title: session.title };
     const restoredContext = onRestoreContext?.(session.context) || session.context;
     conversationHistoryStartRef.current = 0;
     restoringDatasetIdRef.current = restoredContext.selectedDataset?.id || null;
     lastSavedSnapshotRef.current = chatHistoryFingerprint({
+      title: session.title,
       messages: restoredMessages,
+      memoryEnabled: session.memoryEnabled !== false,
       context: restoredContext,
     });
     setConversationId(session.sessionId);
+    setMemoryEnabled(session.memoryEnabled !== false);
     setMessages(restoredMessages);
     setPendingConfirms([]);
     setFeedback({});
@@ -2972,6 +2989,7 @@ const Chat: React.FC<ChatProps> = ({
     privateSearchMutation.isPending ||
     partsPending ||
     mapAnalysisBusy ||
+    historyRestorePending ||
     historySaveState === 'saving'
   );
 
@@ -3098,6 +3116,21 @@ const Chat: React.FC<ChatProps> = ({
       <div className="chat chat-container">
         <div className="header">
           <span className="chat-header-title">Planetary Explorer Agent</span>
+          <label
+            className="chat-memory-toggle"
+            title="Recall earlier turns and saved chats; include this chat in future memory"
+          >
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="Use chat memory"
+              checked={memoryEnabled}
+              disabled={historyBusy}
+              onChange={(event) => setMemoryEnabled(event.target.checked)}
+            />
+            <Brain size={15} aria-hidden="true" />
+            <span>Memory</span>
+          </label>
           {chatHistoryEnabled && (
             <div className="chat-history-toolbar">
               <span className={`chat-save-state ${historySaveState}`} aria-live="polite">
@@ -3128,6 +3161,8 @@ const Chat: React.FC<ChatProps> = ({
           onClose={() => setHistoryOpen(false)}
           onLoad={handleLoadHistorySession}
           onActiveSessionDeleted={() => onRestartSession?.(true)}
+          currentMemoryEnabled={memoryEnabled}
+          onCurrentMemoryChange={setMemoryEnabled}
         />
 
         <div className="messages">
@@ -3164,6 +3199,13 @@ const Chat: React.FC<ChatProps> = ({
                 )}
                 {message.role === 'assistant' && !message.isThinking && message.legend && (
                   <ChatLegend legend={message.legend} />
+                )}
+                {message.role === 'assistant' && !message.isThinking && (
+                  <ChatMemorySources
+                    memory={message.memory}
+                    busy={historyBusy}
+                    onLoad={handleLoadHistorySession}
+                  />
                 )}
                 {message.role === 'assistant' && !message.isThinking && (
                   <SourceChips

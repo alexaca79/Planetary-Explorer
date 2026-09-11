@@ -26,6 +26,67 @@ describe('Chat sequential parts cancellation', () => {
     HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
+  it.each([false, true])('renders verified NBR values instead of a mislabeled answer (split: %s)', async (split) => {
+    const result = {
+      response: 'Incorrect before-minus-after: -0.1239',
+      tools_used: ['compare_temporal'],
+      structured: {
+        compare_temporal: {
+          success: true,
+          collection: 'sentinel-2-l2a',
+          metric: 'nbr',
+          t1: '2026-06-01',
+          t2: '2026-08-28',
+          t1_value: 0.1582217663526535,
+          t2_value: 0.03433222696185112,
+          delta: -0.12388953939080238,
+          dnbr: 0.12388953939080238,
+          bbox: [-89.87666, 50.25678, -89.83774, 50.27922],
+          t1_sample: {
+            acquisition_datetime: '2026-06-01T17:07:11Z',
+            item_id: 'S2A_BEFORE',
+            valid_pixel_count: 18864,
+            total_pixel_count: 18864,
+            valid_pixel_fraction: 1,
+          },
+          t2_sample: {
+            acquisition_datetime: '2026-08-20T17:07:11Z',
+            item_id: 'S2A_AFTER',
+            valid_pixel_count: 5038,
+            total_pixel_count: 18864,
+            valid_pixel_fraction: 0.26706955046649705,
+          },
+        },
+      },
+    };
+    if (split) {
+      mockedSendChatMessage.mockResolvedValueOnce({
+        action: 'sequential_parts',
+        response: 'Computing the comparison.',
+        parts: [{ id: 1, query: 'Compare NBR', depends_on: [] }],
+      });
+    }
+    mockedSendChatMessage.mockResolvedValueOnce(result);
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Chat selectedDataset={null} chatMode geointMode={false} />
+      </QueryClientProvider>
+    );
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Compare NBR' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await screen.findByText('+0.1239');
+    expect(screen.getByText('Before minus after (dNBR):')).toBeInTheDocument();
+    expect(screen.getByText('2026-08-20')).toBeInTheDocument();
+    expect(screen.getByText(/26.7%/)).toBeInTheDocument();
+    expect(screen.getByText('S2A_AFTER')).toBeInTheDocument();
+    expect(screen.queryByText('Incorrect before-minus-after: -0.1239')).not.toBeInTheDocument();
+  });
+
   it('keeps Stop visible and aborts before dispatching later parts', async () => {
     // Arrange
     let partSignal: AbortSignal | undefined;

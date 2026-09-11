@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import React, { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   Download,
@@ -19,6 +20,7 @@ import {
   ChatHistorySession,
   ChatHistorySummary,
 } from '../services/api';
+import './ChatMemory.css';
 
 interface ChatHistoryDrawerProps {
   activeSessionId: string;
@@ -28,6 +30,8 @@ interface ChatHistoryDrawerProps {
   onClose: () => void;
   onLoad: (session: ChatHistorySession) => boolean | void;
   onActiveSessionDeleted?: () => void;
+  currentMemoryEnabled?: boolean;
+  onCurrentMemoryChange?: (enabled: boolean) => void;
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -80,10 +84,14 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
   onClose,
   onLoad,
   onActiveSessionDeleted,
+  currentMemoryEnabled,
+  onCurrentMemoryChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [memoryOverrides, setMemoryOverrides] = useState<Record<string, boolean>>({});
 
   const historyQuery = useQuery({
     queryKey: ['chat-history-sessions'],
@@ -92,6 +100,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
     staleTime: 0,
   });
   const sessions = historyQuery.data || [];
+  const filteredSessions = sessions.filter((session) => session.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const activeSession = sessions.find((session) => session.sessionId === activeSessionId);
 
   const runAction = async (key: string, action: () => Promise<void>) => {
@@ -119,7 +128,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
   });
 
   const deleteSession = (session: ChatHistorySummary) => runAction(`delete:${session.sessionId}`, async () => {
-    if (!window.confirm(`Delete “${session.title}” and its saved files?`)) return;
+    if (!window.confirm(`Delete “${session.title}”, its saved files, and its recall memory?`)) return;
     await apiService.deleteChatSession(session.sessionId);
     await historyQuery.refetch();
     if (session.sessionId === activeSessionId) {
@@ -132,6 +141,26 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
     await apiService.uploadChatFile(activeSessionId, file);
     await historyQuery.refetch();
   });
+
+  const changeMemory = (session: ChatHistorySummary, included: boolean) => {
+    if (session.sessionId === activeSessionId && onCurrentMemoryChange) {
+      onCurrentMemoryChange(included);
+      return;
+    }
+    setMemoryOverrides(previous => ({ ...previous, [session.sessionId]: included }));
+    void runAction(`memory:${session.sessionId}`, async () => {
+      try {
+        await apiService.setChatSessionMemory(session.sessionId, included);
+        await historyQuery.refetch();
+      } finally {
+        setMemoryOverrides(previous => {
+          const next = { ...previous };
+          delete next[session.sessionId];
+          return next;
+        });
+      }
+    });
+  };
 
   const downloadAttachment = (
     session: ChatHistorySummary,
@@ -152,7 +181,7 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <>
       <button
         className="chat-history-backdrop"
@@ -190,6 +219,15 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
         </div>
 
         {actionError && <div className="chat-history-error" role="alert">{actionError}</div>}
+
+        <input
+          type="search"
+          className="chat-history-filter"
+          aria-label="Search saved sessions"
+          placeholder="Search saved sessions"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
 
         {activeSession && (
           <section className="chat-history-current" aria-label="Current saved session">
@@ -270,7 +308,10 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
           {!historyQuery.isLoading && !historyQuery.isError && sessions.length === 0 && (
             <div className="chat-history-empty">No saved sessions yet.</div>
           )}
-          {sessions.map((session) => (
+          {!historyQuery.isLoading && sessions.length > 0 && filteredSessions.length === 0 && (
+            <div className="chat-history-empty">No matching saved sessions.</div>
+          )}
+          {filteredSessions.map((session) => (
             <article
               className={`chat-history-session${session.sessionId === activeSessionId ? ' active' : ''}`}
               key={session.sessionId}
@@ -316,11 +357,25 @@ const ChatHistoryDrawer: React.FC<ChatHistoryDrawerProps> = ({
                   <Trash2 size={16} aria-hidden="true" />
                 </button>
               </div>
+              <label className="chat-history-memory-setting">
+                <input
+                  type="checkbox"
+                  aria-label={`Include ${session.title} in memory`}
+                  checked={memoryOverrides[session.sessionId] ?? (
+                    session.sessionId === activeSessionId && currentMemoryEnabled !== undefined
+                      ? currentMemoryEnabled : session.memoryEnabled !== false
+                  )}
+                  disabled={busy || actionKey !== null}
+                  onChange={(event) => changeMemory(session, event.target.checked)}
+                />
+                Include in memory
+              </label>
             </article>
           ))}
         </div>
       </aside>
-    </>
+    </>,
+    document.body,
   );
 };
 

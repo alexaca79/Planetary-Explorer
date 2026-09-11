@@ -151,4 +151,23 @@ describe('ChatHistoryDrawer', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole('complementary', { name: 'Saved chat sessions' })).toBeInTheDocument();
   });
+
+  it('filters saved sessions and changes memory inclusion', async () => {
+    const session = {
+      sessionId: 'session-1', title: 'Thunder Bay baseline',
+      updatedAt: '2026-09-10T00:00:00Z', messageCount: 1,
+      attachments: [], memoryEnabled: true,
+    } as ChatHistorySession;
+    vi.spyOn(apiService, 'listChatSessions').mockResolvedValue([session]);
+    const setMemory = vi.spyOn(apiService, 'setChatSessionMemory').mockResolvedValue({ ...session, memoryEnabled: false });
+    renderDrawer();
+    await screen.findByText('Thunder Bay baseline');
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search saved sessions' }), { target: { value: 'Toronto' } });
+    expect(screen.getByText('No matching saved sessions.')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search saved sessions' }), { target: { value: 'Thunder' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include Thunder Bay baseline in memory' }));
+
+    await waitFor(() => expect(setMemory).toHaveBeenCalledWith('session-1', false));
+  });
 });

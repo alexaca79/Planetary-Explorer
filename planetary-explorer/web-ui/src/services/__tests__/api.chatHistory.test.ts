@@ -50,6 +50,31 @@ describe('ApiService chat history', () => {
     expect(result).toBe(archive);
   });
 
+  it('changes memory inclusion using the latest session revision', async () => {
+    const session = {
+      sessionId: 'saved-1', title: 'Thunder Bay', revision: 7,
+      messages: [{ role: 'user', content: 'baseline June 1' }], context: {},
+    };
+    get.mockResolvedValue({ data: session });
+    put.mockResolvedValue({ data: { ...session, memoryEnabled: false } });
+
+    await apiService.setChatSessionMemory('saved-1', false);
+
+    expect(put).toHaveBeenCalledWith('/api/chat-history/sessions/saved-1', expect.objectContaining({
+      expectedRevision: 7, memoryEnabled: false, messages: session.messages,
+    }));
+  });
+
+  it('forwards disabled memory to the query endpoint', async () => {
+    post.mockResolvedValue({ data: { response: 'Done' } });
+
+    await apiService.sendChatMessage('baseline', undefined, 'current', [], undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, false);
+
+    expect(post).toHaveBeenCalledWith('/api/query', expect.objectContaining({ memory_enabled: false }), expect.anything());
+  });
+
   it('clears the JSON content type for multipart file uploads', async () => {
     // Arrange
     const file = new File(['lat,lng\n'], 'coordinates.csv', { type: 'text/csv' });

@@ -22,6 +22,12 @@ tool trace remain visible while the agent turn is paused.
 
 For the web-app procedure, see [Run Foundation Change with PlanAura](../../documentation/geofm-foundation-change.md).
 
+GeoFM is not required for the [non-GPU baseline](../../documentation/deployment.md#non-gpu-baseline).
+There is no supported CPU PlanAura worker in this repository. To exclude GPU
+provisioning and invocation, keep `DEPLOY_GEOFM=false` and `GEOFM_ENABLED=false`.
+You can reference an existing control endpoint without creating another
+worker, but an approved analysis still uses that endpoint's GPU resources.
+
 ## Runtime boundary
 
 The capability uses two isolated containers:
@@ -102,22 +108,28 @@ The Bicep path is disabled by default. Before setting `deployGeoFm=true`:
 9. Enable `geoFmAllowConditional` in a production environment only after the
    GPU smoke test passes.
 
-The default `azd up` workflow deploys the existing web and API services only,
-which keeps `deployGeoFm=false` environments unchanged. After provisioning an
-environment with `deployGeoFm=true`, publish the optional services explicitly:
+The default `azd up` workflow publishes web/API and invokes the optional-service
+hook. That hook publishes both GeoFM services only when `DEPLOY_GEOFM=true`
+and `DEPLOY_GEOFM_SERVICES=true`. Old resource-name outputs alone do not
+authorize GPU deployment. Configure the two distinct keys through a protected
+local environment/secret-management process before enabling this capability:
 
 ```powershell
 azd env set DEPLOY_GEOFM true
-azd env set-secret GEOFM_MCP_API_KEY
-azd env set-secret GEOFM_OWNER_SIGNING_KEY
+azd env set DEPLOY_GEOFM_SERVICES true
 azd up
-azd deploy geofm
-azd deploy geofm-worker
 ```
 
 An `azd provision` replaces optional service images with bootstrap images.
 Run both named `azd deploy` commands again after changing GeoFM infrastructure
 parameters such as `geoFmAllowConditional`.
+
+For an existing deployment, use `GEOFM_ENABLED=true`, `GEOFM_MCP_URL`,
+`GEOFM_MCP_API_KEY` and `GEOFM_OWNER_SIGNING_KEY` with `DEPLOY_GEOFM=false`.
+The API must reach that endpoint and use keys matching its owner-signing
+contract. Cross-environment private DNS/ingress and identity access are not
+created by setting a URL. Do not deploy to a different resource group using
+stale outputs from the primary azd environment.
 
 The infrastructure uses a private MCP endpoint, a user-assigned managed
 identity for each service, and a shared key between the backend and MCP
