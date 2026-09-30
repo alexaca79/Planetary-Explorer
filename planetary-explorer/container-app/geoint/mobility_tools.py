@@ -28,6 +28,7 @@ import planetary_computer
 import pystac
 import requests
 from cloud_config import cloud_cfg
+from geoint.dem_geometry import dataset_spacing_meters, slope_aspect_degrees
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,16 @@ def _query_stac_collection_sync(
 
 def _read_cog_window_sync(asset_url: str, bbox: List[float], band: int = 1) -> Optional[np.ndarray]:
     """Read pixels from a Cloud-Optimized GeoTIFF for a bounding box (synchronous)."""
+    result = _read_cog_window_with_spacing_sync(asset_url, bbox, band)
+    return result[0] if result else None
+
+
+def _read_cog_window_with_spacing_sync(
+    asset_url: str,
+    bbox: List[float],
+    band: int = 1,
+) -> Optional[tuple[np.ndarray, tuple[float, float]]]:
+    """Read a COG window and its metric ``(row, column)`` cell spacing."""
     try:
         import rasterio
         from rasterio.windows import from_bounds
@@ -276,7 +287,8 @@ def _read_cog_window_sync(asset_url: str, bbox: List[float], band: int = 1) -> O
                 if src.nodata is not None:
                     data = data.astype(float)
                     data[data == src.nodata] = np.nan
-                return data
+                spacing = dataset_spacing_meters(src, (bbox[1] + bbox[3]) / 2.0)
+                return data, spacing
     except Exception as e:
         logger.error(f"Failed to read COG: {e}")
         return None
@@ -315,7 +327,7 @@ def _analyze_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
 
 def _analyze_jrc_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
     """Analyze JRC Global Surface Water occurrence data.
-    Pixel values: 0-100 = % of time water was observed (1984-2021).
+    Pixel values: 0-100 = % of time water was observed (1984-2020).
     Values 0 or nodata = never water. 100 = permanent water.
     """
     valid = pixels[~np.isnan(pixels)]
@@ -333,13 +345,20 @@ def _analyze_jrc_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
     return {"status": "GO", "reason": f"Minimal water: {water_pct:.1f}% coverage", "confidence": "high", "metrics": {"water_pct": round(water_pct, 1), "permanent_pct": round(permanent_pct, 1), "avg_occurrence": round(avg_occurrence, 1)}}
 
 
-def _analyze_elevation_pixels(pixels: np.ndarray) -> Dict[str, Any]:
-    """Analyze DEM elevation for slope classification."""
+def _analyze_elevation_pixels(
+    pixels: np.ndarray,
+    spacing_m: Optional[tuple[float, float]] = None,
+) -> Dict[str, Any]:
+    """Analyze DEM elevation for slope classification.
+
+    ``spacing_m`` is the ``(row, column)`` cell size in metres; geographic
+    DEMs have narrower east-west cells at Canadian latitudes than 30 m.
+    """
     valid = pixels[~np.isnan(pixels)]
     if len(valid) == 0:
         return {"status": "GO", "reason": "No elevation data", "confidence": "low"}
-    dy, dx = np.gradient(pixels, 30)
-    slope_deg = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
+    row_spacing, column_spacing = spacing_m or (30.0, 30.0)
+    slope_deg, _ = slope_aspect_degrees(pixels, row_spacing, column_spacing)
     valid_slopes = slope_deg[~np.isnan(slope_deg)]
     if len(valid_slopes) == 0:
         return {"status": "GO", "reason": "Unable to calculate slopes", "confidence": "low"}
@@ -454,7 +473,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
         if items:
             asset = items[0].assets.get(asset_key)
             if asset:
-                return _read_cog_window_sync(asset.href, bbox)
+                return _read_cog_window_with_spacing_sync(asset.href, bbox)
         return None
 
     # Parallel COG reads (STAC queries skipped when prefetched)
@@ -469,7 +488,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
 
     # Evaluate elevation/slope
     if fetched.get("elevation") is not None:
-        r = _analyze_elevation_pixels(fetched["elevation"])
+        r = _analyze_elevation_pixels(*fetched["elevation"])
         if r["status"] == "NO-GO":
             result["status"] = "NO-GO"
         elif r["status"] == "SLOW-GO":
@@ -480,7 +499,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
 
     # Evaluate land cover
     if fetched.get("landcover") is not None:
-        r = _analyze_landcover_pixels(fetched["landcover"])
+        r = _analyze_landcover_pixels(fetched["landcover"][0])
         result["data"]["landcover"] = r.get("metrics", {})
         if r["status"] == "NO-GO" and result["status"] != "NO-GO":
             result["status"] = "NO-GO"
@@ -815,16 +834,18 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
 
     # Fetch all COGs concurrently
     fetched = {}
+    spacings = {}
     if fetch_tasks:
         with ThreadPoolExecutor(max_workers=min(len(fetch_tasks), 6)) as executor:
             futures = {
-                executor.submit(_read_cog_window_sync, href, bbox, band): key
+                executor.submit(_read_cog_window_with_spacing_sync, href, bbox, band): key
                 for key, (href, bbox, band) in fetch_tasks.items()
             }
             for future in as_completed(futures):
                 key = futures[future]
                 try:
-                    fetched[key] = future.result()
+                    window_result = future.result()
+                    fetched[key], spacings[key] = window_result or (None, None)
                 except Exception as e:
                     logger.error(f"COG fetch {key} failed: {e}")
                     fetched[key] = None
@@ -860,7 +881,7 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
     # Elevation/Slope
     if status == "GO" and "elevation" in fetched and fetched["elevation"] is not None:
         try:
-            r = _analyze_elevation_pixels(fetched["elevation"])
+            r = _analyze_elevation_pixels(fetched["elevation"], spacings.get("elevation"))
             if r["status"] == "NO-GO":
                 status = "NO-GO"
             elif r["status"] == "SLOW-GO" and status == "GO":
@@ -914,7 +935,7 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
 
 def detect_water_bodies(latitude: float, longitude: float) -> str:
     """Detect water bodies using JRC Global Surface Water occurrence data.
-    Uses global water mapping from 1984-2021 to identify permanent and seasonal water.
+    Uses global water mapping from 1984-2020 to identify permanent and seasonal water.
     Returns water coverage percentage and classification.
 
     :param latitude: Center latitude of the analysis area
@@ -984,10 +1005,10 @@ def analyze_slope_for_mobility(latitude: float, longitude: float) -> str:
         asset = items[0].assets.get("data", None)
         if not asset:
             return json.dumps({"status": "no_data", "message": "No DEM data asset"})
-        px = _read_cog_window_sync(asset.href, bbox)
-        if px is None:
+        window = _read_cog_window_with_spacing_sync(asset.href, bbox)
+        if window is None:
             return json.dumps({"status": "error", "message": "Failed to read DEM raster"})
-        result = _analyze_elevation_pixels(px)
+        result = _analyze_elevation_pixels(*window)
         return json.dumps(_convert_numpy_to_python(result))
     except Exception as e:
         logger.error(f"[TOOL] analyze_slope_for_mobility failed: {e}")
