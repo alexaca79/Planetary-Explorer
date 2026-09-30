@@ -48,6 +48,20 @@ def _severity_from_score(score: float) -> str:
     return "severe"
 
 
+def _fahrenheit_to_celsius(value: float) -> float:
+    return (value - 32.0) * 5.0 / 9.0
+
+
+def _temperature_label(fahrenheit: float) -> str:
+    """Format a temperature Celsius-first for Canadian readers."""
+    return f"{_fahrenheit_to_celsius(fahrenheit):.0f} °C ({fahrenheit:.0f} °F)"
+
+
+def _wind_label(mph: float) -> str:
+    """Format a wind speed in km/h first for Canadian readers."""
+    return f"{mph * 1.609344:.0f} km/h ({mph:.0f} mph)"
+
+
 def _max_with_day(values: list[Any], days: list[Any]) -> tuple[float | None, str | None]:
     """Return (max_value, day_iso) ignoring None entries. Empty -> (None, None)."""
     if not values:
@@ -147,36 +161,46 @@ def score_heat(forecast: FacilityForecast, facility: pd.Series) -> dict[str, Any
     score = max(0.0, min(100.0, score))
 
     drivers: list[str] = []
-    drivers.append(f"Peak feels-like {peak_v:.0f}°F on {peak_d}")
+    drivers.append(f"Peak feels-like {_temperature_label(peak_v)} on {peak_d}")
     if consecutive >= 2:
-        drivers.append(f"{consecutive} consecutive days ≥ facility threshold ({facility_threshold:.0f}°F)")
+        drivers.append(
+            f"{consecutive} consecutive days ≥ facility threshold "
+            f"({_temperature_label(facility_threshold)})"
+        )
     if criticality >= 0.75:
         drivers.append(f"High facility criticality ({criticality:.2f})")
     if peak_v >= HEAT_EMERGENCY_F:
-        drivers.append("Peak exceeds extreme-heat emergency threshold (105°F)")
+        drivers.append(
+            "Peak exceeds extreme-heat emergency threshold "
+            f"({_temperature_label(HEAT_EMERGENCY_F)})"
+        )
 
     # Compose a human summary — only mention the consecutive-day streak
     # when it actually fired (≥ 1 day above the facility threshold).
     # Otherwise the line reads "0d streak ≥ 100°F" which is noise.
     if consecutive >= 1:
+        threshold_label = _temperature_label(facility_threshold)
         streak_suffix = (
-            f"; {consecutive}-day streak ≥ {facility_threshold:.0f}°F"
+            f"; {consecutive}-day streak ≥ {threshold_label}"
             if consecutive == 1
-            else f"; {consecutive} consecutive days ≥ {facility_threshold:.0f}°F"
+            else f"; {consecutive} consecutive days ≥ {threshold_label}"
         )
     else:
         streak_suffix = ""
-    summary = f"Peak feels-like {peak_v:.0f}°F on {peak_d}{streak_suffix}."
+    summary = f"Peak feels-like {_temperature_label(peak_v)} on {peak_d}{streak_suffix}."
 
     return {
         "score": round(score, 1),
         "severity": _severity_from_score(score),
         "peak_value": round(peak_v, 1),
+        "peak_value_unit": "°F",
+        "peak_value_c": round(_fahrenheit_to_celsius(peak_v), 1),
         "peak_day": peak_d,
         "summary": summary,
         "drivers": drivers,
         "consecutive_days": consecutive,
         "facility_threshold_f": facility_threshold,
+        "facility_threshold_c": round(_fahrenheit_to_celsius(facility_threshold), 1),
     }
 
 
@@ -249,7 +273,7 @@ def score_wildfire(forecast: FacilityForecast, facility: pd.Series) -> dict[str,
     if aqi_peak is not None:
         drivers.append(f"Peak US AQI {aqi_peak:.0f}")
     if gust_peak is not None and gust_peak >= 25:
-        drivers.append(f"Peak wind gust {gust_peak:.0f} mph")
+        drivers.append(f"Peak wind gust {_wind_label(gust_peak)}")
     if total_precip < 0.05:
         drivers.append("Effectively dry forecast week")
 
@@ -261,7 +285,7 @@ def score_wildfire(forecast: FacilityForecast, facility: pd.Series) -> dict[str,
     else:
         summary_head = "Air-quality data unavailable"
     summary = summary_head + (
-        f"; gusts to {gust_peak:.0f} mph"
+        f"; gusts to {_wind_label(gust_peak)}"
         if gust_peak is not None and gust_peak >= 25
         else ""
     )
@@ -274,6 +298,7 @@ def score_wildfire(forecast: FacilityForecast, facility: pd.Series) -> dict[str,
         "summary": summary,
         "drivers": drivers,
         "total_precip_in": round(total_precip, 2),
+        "total_precip_mm": round(total_precip * 25.4, 1),
     }
 
 

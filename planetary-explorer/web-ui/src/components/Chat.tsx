@@ -1326,8 +1326,14 @@ const Chat: React.FC<ChatProps> = ({
                 const primary = f?.primary_hazard && h[f.primary_hazard] ? h[f.primary_hazard] : (h.heat || h.wildfire || {});
                 const peakBits: string[] = [];
                 if (typeof primary.peak_value === 'number') {
-                  const unit = (f?.primary_hazard === 'wildfire') ? '' : ' °F';
-                  peakBits.push(`peak ${primary.peak_value.toFixed(0)}${unit}`);
+                  if (f?.primary_hazard === 'wildfire') {
+                    peakBits.push(`peak ${primary.peak_value.toFixed(0)}`);
+                  } else {
+                    const celsius = typeof primary.peak_value_c === 'number'
+                      ? primary.peak_value_c
+                      : ((primary.peak_value - 32) * 5) / 9;
+                    peakBits.push(`peak ${celsius.toFixed(0)} °C`);
+                  }
                 }
                 if (primary.peak_day) peakBits.push(`on ${String(primary.peak_day).slice(5)}`);
                 const peakStr = peakBits.length ? peakBits.join(' ') : '';

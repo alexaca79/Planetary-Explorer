@@ -172,6 +172,7 @@ class WeatherExecutor(Executor):  # type: ignore[misc]
                             "score": res["score"],
                             "severity": res["severity"],
                             "peak_value": res.get("peak_value"),
+                            "peak_value_c": res.get("peak_value_c"),
                             "peak_day": res.get("peak_day"),
                             "summary": res.get("summary"),
                         })
