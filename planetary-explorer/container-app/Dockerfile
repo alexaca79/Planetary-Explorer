@@ -27,6 +27,13 @@ ENV C_INCLUDE_PATH=/usr/include/gdal
 # Skip netCDF driver — it requires userfaultfd (blocked by Docker seccomp).
 # HDF5 driver reads the same NetCDF4 files without this restriction.
 ENV GDAL_SKIP=netCDF
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV MPLCONFIGDIR=/tmp/matplotlib
+
+# Run the service as an unprivileged account; application files stay root-owned.
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app
 
 # Copy requirements file
 COPY requirements.txt .
@@ -40,6 +47,8 @@ COPY . .
 # Expose port 8080 (must match Azure Container App targetPort configuration)
 EXPOSE 8080
 
+USER 10001:10001
+
 # Confirmation and trace brokers are process-local, so one async worker must
 # own both the streaming request and its confirmation callback.
-CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-server-header", "--timeout-graceful-shutdown", "30"]

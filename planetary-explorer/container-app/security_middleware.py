@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.datastructures import Headers
 from starlette.requests import Request
@@ -13,7 +14,7 @@ from starlette.responses import JSONResponse, Response
 
 DEFAULT_MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
 _BODY_METHODS = {"PATCH", "POST", "PUT"}
-_HEALTH_PROBE_PATHS = frozenset({"/api/health"})
+_HEALTH_PROBE_PATHS = frozenset({"/api/health", "/api/health/live", "/api/health/ready"})
 
 
 class HealthProbeTrustedHostMiddleware(TrustedHostMiddleware):
@@ -126,3 +127,28 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         request.state.request_id = uuid.uuid4().hex
         response = await call_next(request)
         return apply_security_headers(response, request)
+
+
+class CompressionMiddleware:
+    """Gzip API responses for clients that accept it.
+
+    Binary tile proxies are already compressed images, so they bypass the
+    encoder. Server-sent event streams are excluded by Starlette's encoder.
+    """
+
+    def __init__(
+        self,
+        app,
+        minimum_size: int = 1024,
+        compresslevel: int = 6,
+        skip_prefixes: tuple[str, ...] = ("/api/pro/tile/",),
+    ) -> None:
+        self.app = app
+        self._gzip = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
+        self._skip_prefixes = skip_prefixes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and not scope.get("path", "").startswith(self._skip_prefixes):
+            await self._gzip(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

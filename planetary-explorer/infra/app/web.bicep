@@ -607,7 +607,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Liveness'
               httpGet: {
-                path: '/api/health'
+                path: '/api/health/live'
                 port: 8080
               }
               initialDelaySeconds: 30
@@ -618,7 +618,7 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/api/health'
+                path: '/api/health/ready'
                 port: 8080
               }
               initialDelaySeconds: 10

@@ -59,7 +59,7 @@ RUNTIME_PROFILES: dict[str, RuntimeProfile] = {
         probes=(
             {
                 "type": "Liveness",
-                "httpGet": {"path": "/api/health", "port": API_PORT},
+                "httpGet": {"path": "/api/health/live", "port": API_PORT},
                 "initialDelaySeconds": 30,
                 "periodSeconds": 10,
                 "timeoutSeconds": 5,
@@ -67,7 +67,7 @@ RUNTIME_PROFILES: dict[str, RuntimeProfile] = {
             },
             {
                 "type": "Readiness",
-                "httpGet": {"path": "/api/health", "port": API_PORT},
+                "httpGet": {"path": "/api/health/ready", "port": API_PORT},
                 "initialDelaySeconds": 10,
                 "periodSeconds": 5,
                 "timeoutSeconds": 3,

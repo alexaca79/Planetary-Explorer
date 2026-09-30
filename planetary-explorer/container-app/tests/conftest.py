@@ -30,3 +30,12 @@ if str(_CONTAINER_APP) not in sys.path:
 def canadian_location(request: pytest.FixtureRequest) -> dict[str, Any]:
     """Provide representative points across all provinces, territories, and remote limits."""
     return dict(request.param)
+
+
+@pytest.fixture(autouse=True)
+def _reset_api_health_cache():
+    """Keep cached dependency probes from leaking between tests."""
+    api = sys.modules.get("fastapi_app")
+    if api is not None:
+        api._HEALTH_DEPENDENCY_CACHE["expires_at"] = 0.0
+    yield
