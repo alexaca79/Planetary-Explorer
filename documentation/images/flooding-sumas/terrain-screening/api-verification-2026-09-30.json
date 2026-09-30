@@ -1,0 +1,98 @@
+{
+  "scope": "Direct call to the Terrain Analysis API on the MCAPS test deployment after the September 30, 2026 terrain fixes. Not a browser capture, flood classification, water-depth estimate, or permitting decision.",
+  "capturedAt": "2026-09-30T01:51:53Z",
+  "apiOrigin": "https://ca-earthcopilot-api.thankfulplant-49ee7bc3.eastus2.azurecontainerapps.io",
+  "apiRevision": "ca-earthcopilot-api--hardening-0929e",
+  "apiImageDigest": "sha256:4cb99e96528ea1ad074469b40e53e6eb7bb451254e4c8ce99f8edcb766b3ddd7",
+  "endpoint": "/api/geoint/terrain/chat",
+  "request": {
+    "message": "Analyze slope, flat areas, and historical surface-water occurrence around this Sumas Prairie pin. Report the source and analysis extent for each result. Treat this as terrain screening, not a November 2021 flood map, flood probability, water-depth estimate, or permitting decision.",
+    "latitude": 49.06,
+    "longitude": -122.09,
+    "radius_km": 5.0
+  },
+  "httpStatus": 200,
+  "elapsedMs": 14295,
+  "nullToolResults": [],
+  "toolCalls": [
+    {
+      "tool": "get_slope_analysis",
+      "result": {
+        "slope_min_degrees": 0.0,
+        "slope_max_degrees": 58.7,
+        "slope_mean_degrees": 9.0,
+        "flat_area_percent": 60.9,
+        "moderate_slope_percent": 13.7,
+        "steep_area_percent": 25.4,
+        "traversability": "moderate",
+        "data_source": "Copernicus DEM GLO-30",
+        "source_item_ids": [
+          "Copernicus_DSM_COG_10_N49_00_W123_00_DEM"
+        ],
+        "analysis_bbox": [
+          -122.15874,
+          49.01495,
+          -122.02126,
+          49.10505
+        ],
+        "coverage_percent": 100.0,
+        "valid_pixel_count": 160875,
+        "cell_spacing_meters": {
+          "north_south": 30.9,
+          "east_west": 20.3
+        }
+      }
+    },
+    {
+      "tool": "find_flat_areas",
+      "result": {
+        "flat_area_percent": 60.9,
+        "slope_threshold_degrees": 5.0,
+        "suitability_for_landing": "excellent",
+        "recommendation": "Abundant flat areas available within 5.0km radius",
+        "data_source": "Copernicus DEM GLO-30",
+        "source_item_ids": [
+          "Copernicus_DSM_COG_10_N49_00_W123_00_DEM"
+        ],
+        "analysis_bbox": [
+          -122.15874,
+          49.01495,
+          -122.02126,
+          49.10505
+        ],
+        "coverage_percent": 100.0,
+        "valid_pixel_count": 160875,
+        "cell_spacing_meters": {
+          "north_south": 30.9,
+          "east_west": 20.3
+        }
+      }
+    },
+    {
+      "tool": "analyze_flood_risk",
+      "result": {
+        "mean_water_occurrence_percent": 0.5,
+        "max_water_occurrence_percent": 96.0,
+        "area_ever_flooded_percent": 0.9,
+        "area_frequently_flooded_percent": 0.7,
+        "flood_risk_level": "HIGH",
+        "permitting_status": "NOT RECOMMENDED",
+        "risk_reason": "Significant historical flooding observed",
+        "data_source": "JRC Global Surface Water (1984-2020)",
+        "source_item_ids": [
+          "130W_50Nv1_3_2020"
+        ],
+        "analysis_bbox": [
+          -122.15874,
+          49.01495,
+          -122.02126,
+          49.10505
+        ],
+        "coverage_percent": 100.0,
+        "valid_pixel_count": 199100,
+        "temporal_coverage": "1984-03-01/2020-12-31"
+      }
+    }
+  ],
+  "response": "**Terrain Overview**:\nThe analysis area is centered around Sumas Prairie in Abbotsford, BC, with a 5 km radius. This region consists of mixed topography with significant flat terrain and areas with steep slopes. Historical flood data suggests notable water occurrence.\n\n---\n\n### **Slope and Topography**\n- **Slope Analysis**: \n  - Min slope: **0.0°**\n  - Max slope: **58.7°**\n  - Mean slope: **9.0°**\n  - Percentage of flat terrain: **60.9%**\n  - Moderate slopes: **13.7%**\n  - Steep areas: **25.4%**\n  - **Traversability**: Moderate overall, with variations due to steep slopes.\n  - **Data Source**: Copernicus DEM GLO-30\n  - **Coverage**: **100%** of the 5 km radius analyzed\n  - **DEM Parameters**: Cell spacing of approximately **30.9m N/S** and **20.3m E/W**.\n\n---\n\n### **Flat Areas Suitability**\n- **Flat Area Analysis**: \n  - **Percentage of flat terrain suitable**: **60.9%**\n  - **Slope threshold for flatness**: ≤ **5.0°**\n  - **Suitability for landing/construction**: *Excellent* due to abundant flat land.\n  - **Recommendation**: The area has abundant flat zones, facilitating construction or setup.\n  - **Data Source**: Copernicus DEM GLO-30\n  - **Coverage**: 100% of the 5 km radius analyzed\n  - **DEM Parameters**: Same as slope analysis.\n\n---\n\n### **Historical Surface Water Occurrence**\n- **Flood Risk Analysis**:\n  - Mean water occurrence across the area: **0.5%**\n  - Maximum water occurrence percentage: **96.0%** (specific pixels indicating permanent water or frequent flooding)\n  - **Flooded Area Percentages**:\n    - **Ever Flooded**: **0.9%**\n    - **Frequently Flooded**: **0.7%**\n  - **Risk Assessment**: *High flood risk* due to significant historical flooding observations.\n  - **Data Source**: JRC Global Surface Water (*Temporal Coverage:* **1984-03-01 to 2020-12-31**)\n  - **Coverage**: **100%** of the radius analyzed.\n\n---\n\n### **Summary**\nThis terrain screening highlights:\n1. **Abundant flat terrain** (60.9% flat, excellent for construction or landing zones).\n2. **Moderate traversability**, based on slope data.\n3. **High flood risk**, due to historical patterns of flooding and water occurrence.\n\n**Recommendation**: While the area's flat terrain is suitable for construction or other uses, the high flood risk suggests caution when planning activities vulnerable to flooding impacts. Ensure mitigative measures are in place if flood-prone zones are utilized."
+}

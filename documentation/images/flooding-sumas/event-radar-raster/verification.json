@@ -1,0 +1,432 @@
+{
+  "scope": "Black-box live application walkthrough; not an Azure release certification or independent flood classification.",
+  "capturedAt": "2026-09-20T09:57:22.967Z",
+  "appUrl": "https://app-earthcopilot-e1bb5a9c.azurewebsites.net/",
+  "phase": "event-radar",
+  "captureId": "event-radar-raster",
+  "query": "Show collection sentinel-1-rtc radar imagery at latitude 49.0600, longitude -122.0900, in Sumas Prairie, British Columbia, Canada, from 2021-11-15 to 2021-11-30.",
+  "expectedCentre": {
+    "latitude": 49.06,
+    "longitude": -122.09
+  },
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "outcome": "passed",
+  "tiles": [
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5270/11244@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5271/11246@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5270/11243@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5271/11244@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5270/11246@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5271/11245@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5271/11243@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5272/11243@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5272/11244@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5272/11245@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5272/11246@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    },
+    {
+      "url": "https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/15/5270/11245@1x.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+      "status": 200
+    }
+  ],
+  "pageErrors": [],
+  "screenshots": {
+    "layers": {
+      "file": "event-radar-raster/layers.png",
+      "sha256": "abb51196aa51ddc5c30152d3251f1b3332e64cd8c58fed4504d4318de729a625"
+    },
+    "map": {
+      "file": "event-radar-raster/map.png",
+      "sha256": "804739d8d840ad3d10e804d8d1094a004aa3d69290945fcb3eed8161ac2636d0"
+    },
+    "application": {
+      "file": "event-radar-raster/application.png",
+      "sha256": "1e7882bcc8eedd5af24a7968d0c14013351a32df7c4b51d25e5d61ee6261e622"
+    },
+    "basemap-only": {
+      "file": "event-radar-raster/basemap-only.png",
+      "sha256": "73365e55f5b6c922496f4172d31e1ac66e3dbfd12ae02ab4a0dfcb1842d39b07"
+    },
+    "choose-module": {
+      "file": "event-radar-raster/choose-module.png",
+      "sha256": "8df1f9dc18ae90a97116e668879342f49fa9c4e7b7b1c44108025df81c56877d"
+    },
+    "pin-placed": {
+      "file": "event-radar-raster/pin-placed.png",
+      "sha256": "395b5b01e709b30e7b06f266a4b1628740203202f84a87798daa7f58ebb32f7e"
+    },
+    "analysis-result": {
+      "file": "event-radar-raster/analysis-result.png",
+      "sha256": "4da0efe8c598035a40f3e826f073bca1b81668a0aa25b0e42f8e54ca3679546d"
+    },
+    "analysis-start": {
+      "file": "event-radar-raster/analysis-start.png",
+      "sha256": "b9134bdf8b5559dd18087fc6619a65dfe0952e950108bf3089b4a4ac5b697893"
+    }
+  },
+  "frontendBundles": [
+    {
+      "url": "https://app-earthcopilot-e1bb5a9c.azurewebsites.net/assets/index-BHgg9cCg.js",
+      "sha256": "af5a63f539c932be3eadd1d773395ee40f5f4d9b870fcc8dee62eee7e6e09444"
+    }
+  ],
+  "apiOrigin": "https://ca-earthcopilot-api.thankfulplant-49ee7bc3.eastus2.azurecontainerapps.io",
+  "queryHttpStatus": 200,
+  "result": {
+    "response": "Displaying 1 Sentinel 1 Radiometrically Terrain Corrected (RTC) image of Coordinates (49.0600, -122.0900) on 2021-11-28.",
+    "queryBbox": [
+      -122.1,
+      49.05,
+      -122.08,
+      49.07
+    ],
+    "searchMetadata": {
+      "total_items": 1,
+      "collections_searched": [
+        "sentinel-1-rtc"
+      ],
+      "spatial_extent": [
+        -122.1,
+        49.05,
+        -122.08,
+        49.07
+      ],
+      "temporal_range": "2021-11-15/2021-11-30",
+      "search_timestamp": "2026-09-20T09:57:33.364114"
+    },
+    "features": [
+      {
+        "id": "S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc",
+        "collection": "sentinel-1-rtc",
+        "bbox": [
+          -124.17053003,
+          48.78035674,
+          -120.3495171,
+          50.66406198
+        ],
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [
+            [
+              [
+                -120.7691351,
+                48.9312328
+              ],
+              [
+                -120.8160604,
+                48.7803567
+              ],
+              [
+                -124.17053,
+                49.165874
+              ],
+              [
+                -123.8337507,
+                50.664062
+              ],
+              [
+                -120.3495171,
+                50.2748387
+              ],
+              [
+                -120.7691351,
+                48.9312328
+              ]
+            ]
+          ]
+        },
+        "properties": {
+          "datetime": "2021-11-28T14:20:43.860348Z",
+          "platform": "SENTINEL-1B",
+          "s1:shape": [
+            28378,
+            20883
+          ],
+          "proj:bbox": [
+            408700,
+            5404720,
+            692480,
+            5613550
+          ],
+          "proj:epsg": 32610,
+          "proj:shape": [
+            20883,
+            28378
+          ],
+          "end_datetime": "2021-11-28 14:20:56.359248+00:00",
+          "constellation": "Sentinel-1",
+          "s1:resolution": "high",
+          "proj:transform": [
+            10,
+            0,
+            408700,
+            0,
+            -10,
+            5613550,
+            0,
+            0,
+            1
+          ],
+          "s1:datatake_id": "233021",
+          "start_datetime": "2021-11-28 14:20:31.361448+00:00",
+          "s1:orbit_source": "DOWNLINK",
+          "s1:slice_number": "8",
+          "s1:total_slices": "16",
+          "sar:looks_range": 5,
+          "sat:orbit_state": "descending",
+          "sar:product_type": "GRD",
+          "sar:looks_azimuth": 1,
+          "sar:polarizations": [
+            "VV",
+            "VH"
+          ],
+          "sar:frequency_band": "C",
+          "sat:absolute_orbit": 29789,
+          "sat:relative_orbit": 13,
+          "s1:processing_level": "1",
+          "sar:instrument_mode": "IW",
+          "sar:center_frequency": 5.405,
+          "sar:resolution_range": 20,
+          "s1:product_timeliness": "Fast-24h",
+          "sar:resolution_azimuth": 22,
+          "sar:pixel_spacing_range": 10,
+          "sar:observation_direction": "right",
+          "sar:pixel_spacing_azimuth": 10,
+          "sar:looks_equivalent_number": 4.4,
+          "s1:instrument_configuration_ID": "2",
+          "sat:platform_international_designator": "2016-025A"
+        },
+        "assets": {
+          "vh": {
+            "href": "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/2021/11/28/IW/DV/S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_05BD/measurement/iw-vh.rtc.tiff",
+            "title": "VH: vertical transmit, horizontal receive",
+            "roles": [
+              "data"
+            ],
+            "rasterBands": [
+              {
+                "nodata": -32768,
+                "data_type": "float32",
+                "spatial_resolution": 10
+              }
+            ]
+          },
+          "vv": {
+            "href": "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/2021/11/28/IW/DV/S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_05BD/measurement/iw-vv.rtc.tiff",
+            "title": "VV: vertical transmit, vertical receive",
+            "roles": [
+              "data"
+            ],
+            "rasterBands": [
+              {
+                "nodata": -32768,
+                "data_type": "float32",
+                "spatial_resolution": 10
+              }
+            ]
+          },
+          "tilejson": {
+            "href": "https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+            "title": "TileJSON with default rendering",
+            "roles": [
+              "tiles"
+            ]
+          },
+          "rendered_preview": {
+            "href": "https://planetarycomputer.microsoft.com/api/data/v1/item/preview.png?collection=sentinel-1-rtc&item=S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc&assets=vv&assets=vh&expression=0.03+%2B+log+%2810e-4+-+log+%280.05+%2F+%280.02+%2B+2+*+vv%29%29%29%3B0.05+%2B+exp+%280.25+*+%28log+%280.01+%2B+2+*+vv%29+%2B+log+%280.02+%2B+5+*+vh%29%29%29%3B1+-+log+%280.05+%2F+%280.045+-+0.9+*+vv%29%29&asset_as_band=True&rescale=0%2C.8000&rescale=0%2C1.000&rescale=0%2C1.000",
+            "title": "Rendered preview",
+            "roles": [
+              "overview"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "visibleZoom": "Z14",
+  "layerLabel": "Sentinel-1 RTC",
+  "layerDifference": {
+    "changedPixelRatio": 0.75,
+    "meanAbsoluteDifference": 62.34079427083332
+  },
+  "analysis": {
+    "mode": "raster",
+    "query": "Sample VV and VH radar backscatter at this Sumas Prairie pin for 2021-11-28. Report the actual collection, item, acquisition date, and units.",
+    "outcome": "passed",
+    "request": {
+      "pin": {
+        "lat": 49.060001006011674,
+        "lng": -122.0899999999991
+      },
+      "visionPin": {
+        "lat": 49.060001006011674,
+        "lng": -122.0899999999991
+      },
+      "geointMode": true,
+      "geointModule": "vision",
+      "imageCharacters": 332644,
+      "currentCollection": "sentinel-1-rtc",
+      "mapBounds": {
+        "north": 49.071219251869735,
+        "south": 49.04878022746962,
+        "east": -122.06803915845586,
+        "west": -122.1119608415427,
+        "center_lat": 49.06000100601159,
+        "center_lng": -122.09
+      },
+      "stacItemIds": [
+        "S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc"
+      ]
+    },
+    "httpStatus": 200,
+    "result": {
+      "session_id": "web-session-1789898246998-cvbsc08y5",
+      "answer": "**Point Sampling at (49.0600°, -122.0900°):**\n\n**SAR Backscatter Data** (`sentinel-1-rtc`)\n- **VV Backscatter**\n  - Raw: 0.01 linear, Converted: **-20.97 dB**\n  - Scene: `S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc`\n  - Acquisition Date: 2021-11-28\n- **VH Backscatter**\n  - Raw: 0.01 linear, Converted: **-19.86 dB**\n  - Scene: `S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc`\n  - Acquisition Date: 2021-11-28\n\n**Data source:** Public Sentinel-1 Radiometrically Terrain Corrected (`sentinel-1-rtc`)",
+      "response": "**Point Sampling at (49.0600°, -122.0900°):**\n\n**SAR Backscatter Data** (`sentinel-1-rtc`)\n- **VV Backscatter**\n  - Raw: 0.01 linear, Converted: **-20.97 dB**\n  - Scene: `S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc`\n  - Acquisition Date: 2021-11-28\n- **VH Backscatter**\n  - Raw: 0.01 linear, Converted: **-19.86 dB**\n  - Scene: `S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc`\n  - Acquisition Date: 2021-11-28\n\n**Data source:** Public Sentinel-1 Radiometrically Terrain Corrected (`sentinel-1-rtc`)",
+      "sources": [
+        {
+          "title": "sentinel-1-rtc",
+          "uri": null,
+          "excerpt": null,
+          "kind": "raster",
+          "score": null
+        }
+      ],
+      "memory": {
+        "enabled": true,
+        "provider": "conversation",
+        "sources": [],
+        "earlierTurns": 0
+      },
+      "visualizations": [],
+      "map_data": null,
+      "structured": {
+        "sample_raster_value": {
+          "analyzer": "raster_sampling",
+          "success": true,
+          "answer": "**Point Sampling at (49.0600°, -122.0900°):**\n\n**SAR Backscatter (VV) (sentinel-1-rtc):**\n- Raw: 0.01 linear\n- Converted: **-20.97 dB**\n- Item: S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc\n- Date: 2021-11-28\n\n**SAR Backscatter (VH) (sentinel-1-rtc):**\n- Raw: 0.01 linear\n- Converted: **-19.86 dB**\n- Item: S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc\n- Date: 2021-11-28",
+          "structured": {
+            "data_type": "sar",
+            "pin": [
+              49.060001006011674,
+              -122.0899999999991
+            ],
+            "lat": 49.060001006011674,
+            "lng": -122.0899999999991,
+            "value": -20.97,
+            "metric": "SAR Backscatter (VV) (sentinel-1-rtc)",
+            "unit": "dB",
+            "samples": [
+              {
+                "metric": "SAR Backscatter (VV) (sentinel-1-rtc)",
+                "value": -20.97,
+                "unit": "dB"
+              },
+              {
+                "metric": "SAR Backscatter (VH) (sentinel-1-rtc)",
+                "value": -19.86,
+                "unit": "dB"
+              }
+            ],
+            "sampled_scenes": [
+              {
+                "item_id": "S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc",
+                "date": "2021-11-28"
+              }
+            ],
+            "sampled_item_ids": [
+              "S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc"
+            ],
+            "sampled_dates": [
+              "2021-11-28"
+            ],
+            "loaded_collections": [
+              "sentinel-1-rtc"
+            ]
+          },
+          "sources": [
+            {
+              "title": "sentinel-1-rtc",
+              "uri": null,
+              "excerpt": null,
+              "kind": "raster",
+              "score": null
+            }
+          ],
+          "confidence": 0.9,
+          "error": null,
+          "elapsed_ms": 2161
+        },
+        "layer2_engine": "analyst_agent"
+      },
+      "pipeline": "v2",
+      "action": "ANALYZE",
+      "decision": {
+        "action": "ANALYZE",
+        "location": null,
+        "use_current_location": true,
+        "stac_query": null,
+        "analysis_question": "Sample VV and VH radar backscatter at this Sumas Prairie pin for 2021-11-28. Report the actual collection, item, acquisition date, and units.",
+        "reasoning": "The user is asking for a substantive analysis of radar backscatter values at the pinned location and date, with details about the collection and units. Since the sentinel-1-rtc collection is already loaded and a pin is present, this is an ANALYZE action with use_current_location=true.",
+        "confidence": 0.95
+      },
+      "plan": {
+        "steps": [
+          {
+            "analyzer": "sample_raster_value",
+            "hint": null,
+            "rationale": "ReAct tool call",
+            "parallel_with_previous": false
+          }
+        ],
+        "reasoning": "AnalystAgent ReAct",
+        "confidence": 0.9
+      },
+      "tools_used": [
+        "sample_raster_value"
+      ],
+      "data_source": "Public PC",
+      "elapsed_ms": 12877
+    },
+    "displayText": "Point Sampling at (49.0600°, -122.0900°):\n\nSAR Backscatter Data (sentinel-1-rtc)\n\n•VV Backscatter\n•Raw: 0.01 linear, Converted: -20.97 dB\n•Scene: S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc\n•Acquisition Date: 2021-11-28\n•VH Backscatter\n•Raw: 0.01 linear, Converted: -19.86 dB\n•Scene: S1B_IW_GRDH_1SDV_20211128T142031_20211128T142056_029789_038E3D_rtc\n•Acquisition Date: 2021-11-28\nData source: Public Sentinel-1 Radiometrically Terrain Corrected (sentinel-1-rtc)\nRadar backscatter\nDark\nSmooth water or low return\nMid-tone\nSoil or vegetation\nBright\nRough surface or built structure\n\nBrightness represents radar return, not visible colour.\n\nData: Public PC\nTool: Raster sample",
+    "tools": [
+      "sample_raster_value"
+    ]
+  },
+  "finishedAt": "2026-09-20T09:57:58.660Z"
+}

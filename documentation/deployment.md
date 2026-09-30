@@ -420,12 +420,49 @@ Keep secrets in a secret store or ignored local configuration. Never publish
 the full azd environment. Do not enable an optional feature to make a missing
 prerequisite appear to pass.
 
+## Runtime Hardening and Throughput
+
+These defaults apply to new images and to existing apps after the
+[application-update procedure](#reuse-and-application-updates):
+
+| Area | Behavior | Operator setting |
+| --- | --- | --- |
+| API probes | Liveness uses `/api/health/live`; readiness uses `/api/health/ready`. Neither calls STAC, GeoFM, or a model, so a slow dependency cannot restart the API. | `configure_api_postdeploy.py` reapplies the probe profile |
+| Dependency health | `/api/health` still reports STAC, Azure Maps, model, and GeoFM status, reusing external probe results for 30 seconds | `HEALTH_DEPENDENCY_CACHE_SECONDS` (`0` disables reuse) |
+| Diagnostics | `/api/admin/stac-probe`, `/api/_debug/collection-index`, `/api/debug/location/{location}`, and `/api/geoint/cmip6-test` return 404 | Set `ENABLE_DIAGNOSTIC_ENDPOINTS=true` only for a supervised investigation, then remove it |
+| Containers | The API and weather adapter images run as UID 10001 and omit the `Server` header | None |
+| Agent tools | Terrain, mobility, climate, comparison, damage, and vision tools run in worker threads, so one analysis no longer stalls other requests or health probes; tool calls in the same step run concurrently | None |
+| Terrain sources | Elevation, slope, aspect, flat-area, flood, water-setback, and land-cover tools read every Copernicus DEM, JRC, or ESA WorldCover tile that intersects the analysis box. Results report `source_item_ids`, `coverage_percent`, and metric cell spacing; the JRC period comes from the items (currently 1984-2020). Mobility direction sectors also read every DEM tile beneath them | None |
+| Canadian place names | Unqualified Canadian names such as "Québec City", "Trois-Rivières", "Ottawa", and "Iqaluit" resolve within Canada, with or without accents. A search whose place cannot be resolved asks for a location instead of searching globally | Qualify names shared with other countries, such as "Kingston, Ontario" |
+| Web host | Security headers on every response, Brotli or gzip for text assets, one-year immutable caching for fingerprinted `/assets/` files, revalidation for `index.html`, and 404 instead of the app shell for missing assets | None |
+| Model throughput | Chat and GPT-5 family deployments default to 10,000 tokens per minute each | `AZURE_CHAT_MODEL_CAPACITY` and `AZURE_REASONING_MODEL_CAPACITY`, in thousands of tokens per minute |
+
+Throughput settings only take effect when you provision. Check regional quota
+first, because a request above the remaining quota fails the deployment:
+
+```powershell
+az cognitiveservices usage list --location '<region>' --query "[?contains(name.value, 'gpt-4o') || contains(name.value, 'gpt-5')].{name:name.value, used:currentValue, limit:limit}" -o table
+azd env set AZURE_CHAT_MODEL_CAPACITY 50
+```
+
+Several documented workflows make more than one model call per request, and a
+single user can exceed 10,000 tokens per minute. Low capacity shows up as slow
+answers, retried rate limits, and the 60-second analyst deadline in the
+walkthroughs.
+
+For Canadian data residency, choose `canadacentral` or `canadaeast` as
+`AZURE_LOCATION` and confirm model, Container Apps, and Search availability in
+that region before provisioning. Public Planetary Computer data and any
+provider services you reference are still hosted where their operators run
+them. GeoFM requires serverless T4 GPUs; the verified GeoFM region is East US.
+
 ## Readiness Gates
 
 After application publishing, check all of the following:
 
 1. Exact resource names, tenant, subscription, region and intended ownership
-2. Non-bootstrap images, ready revisions, correct ports/probes, intended
+2. Non-bootstrap images, ready revisions, correct ports and probes
+   (`/api/health/live`, `/api/health/ready`), intended
    traffic weights and unchanged authentication/networking
 3. Frontend bundle containing the correct API origin; real map pixels, zoom
    and pin placement on desktop and mobile
@@ -456,6 +493,12 @@ The azd bindings in this guide are not automatically GitHub workflow inputs.
 Keep automatic deployment off while reviewing code. Do not assume the legacy
 MCP deployment job is a supported agent service or use a hello-world image as
 proof of application readiness.
+
+The `Validate` workflow needs no Azure credentials. It runs on pull requests
+and pushes to `main`: backend, helper, PowerShell, and web UI tests, a runtime
+dependency audit, the production web build, the documentation link check, and
+Bicep compilation. Treat a failing run as a release blocker. It does not
+replace the live readiness gates above.
 
 ## Validation Limits
 
