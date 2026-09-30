@@ -18,6 +18,14 @@ param deployGpt56 bool = false
 @description('Deploy the text embedding model used by search and retrieval workloads')
 param deployEmbeddingModel bool = true
 
+@description('Capacity in thousands of tokens per minute for the gpt-4o and gpt-4o-mini deployments.')
+@minValue(1)
+param chatModelCapacity int = 10
+
+@description('Capacity in thousands of tokens per minute for each optional GPT-5 and GPT-5.6 deployment.')
+@minValue(1)
+param reasoningModelCapacity int = 10
+
 @description('Deploy AI Agent Service (Hub + Project)')
 param deployAgentService bool = true
 
@@ -78,7 +86,7 @@ resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   name: 'gpt-4o'
   sku: {
     name: 'Standard'
-    capacity: 10  // 10K TPM — conservative default to avoid quota failures on new subscriptions
+    capacity: chatModelCapacity
   }
   properties: {
     model: {
@@ -96,7 +104,7 @@ resource gpt4oMiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   name: 'gpt-4o-mini'
   sku: {
     name: 'Standard'
-    capacity: 10  // 10K TPM — conservative default to avoid quota failures on new subscriptions
+    capacity: chatModelCapacity
   }
   properties: {
     model: {
@@ -119,7 +127,7 @@ resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   name: 'gpt-5'
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: reasoningModelCapacity
   }
   properties: {
     model: {
@@ -141,7 +149,7 @@ resource gpt56SolDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   name: 'gpt-5.6-sol'
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: reasoningModelCapacity
   }
   properties: {
     model: {
@@ -162,7 +170,7 @@ resource gpt56TerraDeployment 'Microsoft.CognitiveServices/accounts/deployments@
   name: 'gpt-5.6-terra'
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: reasoningModelCapacity
   }
   properties: {
     model: {
@@ -182,7 +190,7 @@ resource gpt56LunaDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   name: 'gpt-5.6-luna'
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: reasoningModelCapacity
   }
   properties: {
     model: {

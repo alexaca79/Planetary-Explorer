@@ -112,6 +112,14 @@ param deployGpt56 bool = false
 @description('Deploy the text embedding model used by search and retrieval workloads')
 param deployEmbeddingModel bool = true
 
+@description('Capacity in thousands of tokens per minute for the gpt-4o and gpt-4o-mini chat deployments. Raise it when quota allows; 10 keeps first deployments within small quotas.')
+@minValue(1)
+param chatModelCapacity int = 10
+
+@description('Capacity in thousands of tokens per minute for each optional GPT-5 and GPT-5.6 deployment.')
+@minValue(1)
+param reasoningModelCapacity int = 10
+
 // Microsoft Fabric integration (opt-in, three-way toggle)
 //
 //   enableFabric           Master switch. When false, the UI hides Fabric-
@@ -479,6 +487,8 @@ module aiFoundry './shared/ai-foundry.bicep' = if (deployAIFoundry) {
     deployGpt5: deployGpt5
     deployGpt56: deployGpt56
     deployEmbeddingModel: deployEmbeddingModel
+    chatModelCapacity: chatModelCapacity
+    reasoningModelCapacity: reasoningModelCapacity
     deployAgentService: true
     hubName: '${abbrs.machineLearningServicesWorkspaces}hub-${resourceToken}'
     projectName: '${abbrs.machineLearningServicesWorkspaces}project-${resourceToken}'
