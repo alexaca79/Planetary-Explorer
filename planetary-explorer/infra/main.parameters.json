@@ -74,6 +74,12 @@
     "deployEmbeddingModel": {
       "value": "${DEPLOY_EMBEDDING_MODEL=true}"
     },
+    "chatModelCapacity": {
+      "value": "${AZURE_CHAT_MODEL_CAPACITY=10}"
+    },
+    "reasoningModelCapacity": {
+      "value": "${AZURE_REASONING_MODEL_CAPACITY=10}"
+    },
     "deployGeoFm": {
       "value": "${DEPLOY_GEOFM=false}"
     },

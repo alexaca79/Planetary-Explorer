@@ -110,7 +110,171 @@ async def test_given_generated_city_query_when_fuzzy_searching_then_city_filter_
     )
 
     assert captured["params"]["countrySet"] == "CA"
-    assert captured["params"]["entityType"] == "Municipality,PopulatedPlace"
+    # Azure Maps Search v1 rejects "PopulatedPlace" with HTTP 400.
+    assert captured["params"]["entityType"] == "Municipality,MunicipalitySubdivision"
+
+
+def _maps_resolver() -> EnhancedLocationResolver:
+    resolver = object.__new__(EnhancedLocationResolver)
+    resolver.logger = logging.getLogger(__name__)
+    resolver.cache = LocationCache()
+    resolver.azure_maps_key = "test-key"
+    resolver.azure_maps_use_managed_identity = False
+    resolver._token_provider = None
+    resolver.azure_maps_client_id = None
+    return resolver
+
+
+# Shape of the live Azure Maps result for Iqaluit on 2026-09-30: the position
+# is correct, but the viewport spans about 49 x 32 degrees of Nunavut.
+IQALUIT_RESULT = {
+    "type": "Geography",
+    "entityType": "Municipality",
+    "score": 6.62,
+    "address": {
+        "municipality": "Iqaluit",
+        "countryCode": "CA",
+        "countrySubdivision": "NU",
+        "freeformAddress": "Iqaluit NU",
+    },
+    "position": {"lat": 63.751, "lon": -68.523},
+    "viewport": {
+        "topLeftPoint": {"lon": -109.85, "lat": 83.11},
+        "btmRightPoint": {"lon": -61.18, "lat": 51.58},
+    },
+}
+
+
+def test_given_municipality_with_territory_viewport_when_extracting_then_box_surrounds_position() -> None:
+    bbox = _maps_resolver()._extract_azure_bounds(IQALUIT_RESULT)
+
+    assert (bbox[1] + bbox[3]) / 2 == pytest.approx(63.751, abs=1e-6)
+    assert (bbox[0] + bbox[2]) / 2 == pytest.approx(-68.523, abs=1e-6)
+    assert bbox[3] - bbox[1] == pytest.approx(0.2)
+
+
+def test_given_city_viewport_containing_position_when_extracting_then_viewport_is_kept() -> None:
+    result = {
+        "type": "Geography",
+        "entityType": "Municipality",
+        "position": {"lat": 42.984, "lon": -81.248},
+        "viewport": {
+            "topLeftPoint": {"lon": -81.41, "lat": 43.11},
+            "btmRightPoint": {"lon": -81.09, "lat": 42.86},
+        },
+    }
+
+    assert _maps_resolver()._extract_azure_bounds(result) == [-81.41, 42.86, -81.09, 43.11]
+
+
+def test_given_large_landmark_viewport_when_extracting_then_it_is_not_shrunk() -> None:
+    result = {
+        "type": "POI",
+        "poi": {"name": "Lake Superior"},
+        "position": {"lat": 47.7, "lon": -87.5},
+        "viewport": {
+            "topLeftPoint": {"lon": -92.1, "lat": 49.0},
+            "btmRightPoint": {"lon": -84.4, "lat": 46.4},
+        },
+    }
+
+    assert _maps_resolver()._extract_azure_bounds(result) == [-92.1, 46.4, -84.4, 49.0]
+
+
+@pytest.mark.asyncio
+async def test_given_iqaluit_when_resolving_then_navigation_centre_is_the_city(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        location_resolver.aiohttp,
+        "ClientSession",
+        lambda: _Session(captured, _Response({"results": [IQALUIT_RESULT]})),
+    )
+
+    bbox = await _maps_resolver().resolve_location_to_bbox("Iqaluit, Nunavut")
+
+    assert (bbox[1] + bbox[3]) / 2 == pytest.approx(63.751, abs=0.01)
+    assert (bbox[0] + bbox[2]) / 2 == pytest.approx(-68.523, abs=0.01)
+    assert captured["params"]["countrySet"] == "CA"
+
+
+@pytest.mark.asyncio
+async def test_given_canadian_name_when_address_fallback_runs_then_search_is_limited_to_canada(
+    monkeypatch,
+) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        location_resolver.aiohttp,
+        "ClientSession",
+        lambda: _Session(captured, _Response({"results": [IQALUIT_RESULT]})),
+    )
+
+    await _maps_resolver()._azure_maps_address_search("Iqaluit, Nunavut, Canada")
+
+    assert captured["params"]["countrySet"] == "CA"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("confidence", "accepted"), [(0.605, False), (0.956, True), (None, True)])
+async def test_given_address_fallback_when_match_confidence_is_low_then_result_is_rejected(
+    monkeypatch,
+    confidence,
+    accepted,
+) -> None:
+    result = {
+        "type": "Geography",
+        "entityType": "Municipality",
+        "position": {"lat": 35.468, "lon": -97.521},
+        "viewport": {
+            "topLeftPoint": {"lon": -97.84, "lat": 35.68},
+            "btmRightPoint": {"lon": -97.12, "lat": 35.29},
+        },
+    }
+    if confidence is not None:
+        result["matchConfidence"] = {"score": confidence}
+    monkeypatch.setattr(
+        location_resolver.aiohttp,
+        "ClientSession",
+        lambda: _Session({}, _Response({"results": [result]})),
+    )
+
+    bbox = await _maps_resolver()._azure_maps_address_search("Qwertyuiopville city USA")
+
+    assert (bbox is not None) is accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search", ["_azure_maps_fuzzy_search", "_azure_maps_with_population_priority"])
+async def test_given_unqualified_city_when_searching_municipalities_then_no_us_only_filter_is_sent(
+    monkeypatch,
+    search,
+) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        location_resolver.aiohttp,
+        "ClientSession",
+        lambda: _Session(captured),
+    )
+
+    bbox = await getattr(_maps_resolver(), search)("Springfield")
+
+    assert bbox is None
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_given_unqualified_canadian_capital_when_fuzzy_searching_then_canada_is_searched(
+    monkeypatch,
+) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        location_resolver.aiohttp,
+        "ClientSession",
+        lambda: _Session(captured),
+    )
+
+    await _maps_resolver()._azure_maps_fuzzy_search("Ottawa")
+
+    assert captured["params"]["countrySet"] == "CA"
 
 
 def test_given_qualified_canadian_city_when_preprocessing_then_us_bias_is_omitted() -> None:

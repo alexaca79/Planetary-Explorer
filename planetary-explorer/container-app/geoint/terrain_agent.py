@@ -18,6 +18,7 @@ from datetime import datetime
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from cloud_config import cloud_cfg
+from geoint.tool_runtime import merge_recorded_tool_results, record_tool_results
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ Your role is to analyze terrain and answer questions about geographic locations 
 - **find_flat_areas**: Locate flat areas suitable for landing zones, construction, or camps
 
 ### Environmental & Permitting Analysis:
-- **analyze_flood_risk**: Check historical flood occurrence (0-100%) using JRC Global Surface Water. Returns flood risk level (LOW/MODERATE/HIGH) and permitting recommendation.
+- **analyze_flood_risk**: Historical surface-water occurrence (0-100% of valid observations) from JRC Global Surface Water over the returned temporal_coverage. Permanent rivers, lakes, and sea count as water. It is not an annual flood probability or an event flood map. Returns a heuristic risk level (LOW/MODERATE/HIGH) and a screening label.
 - **analyze_water_proximity**: Calculate distance to nearest water body for setback requirements (e.g., 500m from wetlands). Returns whether setback is satisfied.
 - **analyze_environmental_sensitivity**: Identify wetlands, forests, mangroves, and protected habitats using ESA WorldCover. Returns environmental constraints and permitting status.
 
@@ -82,6 +83,7 @@ Each message includes [Location Context] with:
 - **Answer the question asked.** Do not provide unrelated sections. If the user asks about sun exposure, focus on aspect and sun exposure — do not add environmental permitting sections unless asked.
 - **Use the sun_exposure_note** from get_aspect_analysis results — it accounts for flat terrain correctly.
 - **Never contradict tool data.** If the tool says sun exposure is "good" due to flat terrain, do NOT downgrade it.
+- **Report provenance.** Cite each tool's data_source and, when present, temporal_coverage. If coverage_percent is below 100, state that only that share of the requested area had data.
 
 **Keep responses factual and concise. Do NOT include:**
 - "Actionable Insights" or recommendation sections beyond permitting status
@@ -229,7 +231,8 @@ class TerrainAgent:
         
         # Build terrain tools as standalone functions for FunctionTool
         from geoint.terrain_tools import create_terrain_functions
-        terrain_functions = create_terrain_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        terrain_functions = offload_blocking_tools(create_terrain_functions())
         
         # Create AsyncFunctionTool and AsyncToolSet with auto function calling
         functions = AsyncFunctionTool(terrain_functions)
@@ -497,11 +500,15 @@ Be specific and quantitative where possible."""
 
                 # Create and process the run (auto-executes function tools via ToolSet)
                 run_dispatch_started = True
-                run = await self._agents_client.runs.create_and_process(
-                    thread_id=session.thread_id,
-                    agent_id=self._agent_id,
+                with record_tool_results() as recorded_results:
+                    run = await self._agents_client.runs.create_and_process(
+                        thread_id=session.thread_id,
+                        agent_id=self._agent_id,
+                    )
+                tool_calls = merge_recorded_tool_results(
+                    await self._get_run_tool_calls(session.thread_id, run.id),
+                    recorded_results,
                 )
-                tool_calls = await self._get_run_tool_calls(session.thread_id, run.id)
 
                 if run.status == "failed":
                     fallback_response = _format_tool_fallback(location_name, tool_calls)

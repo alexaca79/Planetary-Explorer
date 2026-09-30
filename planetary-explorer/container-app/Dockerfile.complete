@@ -43,13 +43,16 @@ RUN apt-get update && apt-get install -y \
     libgdal-dev \
     libproj-dev \
     proj-bin \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set GDAL environment variables for rasterio
 ENV GDAL_CONFIG=/usr/bin/gdal-config
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
+
+# Run the service as an unprivileged account; application files stay root-owned.
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app
 
 # Set working directory
 WORKDIR /app
@@ -100,13 +103,18 @@ RUN mkdir -p /app/uploads
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 # Expose port 8080 (must match Azure Container App targetPort configuration)
 EXPOSE 8080
 
-# Health check (updated to use port 8080)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/api/health || exit 1
+USER 10001:10001
 
-# Start the FastAPI application on port 8080
-CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080"]
+# Local Docker health check; Azure Container Apps uses its configured probes.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health/live', timeout=5)" || exit 1
+
+# Confirmation and trace brokers are process-local, so one async worker must
+# own both the streaming request and its confirmation callback.
+CMD ["uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-server-header", "--timeout-graceful-shutdown", "30"]

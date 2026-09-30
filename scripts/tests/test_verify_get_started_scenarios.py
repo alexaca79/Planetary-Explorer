@@ -671,6 +671,55 @@ def test_given_static_scene_without_date_when_validating_then_exact_item_matches
     assert provenance["scene_matches"] is True
 
 
+def test_given_terrain_tool_names_without_results_when_validating_then_result_fails() -> None:
+    scenario = verifier.Scenario(
+        "Terrain",
+        "Sumas Prairie, British Columbia",
+        "Sumas Prairie, British Columbia, Canada",
+        question="Analyze slope and historical surface water.",
+        expected_tools=("get_slope_analysis", "analyze_flood_risk"),
+    )
+    payload = {
+        "status": "success",
+        "response": "Mean slope is 11.1 degrees.",
+        "tool_calls": [
+            {"tool": "get_slope_analysis", "result": None},
+            {"tool": "analyze_flood_risk", "result": {"error": "No valid data"}},
+        ],
+    }
+
+    valid, details = verifier._validate_module_result(scenario, 200, payload)
+
+    assert valid is False
+    assert details["tools_without_results"] == [
+        "analyze_flood_risk",
+        "get_slope_analysis",
+    ]
+
+
+def test_given_terrain_measurements_when_validating_then_result_passes() -> None:
+    scenario = verifier.Scenario(
+        "Terrain",
+        "Sumas Prairie, British Columbia",
+        "Sumas Prairie, British Columbia, Canada",
+        question="Analyze slope and historical surface water.",
+        expected_tools=("get_slope_analysis", "analyze_flood_risk"),
+    )
+    payload = {
+        "status": "success",
+        "response": "Mean slope is 2.4 degrees.",
+        "tool_calls": [
+            {"tool": "get_slope_analysis", "result": {"slope_mean_degrees": 2.4}},
+            {"tool": "analyze_flood_risk", "result": {"flood_risk_level": "HIGH"}},
+        ],
+    }
+
+    valid, details = verifier._validate_module_result(scenario, 200, payload)
+
+    assert valid is True
+    assert details["tools_without_results"] == []
+
+
 def test_given_partial_climate_comparison_when_validating_then_result_fails() -> None:
     scenario = verifier.Scenario(
         "Extreme Weather",

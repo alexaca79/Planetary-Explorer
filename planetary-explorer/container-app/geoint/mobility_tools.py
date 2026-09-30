@@ -28,6 +28,8 @@ import planetary_computer
 import pystac
 import requests
 from cloud_config import cloud_cfg
+from geoint.dem_geometry import dataset_spacing_meters, pixel_spacing_meters, slope_aspect_degrees
+from geoint.raster_mosaic import read_bbox_mosaic
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +170,30 @@ def _items_covering_point(items: list, lat: float, lon: float) -> list:
     return covering if covering else unknown
 
 
+def _items_intersecting_bbox(items: list, bbox: List[float]) -> list:
+    """Filter STAC items to those whose bbox intersects ``bbox``.
+
+    Falls back to items without bbox metadata when none intersect.
+    """
+    intersecting = []
+    unknown = []
+    for item in items:
+        b = getattr(item, "bbox", None)
+        if b:
+            if b[0] <= bbox[2] and bbox[0] <= b[2] and b[1] <= bbox[3] and bbox[1] <= b[3]:
+                intersecting.append(item)
+        else:
+            unknown.append(item)
+    return intersecting if intersecting else unknown
+
+
+def _endpoint_items(collection: str, items: list, bbox: List[float], lat: float, lon: float) -> list:
+    """Select one endpoint's items; DEM keeps every 1-degree tile under its box."""
+    if collection == "cop-dem-glo-30":
+        return _items_intersecting_bbox(items, bbox)[:4]
+    return _items_covering_point(items, lat, lon)[:3]
+
+
 def _prefetch_corridor_stac_items(
     corridor_bbox: List[float],
     timeout_seconds: float = 15.0,
@@ -254,6 +280,16 @@ def _query_stac_collection_sync(
 
 def _read_cog_window_sync(asset_url: str, bbox: List[float], band: int = 1) -> Optional[np.ndarray]:
     """Read pixels from a Cloud-Optimized GeoTIFF for a bounding box (synchronous)."""
+    result = _read_cog_window_with_spacing_sync(asset_url, bbox, band)
+    return result[0] if result else None
+
+
+def _read_cog_window_with_spacing_sync(
+    asset_url: str,
+    bbox: List[float],
+    band: int = 1,
+) -> Optional[tuple[np.ndarray, tuple[float, float]]]:
+    """Read a COG window and its metric ``(row, column)`` cell spacing."""
     try:
         import rasterio
         from rasterio.windows import from_bounds
@@ -276,9 +312,37 @@ def _read_cog_window_sync(asset_url: str, bbox: List[float], band: int = 1) -> O
                 if src.nodata is not None:
                     data = data.astype(float)
                     data[data == src.nodata] = np.nan
-                return data
+                spacing = dataset_spacing_meters(src, (bbox[1] + bbox[3]) / 2.0)
+                return data, spacing
     except Exception as e:
         logger.error(f"Failed to read COG: {e}")
+        return None
+
+
+def _read_dem_mosaic_with_spacing_sync(
+    asset_urls: List[str],
+    bbox: List[float],
+    latitude: float,
+) -> Optional[tuple[np.ndarray, tuple[float, float]]]:
+    """Mosaic DEM tiles over ``bbox``; return pixels and metric ``(row, column)`` spacing.
+
+    Copernicus DEM tiles are 1 degree wide. A sector beside a tile edge (the
+    Kananaskis example sits on 115 W) reads a sliver, or nothing, from one tile.
+    """
+    try:
+        import rasterio
+
+        signed_urls = [planetary_computer.sign_url(url) for url in asset_urls]
+        with rasterio.Env(
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            GDAL_HTTP_TIMEOUT="10",
+            GDAL_HTTP_MAX_RETRY="1",
+        ):
+            window = read_bbox_mosaic(signed_urls, bbox, categorical=False)
+        spacing = pixel_spacing_meters(*window.resolution, latitude, geographic=window.geographic)
+        return window.data, spacing
+    except Exception as e:
+        logger.error(f"Failed to read DEM mosaic: {e}")
         return None
 
 
@@ -315,7 +379,7 @@ def _analyze_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
 
 def _analyze_jrc_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
     """Analyze JRC Global Surface Water occurrence data.
-    Pixel values: 0-100 = % of time water was observed (1984-2021).
+    Pixel values: 0-100 = % of time water was observed (1984-2020).
     Values 0 or nodata = never water. 100 = permanent water.
     """
     valid = pixels[~np.isnan(pixels)]
@@ -333,13 +397,20 @@ def _analyze_jrc_water_pixels(pixels: np.ndarray) -> Dict[str, Any]:
     return {"status": "GO", "reason": f"Minimal water: {water_pct:.1f}% coverage", "confidence": "high", "metrics": {"water_pct": round(water_pct, 1), "permanent_pct": round(permanent_pct, 1), "avg_occurrence": round(avg_occurrence, 1)}}
 
 
-def _analyze_elevation_pixels(pixels: np.ndarray) -> Dict[str, Any]:
-    """Analyze DEM elevation for slope classification."""
+def _analyze_elevation_pixels(
+    pixels: np.ndarray,
+    spacing_m: Optional[tuple[float, float]] = None,
+) -> Dict[str, Any]:
+    """Analyze DEM elevation for slope classification.
+
+    ``spacing_m`` is the ``(row, column)`` cell size in metres; geographic
+    DEMs have narrower east-west cells at Canadian latitudes than 30 m.
+    """
     valid = pixels[~np.isnan(pixels)]
     if len(valid) == 0:
         return {"status": "GO", "reason": "No elevation data", "confidence": "low"}
-    dy, dx = np.gradient(pixels, 30)
-    slope_deg = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
+    row_spacing, column_spacing = spacing_m or (30.0, 30.0)
+    slope_deg, _ = slope_aspect_degrees(pixels, row_spacing, column_spacing)
     valid_slopes = slope_deg[~np.isnan(slope_deg)]
     if len(valid_slopes) == 0:
         return {"status": "GO", "reason": "Unable to calculate slopes", "confidence": "low"}
@@ -454,7 +525,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
         if items:
             asset = items[0].assets.get(asset_key)
             if asset:
-                return _read_cog_window_sync(asset.href, bbox)
+                return _read_cog_window_with_spacing_sync(asset.href, bbox)
         return None
 
     # Parallel COG reads (STAC queries skipped when prefetched)
@@ -469,7 +540,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
 
     # Evaluate elevation/slope
     if fetched.get("elevation") is not None:
-        r = _analyze_elevation_pixels(fetched["elevation"])
+        r = _analyze_elevation_pixels(*fetched["elevation"])
         if r["status"] == "NO-GO":
             result["status"] = "NO-GO"
         elif r["status"] == "SLOW-GO":
@@ -480,7 +551,7 @@ def _sample_corridor_point(lat: float, lon: float, prefetched_items: Optional[Di
 
     # Evaluate land cover
     if fetched.get("landcover") is not None:
-        r = _analyze_landcover_pixels(fetched["landcover"])
+        r = _analyze_landcover_pixels(fetched["landcover"][0])
         result["data"]["landcover"] = r.get("metrics", {})
         if r["status"] == "NO-GO" and result["status"] != "NO-GO":
             result["status"] = "NO-GO"
@@ -598,11 +669,28 @@ def _get_azure_maps_route(lat1: float, lon1: float, lat2: float, lon2: float) ->
             else:
                 return {"road_route_available": False, "reason": "No road route found between points"}
         else:
-            logger.error(f"Azure Maps Route API returned {resp.status_code}")
-            return {"road_route_available": False, "reason": f"API error {resp.status_code}"}
+            reason = _route_error_reason(resp)
+            if reason.startswith("API error"):
+                logger.error(f"Azure Maps Route API returned {resp.status_code}")
+            else:
+                logger.info(f"Azure Maps found no road route: {reason}")
+            return {"road_route_available": False, "reason": reason}
     except Exception as e:
         logger.error(f"Azure Maps route lookup failed: {e}")
         return None
+
+
+def _route_error_reason(response: Any) -> str:
+    """Explain a Route Directions error; backcountry pins have no road to match."""
+    try:
+        message = str(((response.json() or {}).get("error") or {}).get("message") or "")
+    except (ValueError, AttributeError):
+        message = ""
+    if "MAP_MATCHING_FAILURE" in message:
+        return "No drivable road near one of the points"
+    if "NO_ROUTE_FOUND" in message:
+        return "No road route found between points"
+    return f"API error {response.status_code}"
 
 
 def _get_azure_maps_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
@@ -692,9 +780,9 @@ def _analyze_all_directions_sync(latitude: float, longitude: float, prefetched_i
         # Filter items to those covering THIS endpoint (handles tile boundaries)
         for col, key in col_to_key.items():
             all_items = prefetched_items.get(col, [])
-            items = _items_covering_point(all_items, latitude, longitude) if all_items else []
+            items = _endpoint_items(col, all_items, bbox, latitude, longitude) if all_items else []
             if items:
-                terrain_data[key] = {"items_found": len(items), "collection": col, "items": items[:3]}
+                terrain_data[key] = {"items_found": len(items), "collection": col, "items": items}
                 terrain_data["collection_status"][col] = "success"
                 terrain_data["sources"].append(col)
             else:
@@ -717,7 +805,8 @@ def _analyze_all_directions_sync(latitude: float, longitude: float, prefetched_i
             try:
                 items = _query_stac_collection_sync(col, bbox, datetime_range=dt_range, query_params=qparams, limit=10)
                 if items:
-                    return key, col, {"items_found": len(items), "collection": col, "items": items[:3]}, "success"
+                    kept = items[:4] if col == "cop-dem-glo-30" else items[:3]
+                    return key, col, {"items_found": len(items), "collection": col, "items": kept}, "success"
                 return key, col, None, "no_data"
             except Exception as e:
                 logger.error(f"Collection {col} query failed: {e}")
@@ -793,11 +882,13 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
         if asset:
             fetch_tasks["water"] = (asset.href, d_bbox, 1)
 
+    dem_urls: List[str] = []
     if terrain_data.get("elevation_profile") and terrain_data["elevation_profile"].get("items"):
-        item = terrain_data["elevation_profile"]["items"][0]
-        asset = item.assets.get("data", None)
-        if asset:
-            fetch_tasks["elevation"] = (asset.href, d_bbox, 1)
+        dem_urls = [
+            item.assets["data"].href
+            for item in _items_intersecting_bbox(terrain_data["elevation_profile"]["items"], d_bbox)
+            if item.assets.get("data") is not None
+        ]
 
     if terrain_data.get("vegetation_density") and terrain_data["vegetation_density"].get("items"):
         item = terrain_data["vegetation_density"]["items"][0]
@@ -815,16 +906,20 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
 
     # Fetch all COGs concurrently
     fetched = {}
-    if fetch_tasks:
-        with ThreadPoolExecutor(max_workers=min(len(fetch_tasks), 6)) as executor:
+    spacings = {}
+    if fetch_tasks or dem_urls:
+        with ThreadPoolExecutor(max_workers=min(len(fetch_tasks) + 1, 6)) as executor:
             futures = {
-                executor.submit(_read_cog_window_sync, href, bbox, band): key
+                executor.submit(_read_cog_window_with_spacing_sync, href, bbox, band): key
                 for key, (href, bbox, band) in fetch_tasks.items()
             }
+            if dem_urls:
+                futures[executor.submit(_read_dem_mosaic_with_spacing_sync, dem_urls, d_bbox, lat)] = "elevation"
             for future in as_completed(futures):
                 key = futures[future]
                 try:
-                    fetched[key] = future.result()
+                    window_result = future.result()
+                    fetched[key], spacings[key] = window_result or (None, None)
                 except Exception as e:
                     logger.error(f"COG fetch {key} failed: {e}")
                     fetched[key] = None
@@ -860,7 +955,7 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
     # Elevation/Slope
     if status == "GO" and "elevation" in fetched and fetched["elevation"] is not None:
         try:
-            r = _analyze_elevation_pixels(fetched["elevation"])
+            r = _analyze_elevation_pixels(fetched["elevation"], spacings.get("elevation"))
             if r["status"] == "NO-GO":
                 status = "NO-GO"
             elif r["status"] == "SLOW-GO" and status == "GO":
@@ -914,7 +1009,7 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
 
 def detect_water_bodies(latitude: float, longitude: float) -> str:
     """Detect water bodies using JRC Global Surface Water occurrence data.
-    Uses global water mapping from 1984-2021 to identify permanent and seasonal water.
+    Uses global water mapping from 1984-2020 to identify permanent and seasonal water.
     Returns water coverage percentage and classification.
 
     :param latitude: Center latitude of the analysis area
@@ -984,10 +1079,10 @@ def analyze_slope_for_mobility(latitude: float, longitude: float) -> str:
         asset = items[0].assets.get("data", None)
         if not asset:
             return json.dumps({"status": "no_data", "message": "No DEM data asset"})
-        px = _read_cog_window_sync(asset.href, bbox)
-        if px is None:
+        window = _read_cog_window_with_spacing_sync(asset.href, bbox)
+        if window is None:
             return json.dumps({"status": "error", "message": "Failed to read DEM raster"})
-        result = _analyze_elevation_pixels(px)
+        result = _analyze_elevation_pixels(*window)
         return json.dumps(_convert_numpy_to_python(result))
     except Exception as e:
         logger.error(f"[TOOL] analyze_slope_for_mobility failed: {e}")

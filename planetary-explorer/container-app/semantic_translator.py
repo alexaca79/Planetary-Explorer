@@ -50,6 +50,60 @@ def _qualify_location_for_geocoding(query: str, location_name: str) -> str:
     return location_name
 
 
+# Capitalised words that name datasets or actions, not places.
+_NON_PLACE_WORDS = frozenset({
+    "show", "find", "display", "map", "locate", "search", "navigate", "zoom", "fly",
+    "take", "sentinel", "landsat", "collection", "level", "hls", "modis", "copernicus",
+    "dem", "naip", "esa", "jrc", "nasa", "noaa", "usgs", "goes", "viirs", "daymet",
+    "era5", "worldcover", "global", "surface", "water", "rtc", "radar", "optical",
+    "thermal", "terrain", "elevation", "imagery", "image", "images", "data", "mpc",
+    "pro", "my",
+})
+_WORD = re.compile(r"[^\W\d_][^\W_]*(?:['\u2019-][^\W_]+)*")
+_CLOUD_TERMS = re.compile(r"\b(?:cloud\w*|clear\w*|overcast)\b", re.IGNORECASE)
+
+
+def _explicit_iso_range(query: str) -> Optional[str]:
+    """Return 'start/end' for 'from <ISO> to <ISO>' or 'between <ISO> and <ISO>'."""
+    match = re.search(
+        r"\b(?:from|between)\s+(\d{4}-\d{2}-\d{2})\s+(?:to|and|through|until)\s+(\d{4}-\d{2}-\d{2})\b",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        start = datetime.fromisoformat(match.group(1)).date()
+        end = datetime.fromisoformat(match.group(2)).date()
+    except ValueError:
+        return None
+    if start > end:
+        return None
+    return f"{start.isoformat()}/{end.isoformat()}"
+
+
+def _is_place_word(word: str) -> bool:
+    return word[:1].isupper() and word.split("-")[0].casefold() not in _NON_PLACE_WORDS
+
+
+def _mentions_explicit_place(query: str) -> bool:
+    """True when a query names a place ("Mount Rainier", "of Montréal", "Québec, Canada").
+
+    Dataset names such as "Show Sentinel-2" or "Landsat Collection 2" are not
+    places, so a follow-up like "Show Sentinel-2 imagery" keeps the map location.
+    """
+    text = query or ""
+    for preposition in re.finditer(r"\b(?:of|in|over|at|near|around)\s+(?:the\s+)?", text, re.IGNORECASE):
+        word = _WORD.match(text, preposition.end())
+        if word and _is_place_word(word.group(0)):
+            return True
+    place_words = [match for match in _WORD.finditer(text) if _is_place_word(match.group(0))]
+    for first, second in zip(place_words, place_words[1:]):
+        if re.fullmatch(r"\s+|\s*,\s*", text[first.end():second.start()]):
+            return True
+    return False
+
+
 def _extract_explicit_iso_datetime(query: str) -> Optional[str]:
     """Return a literal ISO date or range from the query when present."""
     dates = []
@@ -2139,7 +2193,7 @@ Format: ["collection-id"]"""
         Returns:
             Location name if found, None otherwise
         """
-        query_lower = query.lower()
+        query_lower = EnhancedLocationResolver._fold_accents(query).lower()
         
         # ========================================================================
         # SINGLE SOURCE OF TRUTH: Use locations from EnhancedLocationResolver
@@ -2148,7 +2202,6 @@ Format: ["collection-id"]"""
         # We just need the keys (location names) for fast keyword matching.
         # ========================================================================
         try:
-            from location_resolver import EnhancedLocationResolver
             hardcoded_locations = list(EnhancedLocationResolver.STORED_LOCATIONS.keys())
             logger.debug(f"[FAST] Loaded {len(hardcoded_locations)} locations from EnhancedLocationResolver")
         except Exception as e:
@@ -2691,6 +2744,15 @@ ESSENTIAL FIRE:
             logger.info(f"[FAST] FAST LOCATION MATCH: '{fast_location}' (skipped GPT - saved ~1.2s)")
             return {
                 "location": {"name": fast_location, "type": "region", "confidence": 0.95}
+            }
+        # A Canadian-qualified place ("over Toronto, Canada", "of Trois-Rivières")
+        # already overrides the model's name during geocoding, so skip the
+        # model call; it took 19-20 s and sometimes timed out on such names.
+        canadian_place = _qualify_location_for_geocoding(query, "")
+        if canadian_place:
+            logger.info(f"[FAST] Canadian place from query text: '{canadian_place}' (skipped GPT)")
+            return {
+                "location": {"name": canadian_place, "type": "region", "confidence": 0.9}
             }
         # ========================================================================
 
@@ -3726,10 +3788,13 @@ IMPORTANT:
         except Exception as e:
             logger.warning(f"[WARN] Could not check stored locations: {e}")
         
-        # Strategy 2: Regex patterns for common location phrases
+        # Strategy 2: Regex patterns for common location phrases. Letters
+        # include accents, and names may contain hyphens, apostrophes, and
+        # periods (Trois-Rivières, St. John's, Sault Ste. Marie).
+        place = r"[^\W\d_][^\W\d_\s,.'’-]*(?:[\s,.'’-]+[^\W\d_][^\W\d_\s,.'’-]*)*?"
         location_patterns = [
-            r'(?:of|for|in|near|around|over)\s+(?:the\s+)?([A-Z][a-zA-Z\s,]+?)(?:\s*$|\s*\.|\s*\?)',
-            r'(?:show|display|map|imagery|satellite)\s+.*?\s+(?:of|for|in)\s+(?:the\s+)?([A-Z][a-zA-Z\s,]+?)(?:\s*$|\s*\.|\s*\?)',
+            rf'\b(?:of|for|in|near|around|over)\s+(?:the\s+)?({place})(?:\s+(?:from|between|during)\b|\s*$|\s*\.|\s*\?)',
+            rf'\b(?:show|display|map|imagery|satellite)\s+.*?\s+(?:of|for|in)\s+(?:the\s+)?({place})(?:\s+(?:from|between|during)\b|\s*$|\s*\.|\s*\?)',
         ]
         
         for pattern in location_patterns:
@@ -4267,6 +4332,12 @@ IMPORTANT:
         from datetime import datetime
         current_date = datetime.now().strftime("%Y-%m-%d")
         current_year = datetime.now().year
+
+        if mode == "single":
+            explicit_range = _explicit_iso_range(query)
+            if explicit_range:
+                logger.info(f"[FAST] Explicit ISO date range: {explicit_range} (skipped GPT)")
+                return explicit_range
         
         # Build mode-specific GPT prompt
         if mode == "single":
@@ -4637,6 +4708,12 @@ Return ONLY a JSON object with "before", "after", and "explanation". If ambiguou
         if not filterable:
             logger.info(f"[CLOUD] No collections support cloud filtering: {collections}")
             print(f"[CLOUD] DEBUG: No cloud-filterable collections")
+            return None
+
+        # The model only reacts to explicit cloud or clear-sky wording, so a
+        # query without those words cannot produce a filter.
+        if not _CLOUD_TERMS.search(query or ""):
+            logger.info("[CLOUD] No cloud wording in query -> no cloud filter (skipped GPT)")
             return None
         
         # Build GPT prompt for cloud intent detection
@@ -5813,14 +5890,7 @@ boundary for cities and the full administrative boundary for regions or countrie
             # ("Mount Rainier, Washington"), OR two consecutive Capitalised
             # tokens ("Mount Rainier", "New Orleans"), OR an "of <Place>"
             # / "in <Place>" clause with a Capitalised word.
-            _has_explicit_place = bool(
-                _re.search(r"[A-Z][a-zA-Z]+,\s*[A-Z][a-zA-Z]+", _q)
-                or _re.search(r"\b[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+\b", _q)
-                or _re.search(
-                    r"\b(?:of|in|over|at|near|around)\s+[A-Z][a-zA-Z]+",
-                    _q,
-                )
-            )
+            _has_explicit_place = _mentions_explicit_place(_q)
             if _has_nav_verb and _has_explicit_place:
                 logger.info(
                     "[PIN-OVERRIDE] Query has nav verb + explicit place — "
@@ -5993,6 +6063,27 @@ boundary for cities and the full administrative boundary for regions or countrie
                     "source": "session_bbox (no location in query)",
                     "bbox": session_bbox
                 })
+
+            if not bbox:
+                # Never run an unbounded global search: the response would
+                # describe scenes from anywhere as the requested place.
+                logger.warning(f"[WARN] No location resolved for query: '{natural_query}'")
+                log_pipeline_step(session_id, "RESULT", "ERROR", {
+                    "error": "LOCATION_REQUIRED",
+                    "query": natural_query
+                })
+                return {
+                    "error": "LOCATION_REQUIRED",
+                    "message": (
+                        "I couldn't determine where to search. Add the place's "
+                        "province or country, give coordinates, or place a pin."
+                    ),
+                    "original_query": natural_query,
+                    "suggestions": [
+                        "Example: 'Show Sentinel-2 imagery of Trois-Rivières, Québec from 2025-07-01 to 2025-08-31'",
+                        "Example: 'Show Landsat imagery at latitude 63.7467, longitude -68.5170'",
+                    ],
+                }
             
             # ========================================================================
             # Create entities dict for compatibility with downstream code

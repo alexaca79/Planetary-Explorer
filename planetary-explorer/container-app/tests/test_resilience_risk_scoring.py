@@ -125,6 +125,24 @@ def test_score_heat_criticality_scales() -> None:
     assert high_crit["score"] >= low_crit["score"]
 
 
+def test_given_canadian_heat_event_when_scored_then_celsius_leads_every_label() -> None:
+    # Arrange
+    fc = _forecast(temp_max=[97.0] * 3 + [80.0] * 4, precip_sum=[0.0] * 7)
+
+    # Act
+    out = score_heat(fc, _facility(region="ON", city="Toronto", criticality=0.9, heat_threshold_f=91))
+
+    # Assert
+    assert out["peak_value"] == 97.0
+    assert out["peak_value_unit"] == "°F"
+    assert out["peak_value_c"] == 36.1
+    assert out["facility_threshold_c"] == 32.8
+    assert out["summary"].startswith("Peak feels-like 36 °C (97 °F) on 2026-05-20")
+    assert "3 consecutive days ≥ 33 °C (91 °F)" in out["summary"]
+    assert "Peak exceeds extreme-heat emergency threshold (35 °C (95 °F))" in out["drivers"]
+    assert "105" not in " ".join(out["drivers"])
+
+
 # ── wildfire scorer: None-safety (regression test) ───────────────────────
 
 
@@ -185,3 +203,21 @@ def test_score_wildfire_returns_required_keys() -> None:
         assert key in out, f"missing key {key} in wildfire score result"
     assert isinstance(out["drivers"], list)
     assert 0 <= out["score"] <= 100
+
+
+def test_given_windy_smoke_week_when_scored_then_wind_and_rain_use_metric_first() -> None:
+    # Arrange
+    fc = _forecast(
+        pm25_max=[40.0] * 7,
+        gust_max=[35.0] * 7,
+        precip_sum=[0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+
+    # Act
+    out = score_wildfire(fc, _facility(region="BC", city="Kamloops"))
+
+    # Assert
+    assert "Peak wind gust 56 km/h (35 mph)" in out["drivers"]
+    assert out["summary"].endswith("; gusts to 56 km/h (35 mph)")
+    assert out["total_precip_in"] == 0.3
+    assert out["total_precip_mm"] == 7.6

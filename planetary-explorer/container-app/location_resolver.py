@@ -6,6 +6,7 @@ Multi-Strategy Enhanced Location Resolver
 Replaces Nominatim-only approach with comprehensive geographic region resolution
 """
 import json
+import math
 import time
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -124,6 +125,46 @@ class EnhancedLocationResolver:
         'banff': ('alberta',),
         'jasper': ('alberta',),
     }
+
+    # Unqualified names whose usual referent is Canadian, in _municipality_key
+    # form (accents, periods, and apostrophes removed; hyphens as spaces).
+    # Names shared with a comparably known place elsewhere (London, Kingston,
+    # Victoria, Hamilton, Windsor, Richmond, Surrey, Cambridge, Waterloo,
+    # Burlington, Sydney, Peterborough, Brandon, Sault Ste. Marie, Saint John)
+    # are omitted; qualify those with a province, e.g. "Kingston, Ontario".
+    _CANADIAN_MUNICIPALITIES = frozenset({
+        # Capitals
+        'ottawa', 'quebec city', 'ville de quebec', 'toronto', 'edmonton', 'regina',
+        'winnipeg', 'halifax', 'fredericton', 'charlottetown', 'st johns',
+        'saint johns', 'whitehorse', 'yellowknife', 'iqaluit',
+        # Larger municipalities
+        'montreal', 'calgary', 'vancouver', 'mississauga', 'brampton', 'laval',
+        'markham', 'vaughan', 'gatineau', 'saskatoon', 'longueuil', 'kitchener',
+        'burnaby', 'oakville', 'richmond hill', 'oshawa', 'barrie', 'abbotsford',
+        'coquitlam', 'sherbrooke', 'saguenay', 'levis', 'kelowna', 'trois rivieres',
+        'guelph', 'terrebonne', 'saanich', 'moncton', 'nanaimo', 'brantford',
+        'chilliwack', 'red deer', 'kamloops', 'lethbridge', 'sudbury', 'greater sudbury',
+        'thunder bay', 'st catharines', 'prince george', 'medicine hat',
+        'drummondville', 'saint jerome', 'saint jean sur richelieu', 'chateauguay',
+        'repentigny', 'blainville', 'mirabel', 'shawinigan', 'rimouski',
+        'victoriaville', 'saint hyacinthe', 'rouyn noranda', 'val dor', 'sept iles',
+        'gaspe', 'baie comeau', 'chicoutimi', 'joliette', 'riviere du loup',
+        'chibougamau', 'kuujjuaq', 'airdrie', 'st albert', 'fort mcmurray',
+        'grande prairie', 'canmore', 'lloydminster', 'prince albert', 'moose jaw',
+        'swift current', 'north battleford', 'yorkton', 'estevan', 'flin flon',
+        'portage la prairie', 'steinbach', 'timmins', 'kenora', 'kapuskasing',
+        'moosonee', 'sarnia', 'chatham kent', 'brockville', 'orillia', 'owen sound',
+        'welland', 'summerside', 'corner brook', 'gander', 'happy valley goose bay',
+        'labrador city', 'mount pearl', 'edmundston', 'miramichi', 'squamish',
+        'whistler', 'penticton', 'prince rupert', 'fort st john', 'dawson creek',
+        'kitimat', 'quesnel', 'williams lake', 'courtenay', 'campbell river',
+        'port alberni', 'tofino', 'north vancouver', 'west vancouver',
+        'new westminster', 'port coquitlam', 'maple ridge', 'lytton', 'revelstoke',
+        'salmon arm', 'banff', 'jasper', 'lake louise', 'kananaskis', 'dawson city',
+        'inuvik', 'hay river', 'norman wells', 'tuktoyaktuk', 'rankin inlet',
+        'cambridge bay', 'pangnirtung', 'pond inlet', 'arviat', 'baker lake',
+        'igloolik', 'kugluktuk', 'kinngait',
+    })
     
     # [MAP] HARDCODED GLOBAL LOCATIONS - Ultimate fallback for reliable resolution
     # Format: [west, south, east, north] bounding boxes
@@ -862,6 +903,19 @@ class EnhancedLocationResolver:
     # Used to reject geocoder results that should be in CONUS but aren't.
     _CONUS_BBOX = (-125.0, 24.0, -66.0, 50.0)
 
+    # Azure Maps Search v1 rejects unknown entity types with HTTP 400; the
+    # former "PopulatedPlace" value made every city search fall through to
+    # the unfiltered address fallback.
+    _CITY_ENTITY_TYPES = "Municipality,MunicipalitySubdivision"
+    _LOCAL_ENTITY_TYPES = frozenset(
+        {"Municipality", "MunicipalitySubdivision", "Neighbourhood", "PostalCodeArea"}
+    )
+    _ADDRESS_RESULT_TYPES = frozenset(
+        {"Street", "Point Address", "Address Range", "Cross Street"}
+    )
+    _MAX_LOCAL_VIEWPORT_DEGREES = 5.0
+    _LOCAL_PLACE_HALF_HEIGHT_DEGREES = 0.1
+
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.cache = LocationCache()
@@ -1015,7 +1069,8 @@ class EnhancedLocationResolver:
         self.logger.info(f"[SEARCH] Resolving location: '{location_name}' (type: {location_type})")
         
         # Step 0: Check hardcoded US locations first (instant, guaranteed accuracy)
-        location_lower = location_name.lower().strip()
+        # Stored keys are ASCII, so compare without diacritics ("Montréal").
+        location_lower = self._fold_accents(location_name).lower().strip()
         normalized_location_type = self._normalize_location_type(location_name, location_type)
         stored_locations = self.STORED_LOCATIONS
         if self._azure_maps_country_context(location_name)[0] == 'CA':
@@ -1299,10 +1354,12 @@ class EnhancedLocationResolver:
         # Use a more specific query that prioritizes major populated places
         url = f"{cloud_cfg.azure_maps_base_url}/search/fuzzy/json"
         country_code, country_name = self._azure_maps_country_context(location_name)
+        if country_code != "CA":
+            return None
         params.update({
             "query": f"{location_name} city {country_name}",
             "limit": 5,
-            "entityType": "Municipality,PopulatedPlace",
+            "entityType": self._CITY_ENTITY_TYPES,
             "countrySet": country_code,
         })
         
@@ -1370,9 +1427,40 @@ class EnhancedLocationResolver:
     @classmethod
     def _azure_maps_country_context(cls, location_name: str) -> tuple[str, str]:
         """Return the Azure Maps country filter implied by a qualified name."""
-        if re.search(r"\bcanada\b", location_name or "", re.IGNORECASE) or cls._canadian_province(location_name):
+        if (
+            re.search(r"\bcanada\b", location_name or "", re.IGNORECASE)
+            or cls._canadian_province(location_name)
+            or cls._canadian_municipality(location_name)
+        ):
             return "CA", "Canada"
         return "US", "United States"
+
+    @staticmethod
+    def _fold_accents(value: str) -> str:
+        """Remove diacritics so "Montréal" and "Montreal" compare equal."""
+        normalized = unicodedata.normalize('NFKD', value or '')
+        return ''.join(char for char in normalized if not unicodedata.combining(char))
+
+    @classmethod
+    def _municipality_key(cls, value: str) -> str:
+        key = cls._fold_accents(value).casefold()
+        key = re.sub(r"[.'\u2019]", "", key)
+        return re.sub(r"[-\s]+", " ", key).strip()
+
+    @classmethod
+    def _canadian_municipality(cls, location_name: str) -> bool:
+        """True for an unqualified name that almost always means a Canadian place.
+
+        Without this, "Québec City", "Trois-Rivières", or "Ottawa" fell back to
+        the US default and resolved to places such as Kansas City.
+        """
+        components = [part for part in (location_name or '').split(',') if part.strip()]
+        if len(components) != 1:
+            return False
+        key = cls._municipality_key(components[0])
+        if key.endswith(' city') and key[:-5] in cls._CANADIAN_MUNICIPALITIES:
+            return True
+        return key in cls._CANADIAN_MUNICIPALITIES
     
     def _looks_like_city(self, location_name: str) -> bool:
         """Detect if location name refers to a city/populated place using heuristics"""
@@ -1614,10 +1702,15 @@ class EnhancedLocationResolver:
         
         # For cities, prioritize population/importance over administrative divisions
         if location_type == "city" or self._looks_like_city(location_name):
+            if country_code != "CA":
+                # Unqualified names default to a US country context. A
+                # US-only municipality filter would turn "Ottawa" into
+                # Ottawa, Illinois, so they keep the global address search.
+                return None
             params.update({
                 "query": location_name,  # Don't force ", United States" - let ranking find the most important match
                 "limit": 10,  # Get more results to find the best match
-                "entityType": "Municipality,PopulatedPlace",  # Focus on populated places for cities
+                "entityType": self._CITY_ENTITY_TYPES,  # Focus on populated places for cities
                 "countrySet": country_code,
             })
         else:
@@ -1666,6 +1759,8 @@ class EnhancedLocationResolver:
             "query": location_name,
             "limit": 1
         })
+        if self._azure_maps_country_context(location_name)[0] == "CA":
+            params["countrySet"] = "CA"
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -1673,12 +1768,32 @@ class EnhancedLocationResolver:
                     if response.status == 200:
                         data = await response.json()
                         results = data.get("results", [])
-                        if results:
+                        if results and self._address_match_is_confident(results[0]):
                             return self._extract_azure_bounds(results[0])
+                        if results:
+                            self.logger.info(
+                                "Rejected low-confidence address match for '%s'",
+                                location_name,
+                            )
         except Exception as e:
             self.logger.error(f"Azure Maps address search error: {e}")
         
         return None
+
+    # Azure Maps address search always returns its closest string match. A
+    # made-up name plus the generated "city USA" suffix matched Oklahoma City
+    # at 0.61 confidence, while a one-letter Canadian misspelling
+    # ("Tois-Rivieres") still scored 0.96.
+    _MIN_ADDRESS_MATCH_CONFIDENCE = 0.75
+
+    def _address_match_is_confident(self, result: Dict) -> bool:
+        confidence = (result.get("matchConfidence") or {}).get("score")
+        if confidence is None:
+            return True
+        try:
+            return float(confidence) >= self._MIN_ADDRESS_MATCH_CONFIDENCE
+        except (TypeError, ValueError):
+            return False
     
     def _is_reasonable_admin_bbox(self, bbox: List[float]) -> bool:
         """Check if bounding box is reasonable for an administrative division"""
@@ -1695,19 +1810,70 @@ class EnhancedLocationResolver:
         return width >= 0.3 or height >= 0.3
     
     def _extract_azure_bounds(self, result: Dict) -> Optional[List[float]]:
-        """Extract bounds from Azure Maps result"""
+        """Extract bounds from an Azure Maps result, keeping local places local.
+
+        Azure Maps can pair a correct municipality position with a
+        territory-scale viewport: Iqaluit's result spans about 49 x 32
+        degrees, so its centre lands roughly 875 km from the city. For
+        municipality- and address-scale results, an oversized viewport or
+        one that excludes the position is replaced by a city-sized box
+        around the reported position.
+        """
+        bbox = None
         viewport = result.get("viewport", {})
         if viewport:
             top_left = viewport.get("topLeftPoint", {})
             bottom_right = viewport.get("btmRightPoint", {})
             if top_left and bottom_right:
-                return [
+                bbox = [
                     top_left.get("lon"),    # west
                     bottom_right.get("lat"), # south
                     bottom_right.get("lon"), # east
                     top_left.get("lat")     # north
                 ]
-        return None
+        position = result.get("position") or {}
+        latitude = position.get("lat")
+        longitude = position.get("lon")
+        if (
+            not self._is_local_scale_result(result)
+            or not isinstance(latitude, (int, float))
+            or not isinstance(longitude, (int, float))
+        ):
+            return bbox
+        if bbox is not None and self._viewport_fits_local_place(bbox, latitude, longitude):
+            return bbox
+        half_height = self._LOCAL_PLACE_HALF_HEIGHT_DEGREES
+        half_width = half_height / max(math.cos(math.radians(latitude)), 0.01)
+        self.logger.info(
+            "Replacing implausible %s viewport with a box around its position (%.4f, %.4f)",
+            result.get("entityType") or result.get("type") or "result",
+            latitude,
+            longitude,
+        )
+        return [
+            longitude - half_width,
+            latitude - half_height,
+            longitude + half_width,
+            latitude + half_height,
+        ]
+
+    def _is_local_scale_result(self, result: Dict) -> bool:
+        """True for municipality-, neighbourhood-, and address-level results."""
+        return (
+            (result.get("entityType") or "") in self._LOCAL_ENTITY_TYPES
+            or (result.get("type") or "") in self._ADDRESS_RESULT_TYPES
+        )
+
+    def _viewport_fits_local_place(self, bbox: List[float], latitude: float, longitude: float) -> bool:
+        if any(not isinstance(value, (int, float)) for value in bbox):
+            return False
+        west, south, east, north = bbox
+        return (
+            west <= longitude <= east
+            and south <= latitude <= north
+            and east - west <= self._MAX_LOCAL_VIEWPORT_DEGREES
+            and north - south <= self._MAX_LOCAL_VIEWPORT_DEGREES
+        )
     
     async def _strategy_azure_openai(self, location_name: str, location_type: str) -> Optional[List[float]]:
         """[BOT] Strategy 2.5: Azure OpenAI for intelligent location resolution"""

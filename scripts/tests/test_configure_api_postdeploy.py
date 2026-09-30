@@ -166,7 +166,10 @@ def test_given_container_app_when_building_update_then_runtime_settings_are_rest
     }
     probes = properties["template"]["containers"][0]["probes"]
     assert {probe["type"] for probe in probes} == {"Liveness", "Readiness"}
-    assert {probe["httpGet"]["path"] for probe in probes} == {"/api/health"}
+    assert {probe["type"]: probe["httpGet"]["path"] for probe in probes} == {
+        "Liveness": "/api/health/live",
+        "Readiness": "/api/health/ready",
+    }
     assert properties["template"]["containers"][0]["env"] == [
         {"name": "DISABLE_AUTH", "value": "false"}
     ]

@@ -387,6 +387,9 @@ Write it as you would write a short, professional Slack reply:
     * Inline-cite numbers from tools: e.g. "Toronto Advanced Manufacturing
         reaches 34 °C on Thursday (score 78/100)". Cite MPC scenes by
         collection id and date.
+  * Heat `peak_value` is in °F. Report temperatures in °C first using
+    `peak_value_c` (or the °C figure in the tool summary), optionally
+    followed by °F. Never label a Fahrenheit number as Celsius.
   * If you used MPC imagery, say WHICH collection and WHY it was the right
     one (e.g. "Sentinel-2 L2A from May 24 confirms no active smoke plume
     over the bbox"). This shows the user the planner reasoned about

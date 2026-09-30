@@ -3,7 +3,7 @@
 # Routing uses RouterAgent with Microsoft Agent Framework, deterministic
 # pre-checks, and an AsyncAzureOpenAI classifier.
 
-from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -415,6 +415,7 @@ logger.info("[AUTH] Entra ID auth middleware registered")
 
 from security_middleware import (
     DEFAULT_MAX_REQUEST_BODY_BYTES,
+    CompressionMiddleware,
     HealthProbeTrustedHostMiddleware,
     RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -458,6 +459,9 @@ app.add_middleware(
     ],
     expose_headers=["Content-Disposition", "X-Request-ID"],
 )
+
+# STAC feature collections and analysis payloads are large JSON documents.
+app.add_middleware(CompressionMiddleware)
 
 # Added last so normal and preflight responses both receive the policy.
 app.add_middleware(SecurityHeadersMiddleware)
@@ -2794,7 +2798,61 @@ async def teams_bot_messages(request: Request):
 
     except Exception as e:
         logger.error(f"Teams bot /api/messages error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Teams bot message processing failed")
+
+
+_HEALTH_DEPENDENCY_CACHE: Dict[str, Any] = {"expires_at": 0.0, "stac": None, "geofm": None}
+_health_dependency_lock = asyncio.Lock()
+
+
+def _health_dependency_cache_seconds() -> float:
+    """Return how long external health checks may be reused."""
+    try:
+        return max(0.0, float(os.getenv("HEALTH_DEPENDENCY_CACHE_SECONDS", "30")))
+    except ValueError:
+        return 30.0
+
+
+async def _probe_stac_status() -> str:
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(cloud_cfg.stac_catalog_url + "/") as resp:
+                return "connected" if resp.status == 200 else "degraded"
+    except Exception:
+        return "degraded"
+
+
+async def _health_dependencies() -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Return STAC and GeoFM status, sharing one probe across callers per TTL."""
+    ttl = _health_dependency_cache_seconds()
+    cache = _HEALTH_DEPENDENCY_CACHE
+    if ttl and cache["expires_at"] > time.monotonic():
+        return cache["stac"], cache["geofm"]
+    async with _health_dependency_lock:
+        if ttl and cache["expires_at"] > time.monotonic():
+            return cache["stac"], cache["geofm"]
+        stac_status, geofm_health = await asyncio.gather(
+            _probe_stac_status(),
+            get_health_snapshot(),
+        )
+        cache.update(
+            stac={"status": stac_status},
+            geofm=geofm_health,
+            expires_at=time.monotonic() + ttl,
+        )
+        return cache["stac"], cache["geofm"]
+
+
+@app.get("/api/health/live", include_in_schema=False)
+async def health_live():
+    """Liveness probe: the worker event loop is answering requests."""
+    return {"status": "alive"}
+
+
+@app.get("/api/health/ready", include_in_schema=False)
+async def health_ready():
+    """Readiness probe without external calls; /api/health reports dependencies."""
+    return {"status": "ready"}
 
 
 @app.get("/api/health")
@@ -2824,13 +2882,10 @@ async def health_check():
             checks["azure_openai"] = {"status": "misconfigured"}
             all_healthy = False
 
-        # 2. STAC API — quick GET, no search
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                async with session.get(cloud_cfg.stac_catalog_url + "/") as resp:
-                    checks["stac_api"] = {"status": "connected" if resp.status == 200 else "degraded"}
-        except Exception:
-            checks["stac_api"] = {"status": "degraded"}
+        # 2 and 4. STAC and GeoFM connectivity, cached so probes and page
+        # loads do not each call external services.
+        stac_health, geofm_health = await _health_dependencies()
+        checks["stac_api"] = dict(stac_health)
 
         # 3. Azure Maps — config check only
         maps_key = os.getenv("AZURE_MAPS_SUBSCRIPTION_KEY") or os.getenv("AZURE_MAPS_KEY")
@@ -2841,8 +2896,6 @@ async def health_check():
             checks["azure_maps"] = {"status": "misconfigured"}
             all_healthy = False
 
-        # 4. Geospatial foundation models — live MCP discovery, fail-soft when disabled.
-        geofm_health = await get_health_snapshot()
         checks["geospatial_foundation_models"] = geofm_health
         if geofm_health["enabled"] and not geofm_health["connected"]:
             all_healthy = False
@@ -2860,7 +2913,7 @@ async def health_check():
         return JSONResponse(
             content={
                 "status": overall,
-                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "checks": checks,
             },
             status_code=200 if all_healthy else 503,
@@ -2885,6 +2938,12 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None or raw == "":
         return default
     return raw.strip().lower() in _TRUE_VALUES
+
+
+def _require_diagnostics() -> None:
+    """Return 404 for operator diagnostics unless ENABLE_DIAGNOSTIC_ENDPOINTS is set."""
+    if not _env_flag("ENABLE_DIAGNOSTIC_ENDPOINTS"):
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 def _configured_chat_deployments() -> List[str]:
@@ -3007,7 +3066,7 @@ async def get_config():
         },
     }
 
-@app.get("/api/admin/stac-probe")
+@app.get("/api/admin/stac-probe", dependencies=[Depends(_require_diagnostics)])
 async def stac_probe(
     collection: Optional[str] = None,
     bbox: Optional[str] = None,
@@ -3147,7 +3206,7 @@ async def list_pro_collections():
     }
 
 
-@app.get("/api/_debug/collection-index")
+@app.get("/api/_debug/collection-index", dependencies=[Depends(_require_diagnostics)])
 async def debug_collection_index(mode: Optional[str] = None, q: Optional[str] = None, k: int = 8):
     """Inspect the dynamic CollectionIndex (Phase 1, observability only).
 
@@ -9160,36 +9219,27 @@ async def geoint_terrain_analysis(request: Request):
             
             tool_results = {}
             tool_calls_made = []
-            
-            try:
-                tool_results["elevation"] = get_elevation_analysis(latitude, longitude, radius_km)
-                tool_calls_made.append("get_elevation_analysis")
-            except Exception as te:
-                logger.warning(f"[MTN] [{request_id}] Elevation tool failed: {te}")
-            
-            try:
-                tool_results["slope"] = get_slope_analysis(latitude, longitude, radius_km)
-                tool_calls_made.append("get_slope_analysis")
-            except Exception as te:
-                logger.warning(f"[MTN] [{request_id}] Slope tool failed: {te}")
-            
-            try:
-                tool_results["flat_areas"] = find_flat_areas(latitude, longitude, radius_km)
-                tool_calls_made.append("find_flat_areas")
-            except Exception as te:
-                logger.warning(f"[MTN] [{request_id}] Flat areas tool failed: {te}")
-            
-            try:
-                tool_results["flood_risk"] = analyze_flood_risk(latitude, longitude, radius_km)
-                tool_calls_made.append("analyze_flood_risk")
-            except Exception as te:
-                logger.warning(f"[MTN] [{request_id}] Flood risk tool failed: {te}")
-            
-            try:
-                tool_results["environment"] = analyze_environmental_sensitivity(latitude, longitude, radius_km)
-                tool_calls_made.append("analyze_environmental_sensitivity")
-            except Exception as te:
-                logger.warning(f"[MTN] [{request_id}] Environment tool failed: {te}")
+
+            fallback_tools = [
+                ("elevation", "get_elevation_analysis", get_elevation_analysis),
+                ("slope", "get_slope_analysis", get_slope_analysis),
+                ("flat_areas", "find_flat_areas", find_flat_areas),
+                ("flood_risk", "analyze_flood_risk", analyze_flood_risk),
+                ("environment", "analyze_environmental_sensitivity", analyze_environmental_sensitivity),
+            ]
+            outputs = await asyncio.gather(
+                *(
+                    asyncio.to_thread(fn, latitude, longitude, radius_km)
+                    for _, _, fn in fallback_tools
+                ),
+                return_exceptions=True,
+            )
+            for (key, tool_name, _), output in zip(fallback_tools, outputs):
+                if isinstance(output, BaseException):
+                    logger.warning(f"[MTN] [{request_id}] {tool_name} failed: {output}")
+                    continue
+                tool_results[key] = output
+                tool_calls_made.append(tool_name)
             
             # Synthesize with _terrain_client
             tool_summary = "\n\n".join([f"### {k.replace('_', ' ').title()}\n{v}" for k, v in tool_results.items() if v])
@@ -9358,14 +9408,31 @@ async def geoint_terrain_chat(request: Request):
             from pipeline._aoai import get_aoai_client
 
             terrain_client = get_aoai_client()
-            
+
+            fallback_tools = [
+                ("elevation", "get_elevation_analysis", get_elevation_analysis),
+                ("slope", "get_slope_analysis", get_slope_analysis),
+                ("flat_areas", "find_flat_areas", find_flat_areas),
+                ("flood_risk", "analyze_flood_risk", analyze_flood_risk),
+            ]
+            outputs = await asyncio.gather(
+                *(
+                    asyncio.to_thread(fn, latitude, longitude, radius_km)
+                    for _, _, fn in fallback_tools
+                ),
+                return_exceptions=True,
+            )
             tool_results = {}
-            for name, fn in [("elevation", get_elevation_analysis), ("slope", get_slope_analysis),
-                             ("flat_areas", find_flat_areas), ("flood_risk", analyze_flood_risk)]:
+            fallback_tool_calls = []
+            for (name, tool_name, _), output in zip(fallback_tools, outputs):
+                if isinstance(output, BaseException) or not output:
+                    continue
+                tool_results[name] = output
                 try:
-                    tool_results[name] = fn(latitude, longitude, radius_km)
-                except Exception:
-                    pass
+                    parsed_output = json.loads(output)
+                except (TypeError, ValueError):
+                    parsed_output = str(output)[:500]
+                fallback_tool_calls.append({"tool": tool_name, "result": parsed_output})
             
             tool_summary = "\n\n".join([f"### {k.replace('_', ' ').title()}\n{v}" for k, v in tool_results.items() if v])
             
@@ -9386,7 +9453,7 @@ async def geoint_terrain_chat(request: Request):
             except Exception:
                 response_text = tool_summary or "Terrain analysis completed with limited data."
             
-            result = {"response": response_text, "tool_calls": list(tool_results.keys()), "session_id": session_id, "message_count": 1}
+            result = {"response": response_text, "tool_calls": fallback_tool_calls, "session_id": session_id, "message_count": 1}
         
         elapsed = time.time() - start_time
         logger.info(f"[MSG] [{request_id}] [OK] Agent responded in {elapsed:.2f}s")
@@ -10854,7 +10921,7 @@ async def geoint_extreme_weather_analysis(request: Request):
             detail=f"Climate analysis failed: {str(e)}"
         )
 
-@app.get("/api/geoint/cmip6-test")
+@app.get("/api/geoint/cmip6-test", dependencies=[Depends(_require_diagnostics)])
 async def cmip6_diagnostic_test(
     lat: float = 42.15,
     lng: float = -100.27,
@@ -10883,7 +10950,9 @@ async def cmip6_diagnostic_test(
     # Step 1: STAC Search
     t0 = time.time()
     try:
-        items = _search_cmip6_items(lat, lng, variable, scenario, year, limit=3)
+        items = await asyncio.to_thread(
+            _search_cmip6_items, lat, lng, variable, scenario, year, limit=3
+        )
         elapsed = time.time() - t0
         result["steps"].append({
             "step": "STAC Search",
@@ -10911,7 +10980,9 @@ async def cmip6_diagnostic_test(
     
     t1 = time.time()
     try:
-        sample = _sample_netcdf(href, variable, lat, lng, aggregate=aggregate)
+        sample = await asyncio.to_thread(
+            _sample_netcdf, href, variable, lat, lng, aggregate=aggregate
+        )
         elapsed = time.time() - t1
         result["steps"].append({
             "step": "NetCDF Sample",
@@ -11436,31 +11507,7 @@ async def geoint_orchestrator_endpoint(request: Request):
         logger.error(f"Orchestrator failed: {e}")
         raise HTTPException(status_code=500, detail=f"Orchestration failed: {str(e)}")
 
-@app.get("/api/debug/location/{location}")
-async def debug_location_resolver(location: str):
-    """Debug endpoint to test location resolver"""
-    try:
-        from location_resolver import EnhancedLocationResolver
-        resolver = EnhancedLocationResolver()
-        
-        # Test preprocessing
-        preprocessed = resolver._preprocess_location_query(location)
-        
-        # Test resolution
-        bbox = await resolver.resolve_location_to_bbox(location, "region")
-        
-        return {
-            "original_query": location,
-            "preprocessed_query": preprocessed,
-            "resolved_bbox": bbox,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Location resolver debug failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/debug/location/{location}")
+@app.get("/api/debug/location/{location}", dependencies=[Depends(_require_diagnostics)])
 async def debug_location_resolver(location: str):
     """Debug endpoint to test location resolver"""
     try:

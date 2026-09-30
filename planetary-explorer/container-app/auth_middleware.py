@@ -79,6 +79,8 @@ if M365_APP_CLIENT_ID:
 # ---------------------------------------------------------------------------
 OPEN_PATHS: Set[str] = {
     "/api/health",
+    "/api/health/live",
+    "/api/health/ready",
     "/api/config",
     "/docs",
     "/openapi.json",
@@ -314,10 +316,11 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             # Manual issuer validation (v1.0 and v2.0)
             iss = payload.get("iss", "")
             if iss not in VALID_ISSUERS:
-                logger.warning(f"[AUTH] 401 — invalid issuer '{iss}' on {path}")
+                logger.warning("[AUTH] 401 - issuer is not this tenant on %s", path)
                 return JSONResponse(
                     status_code=401,
-                    content={"error": f"Invalid token issuer: {iss}"},
+                    content={"error": "Invalid token issuer"},
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
 
             # Attach user claims to request state for downstream handlers
@@ -343,23 +346,16 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
             )
 
         except Exception as e:
-            # On any other failure, log the token header + claims (no signature)
-            # so we can diagnose without round-tripping through DevTools.
-            try:
-                hdr = jwt.get_unverified_header(token)
-                claims = jwt.decode(token, options={"verify_signature": False})
-                logger.warning(
-                    "[AUTH] 401 — bearer validation failed on %s: %s | "
-                    "header=%s | iss=%s aud=%s ver=%s appid=%s upn=%s",
-                    path, e, hdr,
-                    claims.get("iss"), claims.get("aud"), claims.get("ver"),
-                    claims.get("appid"), claims.get("upn") or claims.get("preferred_username"),
-                )
-            except Exception:
-                logger.warning(f"[AUTH] 401 — bearer validation failed on {path}: {e} (token undecodable)")
+            # Claims are attacker-controlled until the signature verifies, so
+            # log only the failure class and never echo token contents.
+            logger.warning(
+                "[AUTH] 401 - bearer validation failed on %s: %s",
+                path,
+                type(e).__name__,
+            )
             return JSONResponse(
                 status_code=401,
-                content={"error": f"Token validation failed: {str(e)}"},
+                content={"error": "Token validation failed"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
 

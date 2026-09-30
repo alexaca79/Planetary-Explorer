@@ -202,7 +202,8 @@ class ExtremeWeatherAgent:
         )
         
         from geoint.netcdf_computation_tools import create_netcdf_computation_functions
-        climate_functions = create_netcdf_computation_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        climate_functions = offload_blocking_tools(create_netcdf_computation_functions())
         
         functions = AsyncFunctionTool(climate_functions)
         toolset = AsyncToolSet()

@@ -2194,7 +2194,7 @@ Query both ["hls2-s30", "hls2-l30"] to achieve 2-3 day revisit globally.
             },
             "temporal": {
                     "static": True,
-                    "notes": "Multi-decadal composite (1984-2021) encoded as bands; single dataset."
+                    "notes": "Multi-decadal composite (1984-2020) encoded as bands; single dataset."
             },
             "platform": "European Commission JRC",
             "usage": "Long-term surface water extent, occurrence, change, seasonality, transitions.",

@@ -32,11 +32,14 @@ export interface HazardScore {
   score: number;
   severity: Severity;
   peak_value: number | null;
+  peak_value_c?: number | null;
+  peak_value_unit?: string;
   peak_day: string | null;
   summary: string;
   drivers: string[];
   consecutive_days?: number;
   facility_threshold_f?: number;
+  facility_threshold_c?: number;
   total_precip_in?: number;
 }
 

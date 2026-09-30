@@ -23,6 +23,7 @@ they are evidence, not current values for every location.
 | Work at your own location | [Canadian points](#use-a-different-canadian-point) |
 | Choose an analysis | [Recommended examples](#recommended-examples) |
 | Review a wildfire image or NBR comparison | [CPU burn-index comparison](#review-a-burn-scar-with-cpu-tools) |
+| Investigate flooding, storm surge, or landform change | [Flooding and geomorphology playbook](flooding-storm-surge-geomorphology-playbook.md) |
 | Run an approval-gated foundation model | [Foundation Change](#run-foundation-change-with-geofm) |
 | Combine public research and Python calculations | [Web Search and Code Interpreter](#use-web-search-and-code-interpreter) |
 | Resume work or recall earlier context | [Chat history and memory](chat-memory.md) |
@@ -263,6 +264,13 @@ The location resolver preserves Canadian qualifiers and distinguishes Quebec
 City from Quebec province. Postal abbreviations without commas should be
 uppercase so ordinary words such as "on" are not interpreted as Ontario.
 
+Accents are optional: `Montréal` and `Montreal` resolve to the same city.
+Common Canadian names such as `Québec City`, `Trois-Rivières`, `Ottawa`, or
+`Iqaluit` also resolve within Canada without a qualifier. Names shared with
+other countries, such as Kingston, Victoria, or Hamilton, still need their
+province. If a place cannot be resolved, the imagery search asks for a
+location instead of returning scenes from somewhere else.
+
 > [!IMPORTANT]
 > Correct coordinates do not guarantee data availability. Coverage depends on
 > the collection, acquisition date, footprint, clouds, quality masks, and
@@ -466,10 +474,15 @@ Show Copernicus DEM elevation near Vancouver, Canada for 2026
 For 2026, is this Metro Vancouver location suitable for a construction permit? Analyze slope, flood exposure, and flat areas.
 ```
 
-The validated response invoked slope, flat-area, and flood tools. Within the
-five-kilometre analysis radius it reported mean slope `4.1 degrees`, `67.8%`
-flat terrain, and `32.2%` frequently flooded area. The combined conclusion was
-high flood risk and **not suitable without significant mitigation**.
+On September 30, 2026, the validated response invoked slope, flat-area, and
+flood tools. Each read every source tile under the analysis window, with 100%
+coverage. Within the five-kilometre analysis radius it reported mean slope
+`3.3 degrees`, `76.2%` flat terrain, and `32.1%` frequently flooded area. Most
+of that share is permanent water in Burrard Inlet, English Bay, and False
+Creek, not flooded land. The combined conclusion was high flood risk and
+**not suitable** for a construction permit. Earlier releases reported
+`4.1 degrees` and `67.8%` flat terrain because they overstated north-south
+slopes at this latitude.
 
 This is screening evidence, not a permit decision. The flood layer describes
 historical water occurrence, not a 2026 event forecast. Confirm parcel

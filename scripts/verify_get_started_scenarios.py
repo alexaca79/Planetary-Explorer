@@ -980,6 +980,19 @@ def _tool_names(tools: Any) -> set[str]:
     }
 
 
+def _measured_tool_names(tools: Any) -> set[str]:
+    """Return tools whose calls carry a result without an error field."""
+    if not isinstance(tools, list):
+        return set()
+    return {
+        str(tool.get("tool") or tool.get("name"))
+        for tool in tools
+        if isinstance(tool, dict)
+        and tool.get("result") not in (None, "", {}, [])
+        and not (isinstance(tool.get("result"), dict) and tool["result"].get("error"))
+    }
+
+
 def _validate_module_result(
     scenario: Scenario,
     status: int,
@@ -997,10 +1010,15 @@ def _validate_module_result(
             tools = result.get("tool_calls")
         details["tools"] = tools or []
         names = _tool_names(tools)
+        measured = _measured_tool_names(tools)
+        details["tools_without_results"] = sorted(
+            set(scenario.expected_tools) - measured
+        )
         valid = (
             status == 200
             and bool(_response_text(payload))
             and set(scenario.expected_tools).issubset(names)
+            and not details["tools_without_results"]
             and not errors
         )
     elif family == "Mobility":

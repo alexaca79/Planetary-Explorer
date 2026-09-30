@@ -213,16 +213,16 @@ const HealthCheckInfo: React.FC<HealthCheckInfoProps> = ({
             <div className="health-section-title">Last Check</div>
             
             <div className="health-status-item">
-              <span className="health-value">{new Date(healthData.timestamp).toLocaleString('en-US', { 
-                timeZone: 'America/New_York',
+              <span className="health-value">{new Date(healthData.timestamp).toLocaleString(undefined, {
                 month: '2-digit', 
                 day: '2-digit', 
                 year: 'numeric', 
                 hour: '2-digit', 
                 minute: '2-digit', 
                 second: '2-digit',
-                hour12: false
-              })} EST</span>
+                hour12: false,
+                timeZoneName: 'short'
+              })}</span>
             </div>
           </div>
 

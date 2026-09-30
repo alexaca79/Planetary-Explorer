@@ -41,15 +41,28 @@ def _create_client(
     return TestClient(app), repository
 
 
+def _served_route_paths(app: FastAPI) -> list:
+    """Return every served route path, including routes inside included routers.
+
+    FastAPI 0.141 and later keep an included router as one ``app.routes``
+    entry; older releases copy its routes into ``app.routes``.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts
+    except ImportError:
+        return [getattr(route, "path", None) for route in app.routes]
+    return [getattr(context, "path", None) for context in iter_route_contexts(app.routes)]
+
+
 def test_given_application_routes_when_registered_then_history_router_is_included_once() -> None:
     # Arrange
     import fastapi_app
 
     # Act
     matching_routes = [
-        route
-        for route in fastapi_app.app.routes
-        if getattr(route, "path", None) == "/api/chat-history/sessions"
+        path
+        for path in _served_route_paths(fastapi_app.app)
+        if path == "/api/chat-history/sessions"
     ]
 
     # Assert
