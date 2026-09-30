@@ -168,7 +168,8 @@ class ComparisonAgent:
         )
 
         from geoint.comparison_tools import create_comparison_functions
-        comparison_functions = create_comparison_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        comparison_functions = offload_blocking_tools(create_comparison_functions())
 
         functions = AsyncFunctionTool(comparison_functions)
         toolset = AsyncToolSet()

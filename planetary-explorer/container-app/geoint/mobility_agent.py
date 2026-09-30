@@ -172,7 +172,8 @@ class GeointMobilityAgent:
         )
 
         from geoint.mobility_tools import create_mobility_functions
-        mobility_functions = create_mobility_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        mobility_functions = offload_blocking_tools(create_mobility_functions())
 
         functions = AsyncFunctionTool(mobility_functions)
         toolset = AsyncToolSet()

@@ -425,7 +425,8 @@ class EnhancedVisionAgent:
 
         # Build vision tools as standalone functions for FunctionTool
         from agents.vision_tools import create_vision_functions
-        vision_functions = create_vision_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        vision_functions = offload_blocking_tools(create_vision_functions())
 
         # Create AsyncFunctionTool and AsyncToolSet with auto function calling
         functions = AsyncFunctionTool(vision_functions)

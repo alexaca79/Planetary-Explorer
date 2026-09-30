@@ -132,3 +132,85 @@ async def test_given_failed_synthesis_when_tool_completed_then_returns_measured_
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_given_null_run_step_outputs_when_tools_ran_then_recorded_results_are_reported(
+    monkeypatch,
+) -> None:
+    # Arrange
+    from geoint.tool_runtime import offload_blocking_tools
+
+    agent = TerrainAgent()
+    agent._initialized = True
+    agent._agent_id = "terrain-agent"
+    agent.sessions["sumas-2021"] = TerrainAgentSession(
+        "sumas-2021",
+        49.06,
+        -122.09,
+        "thread-sumas",
+    )
+
+    def get_slope_analysis(latitude: float, longitude: float, radius_km: float = 5.0) -> str:
+        """Analyze slope."""
+        return '{"slope_mean_degrees": 2.4, "flat_area_percent": 81.5}'
+
+    (slope_tool,) = offload_blocking_tools({get_slope_analysis})
+
+    async def create_message(**_kwargs):
+        return None
+
+    async def create_run(**_kwargs):
+        await slope_tool(latitude=49.06, longitude=-122.09, radius_km=5.0)
+        return SimpleNamespace(id="run-sumas", status="completed", last_error=None)
+
+    async def run_steps():
+        function = SimpleNamespace(name="get_slope_analysis", output=None)
+        yield SimpleNamespace(
+            step_details=SimpleNamespace(
+                tool_calls=[SimpleNamespace(function=function)]
+            )
+        )
+
+    async def list_messages():
+        yield SimpleNamespace(
+            run_id="run-sumas",
+            role="assistant",
+            text_messages=[
+                SimpleNamespace(text=SimpleNamespace(value="Mean slope is 2.4 degrees."))
+            ],
+        )
+
+    agent._agents_client = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=create_message,
+            list=lambda **_kwargs: list_messages(),
+        ),
+        runs=SimpleNamespace(create_and_process=create_run),
+        run_steps=SimpleNamespace(list=lambda **_kwargs: run_steps()),
+    )
+
+    async def reverse_geocode(_latitude: float, _longitude: float) -> str:
+        return '{"name":"Abbotsford","region":"British Columbia","country":"Canada"}'
+
+    monkeypatch.setattr(
+        "semantic_translator.geocoding_plugin.azure_maps_reverse_geocode",
+        reverse_geocode,
+    )
+
+    # Act
+    result = await agent.chat(
+        session_id="sumas-2021",
+        user_message="Analyze slope around this pin.",
+        latitude=49.06,
+        longitude=-122.09,
+    )
+
+    # Assert
+    assert result["response"] == "Mean slope is 2.4 degrees."
+    assert result["tool_calls"] == [
+        {
+            "tool": "get_slope_analysis",
+            "result": {"slope_mean_degrees": 2.4, "flat_area_percent": 81.5},
+        }
+    ]

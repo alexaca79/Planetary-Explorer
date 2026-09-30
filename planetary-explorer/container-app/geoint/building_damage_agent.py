@@ -159,7 +159,8 @@ class BuildingDamageAgent:
         )
 
         from geoint.building_damage_tools import create_building_damage_functions
-        damage_functions = create_building_damage_functions()
+        from geoint.tool_runtime import offload_blocking_tools
+        damage_functions = offload_blocking_tools(create_building_damage_functions())
 
         functions = AsyncFunctionTool(damage_functions)
         toolset = AsyncToolSet()
