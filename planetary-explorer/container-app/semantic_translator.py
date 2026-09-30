@@ -60,6 +60,26 @@ _NON_PLACE_WORDS = frozenset({
     "pro", "my",
 })
 _WORD = re.compile(r"[^\W\d_][^\W_]*(?:['\u2019-][^\W_]+)*")
+_CLOUD_TERMS = re.compile(r"\b(?:cloud\w*|clear\w*|overcast)\b", re.IGNORECASE)
+
+
+def _explicit_iso_range(query: str) -> Optional[str]:
+    """Return 'start/end' for 'from <ISO> to <ISO>' or 'between <ISO> and <ISO>'."""
+    match = re.search(
+        r"\b(?:from|between)\s+(\d{4}-\d{2}-\d{2})\s+(?:to|and|through|until)\s+(\d{4}-\d{2}-\d{2})\b",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        start = datetime.fromisoformat(match.group(1)).date()
+        end = datetime.fromisoformat(match.group(2)).date()
+    except ValueError:
+        return None
+    if start > end:
+        return None
+    return f"{start.isoformat()}/{end.isoformat()}"
 
 
 def _is_place_word(word: str) -> bool:
@@ -4312,6 +4332,12 @@ IMPORTANT:
         from datetime import datetime
         current_date = datetime.now().strftime("%Y-%m-%d")
         current_year = datetime.now().year
+
+        if mode == "single":
+            explicit_range = _explicit_iso_range(query)
+            if explicit_range:
+                logger.info(f"[FAST] Explicit ISO date range: {explicit_range} (skipped GPT)")
+                return explicit_range
         
         # Build mode-specific GPT prompt
         if mode == "single":
@@ -4682,6 +4708,12 @@ Return ONLY a JSON object with "before", "after", and "explanation". If ambiguou
         if not filterable:
             logger.info(f"[CLOUD] No collections support cloud filtering: {collections}")
             print(f"[CLOUD] DEBUG: No cloud-filterable collections")
+            return None
+
+        # The model only reacts to explicit cloud or clear-sky wording, so a
+        # query without those words cannot produce a filter.
+        if not _CLOUD_TERMS.search(query or ""):
+            logger.info("[CLOUD] No cloud wording in query -> no cloud filter (skipped GPT)")
             return None
         
         # Build GPT prompt for cloud intent detection
