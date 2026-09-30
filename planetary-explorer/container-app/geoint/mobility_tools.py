@@ -28,7 +28,8 @@ import planetary_computer
 import pystac
 import requests
 from cloud_config import cloud_cfg
-from geoint.dem_geometry import dataset_spacing_meters, slope_aspect_degrees
+from geoint.dem_geometry import dataset_spacing_meters, pixel_spacing_meters, slope_aspect_degrees
+from geoint.raster_mosaic import read_bbox_mosaic
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,30 @@ def _items_covering_point(items: list, lat: float, lon: float) -> list:
     return covering if covering else unknown
 
 
+def _items_intersecting_bbox(items: list, bbox: List[float]) -> list:
+    """Filter STAC items to those whose bbox intersects ``bbox``.
+
+    Falls back to items without bbox metadata when none intersect.
+    """
+    intersecting = []
+    unknown = []
+    for item in items:
+        b = getattr(item, "bbox", None)
+        if b:
+            if b[0] <= bbox[2] and bbox[0] <= b[2] and b[1] <= bbox[3] and bbox[1] <= b[3]:
+                intersecting.append(item)
+        else:
+            unknown.append(item)
+    return intersecting if intersecting else unknown
+
+
+def _endpoint_items(collection: str, items: list, bbox: List[float], lat: float, lon: float) -> list:
+    """Select one endpoint's items; DEM keeps every 1-degree tile under its box."""
+    if collection == "cop-dem-glo-30":
+        return _items_intersecting_bbox(items, bbox)[:4]
+    return _items_covering_point(items, lat, lon)[:3]
+
+
 def _prefetch_corridor_stac_items(
     corridor_bbox: List[float],
     timeout_seconds: float = 15.0,
@@ -291,6 +316,33 @@ def _read_cog_window_with_spacing_sync(
                 return data, spacing
     except Exception as e:
         logger.error(f"Failed to read COG: {e}")
+        return None
+
+
+def _read_dem_mosaic_with_spacing_sync(
+    asset_urls: List[str],
+    bbox: List[float],
+    latitude: float,
+) -> Optional[tuple[np.ndarray, tuple[float, float]]]:
+    """Mosaic DEM tiles over ``bbox``; return pixels and metric ``(row, column)`` spacing.
+
+    Copernicus DEM tiles are 1 degree wide. A sector beside a tile edge (the
+    Kananaskis example sits on 115 W) reads a sliver, or nothing, from one tile.
+    """
+    try:
+        import rasterio
+
+        signed_urls = [planetary_computer.sign_url(url) for url in asset_urls]
+        with rasterio.Env(
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            GDAL_HTTP_TIMEOUT="10",
+            GDAL_HTTP_MAX_RETRY="1",
+        ):
+            window = read_bbox_mosaic(signed_urls, bbox, categorical=False)
+        spacing = pixel_spacing_meters(*window.resolution, latitude, geographic=window.geographic)
+        return window.data, spacing
+    except Exception as e:
+        logger.error(f"Failed to read DEM mosaic: {e}")
         return None
 
 
@@ -617,11 +669,28 @@ def _get_azure_maps_route(lat1: float, lon1: float, lat2: float, lon2: float) ->
             else:
                 return {"road_route_available": False, "reason": "No road route found between points"}
         else:
-            logger.error(f"Azure Maps Route API returned {resp.status_code}")
-            return {"road_route_available": False, "reason": f"API error {resp.status_code}"}
+            reason = _route_error_reason(resp)
+            if reason.startswith("API error"):
+                logger.error(f"Azure Maps Route API returned {resp.status_code}")
+            else:
+                logger.info(f"Azure Maps found no road route: {reason}")
+            return {"road_route_available": False, "reason": reason}
     except Exception as e:
         logger.error(f"Azure Maps route lookup failed: {e}")
         return None
+
+
+def _route_error_reason(response: Any) -> str:
+    """Explain a Route Directions error; backcountry pins have no road to match."""
+    try:
+        message = str(((response.json() or {}).get("error") or {}).get("message") or "")
+    except (ValueError, AttributeError):
+        message = ""
+    if "MAP_MATCHING_FAILURE" in message:
+        return "No drivable road near one of the points"
+    if "NO_ROUTE_FOUND" in message:
+        return "No road route found between points"
+    return f"API error {response.status_code}"
 
 
 def _get_azure_maps_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
@@ -711,9 +780,9 @@ def _analyze_all_directions_sync(latitude: float, longitude: float, prefetched_i
         # Filter items to those covering THIS endpoint (handles tile boundaries)
         for col, key in col_to_key.items():
             all_items = prefetched_items.get(col, [])
-            items = _items_covering_point(all_items, latitude, longitude) if all_items else []
+            items = _endpoint_items(col, all_items, bbox, latitude, longitude) if all_items else []
             if items:
-                terrain_data[key] = {"items_found": len(items), "collection": col, "items": items[:3]}
+                terrain_data[key] = {"items_found": len(items), "collection": col, "items": items}
                 terrain_data["collection_status"][col] = "success"
                 terrain_data["sources"].append(col)
             else:
@@ -736,7 +805,8 @@ def _analyze_all_directions_sync(latitude: float, longitude: float, prefetched_i
             try:
                 items = _query_stac_collection_sync(col, bbox, datetime_range=dt_range, query_params=qparams, limit=10)
                 if items:
-                    return key, col, {"items_found": len(items), "collection": col, "items": items[:3]}, "success"
+                    kept = items[:4] if col == "cop-dem-glo-30" else items[:3]
+                    return key, col, {"items_found": len(items), "collection": col, "items": kept}, "success"
                 return key, col, None, "no_data"
             except Exception as e:
                 logger.error(f"Collection {col} query failed: {e}")
@@ -812,11 +882,13 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
         if asset:
             fetch_tasks["water"] = (asset.href, d_bbox, 1)
 
+    dem_urls: List[str] = []
     if terrain_data.get("elevation_profile") and terrain_data["elevation_profile"].get("items"):
-        item = terrain_data["elevation_profile"]["items"][0]
-        asset = item.assets.get("data", None)
-        if asset:
-            fetch_tasks["elevation"] = (asset.href, d_bbox, 1)
+        dem_urls = [
+            item.assets["data"].href
+            for item in _items_intersecting_bbox(terrain_data["elevation_profile"]["items"], d_bbox)
+            if item.assets.get("data") is not None
+        ]
 
     if terrain_data.get("vegetation_density") and terrain_data["vegetation_density"].get("items"):
         item = terrain_data["vegetation_density"]["items"][0]
@@ -835,12 +907,14 @@ def _analyze_single_direction_sync(direction_name: str, lat: float, lon: float, 
     # Fetch all COGs concurrently
     fetched = {}
     spacings = {}
-    if fetch_tasks:
-        with ThreadPoolExecutor(max_workers=min(len(fetch_tasks), 6)) as executor:
+    if fetch_tasks or dem_urls:
+        with ThreadPoolExecutor(max_workers=min(len(fetch_tasks) + 1, 6)) as executor:
             futures = {
                 executor.submit(_read_cog_window_with_spacing_sync, href, bbox, band): key
                 for key, (href, bbox, band) in fetch_tasks.items()
             }
+            if dem_urls:
+                futures[executor.submit(_read_dem_mosaic_with_spacing_sync, dem_urls, d_bbox, lat)] = "elevation"
             for future in as_completed(futures):
                 key = futures[future]
                 try:
