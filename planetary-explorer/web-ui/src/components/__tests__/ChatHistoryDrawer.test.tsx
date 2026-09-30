@@ -157,7 +157,7 @@ describe('ChatHistoryDrawer', () => {
       sessionId: 'session-1', title: 'Thunder Bay baseline',
       updatedAt: '2026-09-10T00:00:00Z', messageCount: 1,
       attachments: [], memoryEnabled: true,
-    } as ChatHistorySession;
+    } as unknown as ChatHistorySession;
     vi.spyOn(apiService, 'listChatSessions').mockResolvedValue([session]);
     const setMemory = vi.spyOn(apiService, 'setChatSessionMemory').mockResolvedValue({ ...session, memoryEnabled: false });
     renderDrawer();
